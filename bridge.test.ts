@@ -1,0 +1,83 @@
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { describe, expect, it, vi } from "vitest";
+import { allowedToolNames, type CapturedTool, DEFAULT_BRIDGE_TOOLS, serveBridgeHttp, toJsonSchema } from "./bridge.js";
+
+const FAKE_CTX = { cwd: "/tmp" } as unknown as ExtensionContext;
+
+function makeTool(overrides: Partial<CapturedTool> = {}): CapturedTool {
+	return {
+		name: "todo",
+		description: "Track tasks",
+		parameters: { type: "object", properties: { op: { type: "string" } }, required: ["op"] },
+		execute: vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] })),
+		...overrides,
+	};
+}
+
+describe("allowedToolNames / toJsonSchema", () => {
+	it("uses the default allowlist without an override", () => {
+		expect([...allowedToolNames(undefined)].sort()).toEqual([...DEFAULT_BRIDGE_TOOLS].sort());
+		expect([...allowedToolNames("todo, advisor ,")].sort()).toEqual(["advisor", "todo"]);
+	});
+
+	it("normalizes non-object schemas", () => {
+		expect(toJsonSchema(undefined).type).toBe("object");
+		expect(toJsonSchema({ type: "object", required: ["x"] })).toMatchObject({ required: ["x"] });
+	});
+});
+
+describe("serveBridgeHttp", () => {
+	it("returns undefined with no tools", async () => {
+		const handle = await serveBridgeHttp([], () => FAKE_CTX, new AbortController().signal);
+		expect(handle).toBeUndefined();
+	});
+
+	it("serves MCP over loopback HTTP with bearer auth", async () => {
+		const tool = makeTool();
+		const controller = new AbortController();
+		const handle = await serveBridgeHttp([tool], () => FAKE_CTX, controller.signal);
+		if (!handle) throw new Error("expected handle");
+		try {
+			expect(handle.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+
+			// Unauthorized without the token
+			const raw = await fetch(handle.url, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+			});
+			expect(raw.status).toBe(401);
+
+			// Full MCP round-trip with the token
+			const client = new Client({ name: "test-client", version: "1.0.0" });
+			await client.connect(
+				new StreamableHTTPClientTransport(new URL(handle.url), {
+					requestInit: { headers: { Authorization: `Bearer ${handle.token}` } },
+				}),
+			);
+			const listed = await client.listTools();
+			expect(listed.tools.map((entry) => entry.name)).toEqual(["todo"]);
+			const result = await client.callTool({ name: "todo", arguments: { op: "list" } });
+			expect(result.isError ?? false).toBe(false);
+			expect(result.content).toEqual([{ type: "text", text: "ok" }]);
+			const execute = tool.execute as ReturnType<typeof vi.fn>;
+			expect(execute.mock.calls[0]?.[4]).toBe(FAKE_CTX);
+			await client.close();
+		} finally {
+			await handle.close();
+		}
+	});
+
+	it("tears down on abort", async () => {
+		const controller = new AbortController();
+		const handle = await serveBridgeHttp([makeTool()], () => FAKE_CTX, controller.signal);
+		if (!handle) throw new Error("expected handle");
+		controller.abort();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		await expect(
+			fetch(handle.url, { method: "POST", body: "{}" }).then((response) => response.status),
+		).rejects.toThrow();
+	});
+});

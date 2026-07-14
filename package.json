@@ -1,0 +1,57 @@
+{
+	"name": "pi-kiro",
+	"version": "0.1.0",
+	"description": "Kiro CLI backend for the Pi coding agent: a `kiro` provider that delegates turns to your local authenticated kiro-cli (seat/credit-billed, official client), with an MCP bridge exposing the calling Pi session's tools inside delegated runs.",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"kiro",
+		"provider",
+		"mcp"
+	],
+	"license": "MIT",
+	"author": "Randy James",
+	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/randiskull/pi-kiro.git"
+	},
+	"homepage": "https://github.com/randiskull/pi-kiro#readme",
+	"bugs": {
+		"url": "https://github.com/randiskull/pi-kiro/issues"
+	},
+	"scripts": {
+		"test": "vitest run",
+		"check": "tsc --noEmit"
+	},
+	"files": [
+		"*.ts",
+		"README.md",
+		"LICENSE",
+		"!*.test.ts",
+		"!test-setup.ts",
+		"!vitest.config.ts"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.29.0"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "^0.80.5",
+		"@earendil-works/pi-coding-agent": "^0.80.5",
+		"@types/node": "^22.19.19",
+		"typescript": "^5.7.0",
+		"vitest": "^4.0.0"
+	},
+	"engines": {
+		"node": ">=22.0.0"
+	}
+}
