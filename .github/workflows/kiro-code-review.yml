@@ -15,24 +15,40 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-latest
+    # Skip when KIRO_API_KEY is unavailable (Dependabot PRs, fork PRs).
+    if: ${{ github.actor != 'dependabot[bot]' }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Install Kiro CLI
-        run: curl -fsSL https://cli.kiro.dev/install | bash
-
-      - name: Run code review
+      - name: Check API key
+        id: check-key
         env:
           KIRO_API_KEY: ${{ secrets.KIRO_API_KEY }}
         run: |
-          kiro-cli chat --no-interactive --agent code-reviewer \
+          if [ -z "$KIRO_API_KEY" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::KIRO_API_KEY not available — skipping AI review"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Kiro CLI
+        if: steps.check-key.outputs.available == 'true'
+        run: curl -fsSL https://cli.kiro.dev/install | bash
+
+      - name: Run code review
+        if: steps.check-key.outputs.available == 'true'
+        env:
+          KIRO_API_KEY: ${{ secrets.KIRO_API_KEY }}
+        run: |
+          kiro-cli chat --no-interactive --trust-all-tools --agent code-reviewer \
             "Review the changes in this PR. The base branch is ${{ github.event.pull_request.base.ref }} and the head is ${{ github.event.pull_request.head.sha }}. Use git diff to see what changed." \
             > review-output.md
 
       - name: Post review comment
-        if: success()
+        if: steps.check-key.outputs.available == 'true' && success()
         uses: actions/github-script@v9
         with:
           script: |
