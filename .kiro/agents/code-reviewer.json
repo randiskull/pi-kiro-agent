@@ -6,9 +6,7 @@
     "read",
     "grep",
     "glob",
-    "bash",
-    "write",
-    "edit"
+    "bash"
   ],
   "allowedTools": [
     "read",
