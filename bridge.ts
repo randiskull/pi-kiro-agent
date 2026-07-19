@@ -20,8 +20,11 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { resolve as resolvePath } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -108,6 +111,70 @@ export function allowedToolNames(envOverride: string | undefined): Set<string> {
 	return new Set(DEFAULT_BRIDGE_TOOLS);
 }
 
+type ExtensionModule = { default?: (pi: ExtensionAPI) => unknown };
+
+/**
+ * Extension entry files declared by a package manifest: `pi.extensions`
+ * (the pi package convention), falling back to `main`.
+ */
+export function manifestExtensionEntries(manifest: unknown): string[] {
+	if (!manifest || typeof manifest !== "object") return [];
+	const pi = (manifest as { pi?: { extensions?: unknown } }).pi;
+	if (pi && Array.isArray(pi.extensions)) {
+		return pi.extensions.filter((entry): entry is string => typeof entry === "string");
+	}
+	const main = (manifest as { main?: unknown }).main;
+	return typeof main === "string" ? [main] : [];
+}
+
+/**
+ * Locate `source` through pi's package registry and import its extension
+ * entry files. Bare-specifier imports only resolve when the sibling shares a
+ * node_modules tree with this package (monorepo dev); a standalone install
+ * (git:/npm:) has no such tree, so walk the packages pi itself has installed
+ * — pi's jiti loader handles the TS entry files.
+ */
+async function importViaPiRegistry(source: string): Promise<ExtensionModule[]> {
+	const host = await import("@earendil-works/pi-coding-agent");
+	const agentDir = host.getAgentDir();
+	const settingsManager = host.SettingsManager.create(process.cwd(), agentDir);
+	const packageManager = new host.DefaultPackageManager({ cwd: process.cwd(), agentDir, settingsManager });
+	for (const pkg of packageManager.listConfiguredPackages()) {
+		if (!pkg.installedPath) continue;
+		let manifest: unknown;
+		try {
+			manifest = JSON.parse(readFileSync(resolvePath(pkg.installedPath, "package.json"), "utf8"));
+		} catch {
+			continue;
+		}
+		if ((manifest as { name?: unknown }).name !== source) continue;
+		const modules: ExtensionModule[] = [];
+		for (const entry of manifestExtensionEntries(manifest)) {
+			try {
+				modules.push((await import(pathToFileURL(resolvePath(pkg.installedPath, entry)).href)) as ExtensionModule);
+			} catch {
+				// entry failed to load — skip it, keep the rest
+			}
+		}
+		if (modules.length > 0) return modules;
+	}
+	return [];
+}
+
+/** Import a bridge source: bare specifier first, pi package registry second. */
+async function importBridgeModules(source: string): Promise<ExtensionModule[]> {
+	try {
+		return [(await import(source)) as ExtensionModule];
+	} catch {
+		// not resolvable from our own node_modules — try pi's registry
+	}
+	try {
+		return await importViaPiRegistry(source);
+	} catch {
+		return [];
+	}
+}
+
 let capturePromise: Promise<CapturedTool[]> | undefined;
 
 /**
@@ -121,13 +188,14 @@ export async function captureBridgeTools(realPi: ExtensionAPI, envOverride?: str
 		const sink: CapturedTool[] = [];
 		const shim = makeCaptureShim(realPi, sink);
 		for (const source of BRIDGE_SOURCES) {
-			try {
-				const module = (await import(source)) as { default?: (pi: ExtensionAPI) => unknown };
-				if (typeof module.default === "function") {
-					await module.default(shim);
+			for (const module of await importBridgeModules(source)) {
+				try {
+					if (typeof module.default === "function") {
+						await module.default(shim);
+					}
+				} catch {
+					// sibling failed to initialize — bridge without it
 				}
-			} catch {
-				// sibling not installed or failed to load — bridge without it
 			}
 		}
 		const seen = new Set<string>();

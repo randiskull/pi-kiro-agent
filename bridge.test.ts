@@ -2,7 +2,14 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { describe, expect, it, vi } from "vitest";
-import { allowedToolNames, type CapturedTool, DEFAULT_BRIDGE_TOOLS, serveBridgeHttp, toJsonSchema } from "./bridge.js";
+import {
+	allowedToolNames,
+	type CapturedTool,
+	DEFAULT_BRIDGE_TOOLS,
+	manifestExtensionEntries,
+	serveBridgeHttp,
+	toJsonSchema,
+} from "./bridge.js";
 
 const FAKE_CTX = { cwd: "/tmp" } as unknown as ExtensionContext;
 
@@ -25,6 +32,22 @@ describe("allowedToolNames / toJsonSchema", () => {
 	it("normalizes non-object schemas", () => {
 		expect(toJsonSchema(undefined).type).toBe("object");
 		expect(toJsonSchema({ type: "object", required: ["x"] })).toMatchObject({ required: ["x"] });
+	});
+});
+
+describe("manifestExtensionEntries", () => {
+	it("prefers pi.extensions over main", () => {
+		expect(manifestExtensionEntries({ pi: { extensions: ["./src/index.ts", "./extra.ts"] }, main: "dist/index.js" })).toEqual([
+			"./src/index.ts",
+			"./extra.ts",
+		]);
+	});
+
+	it("falls back to main and tolerates junk", () => {
+		expect(manifestExtensionEntries({ main: "index.ts" })).toEqual(["index.ts"]);
+		expect(manifestExtensionEntries({ pi: { extensions: [42, "./ok.ts"] } })).toEqual(["./ok.ts"]);
+		expect(manifestExtensionEntries({})).toEqual([]);
+		expect(manifestExtensionEntries(undefined)).toEqual([]);
 	});
 });
 
