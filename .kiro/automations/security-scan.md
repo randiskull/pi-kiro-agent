@@ -35,6 +35,13 @@ automation so the scan definition lives in version control and stays reviewable.
 > 3. **Docs accuracy** — README claims match code behavior (env vars, commands,
 >    bridged tool list, effort mapping).
 > 4. **Release readiness** — anything that would embarrass a public release.
+> 5. **Open Dependabot PRs** — for any open `dependencies`-labeled PR, assess
+>    supply-chain risk that `npm audit` wouldn't catch: unexpected new
+>    transitive dependencies, unreviewed major-version bumps, maintainer/
+>    provenance red flags, or changes to `@earendil-works/pi-ai` /
+>    `@earendil-works/pi-coding-agent` peer-dependency ranges that could break
+>    the `kiro` provider contract. Comment findings on the Dependabot PR itself
+>    rather than opening a new one; approve-worthy routine bumps need no comment.
 >
 > Constraints: inspect the diff and source only; do not weaken any existing
 > security control to make a test pass. For each confirmed issue, prefer a
@@ -48,7 +55,11 @@ The deterministic, no-API-key bar runs in Actions and gates merges:
 
 - `.github/workflows/ci.yml` — typecheck, tests, secret scan on every push/PR.
 - `.github/workflows/security-audit.yml` — `npm audit` + full-tree secret scan,
-  weekly + on dependency changes + `workflow_dispatch`.
+  weekly + on dependency changes + `workflow_dispatch`. Dependabot PRs touch
+  `package.json`/`package-lock.json`, so they trigger this workflow automatically.
+- `.github/dependabot.yml` — weekly PRs for npm dependencies (dev bumps grouped)
+  and GitHub Actions versions used by the workflows above.
 
 This Automation is the **AI-judgment** layer on top — the reasoning-heavy review
-(logic, trust boundaries, docs drift) that a rule-based scanner can't do.
+(logic, trust boundaries, docs drift, dependency-bump risk) that a rule-based
+scanner can't do.
