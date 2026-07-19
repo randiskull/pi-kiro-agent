@@ -128,19 +128,37 @@ export function manifestExtensionEntries(manifest: unknown): string[] {
 }
 
 /**
+ * A configured package is bridgeable only when pi installed it at USER scope.
+ * Project-scope packages come from the current repo's `.pi/settings.json` — an
+ * untrusted cloned repo could point at attacker-controlled entry files — so
+ * they are never a bridge source regardless of pi's trust decision.
+ */
+export function isBridgeablePackage(pkg: { scope: string; installedPath?: string }): boolean {
+	return pkg.scope === "user" && typeof pkg.installedPath === "string" && pkg.installedPath.length > 0;
+}
+
+/**
  * Locate `source` through pi's package registry and import its extension
  * entry files. Bare-specifier imports only resolve when the sibling shares a
  * node_modules tree with this package (monorepo dev); a standalone install
  * (git:/npm:) has no such tree, so walk the packages pi itself has installed
  * — pi's jiti loader handles the TS entry files.
+ *
+ * Trust boundary: only USER-scope packages are considered. Constructing the
+ * SettingsManager with projectTrusted:false mirrors pi's untrusted-project
+ * default (its `create` defaults the flag to true), and the explicit
+ * scope !== "user" skip is belt-and-suspenders — together they ensure a
+ * cloned repo's project-scope `.pi/settings.json` can never inject a package
+ * whose entry file we then execute. Trusting a project is pi's decision, made
+ * through its own prompt; the bridge never widens it.
  */
 async function importViaPiRegistry(source: string): Promise<ExtensionModule[]> {
 	const host = await import("@earendil-works/pi-coding-agent");
 	const agentDir = host.getAgentDir();
-	const settingsManager = host.SettingsManager.create(process.cwd(), agentDir);
+	const settingsManager = host.SettingsManager.create(process.cwd(), agentDir, { projectTrusted: false });
 	const packageManager = new host.DefaultPackageManager({ cwd: process.cwd(), agentDir, settingsManager });
 	for (const pkg of packageManager.listConfiguredPackages()) {
-		if (!pkg.installedPath) continue;
+		if (!isBridgeablePackage(pkg) || !pkg.installedPath) continue;
 		let manifest: unknown;
 		try {
 			manifest = JSON.parse(readFileSync(resolvePath(pkg.installedPath, "package.json"), "utf8"));
