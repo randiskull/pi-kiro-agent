@@ -9,8 +9,8 @@ automation so the scan definition lives in version control and stays reviewable.
 
 1. Open `app.kiro.dev/automations` and create a new automation.
 2. **Repository:** `randiskull/pi-kiro`.
-3. **Schedule:** Weekly (or `0 6 * * 1` to align with the `security-audit.yml`
-   dependency scan). Up to 5 schedules are allowed.
+3. **Schedule:** Weekly (or `cron(0 6 ? * MON *)` to align with the
+   `security-audit.yml` dependency scan). Up to 5 schedules are allowed.
 4. **Prompt:** paste the block below verbatim.
 5. Review the PRs it opens like any other contribution.
 
@@ -49,7 +49,7 @@ automation so the scan definition lives in version control and stays reviewable.
 > the PR body rather than changing code. Keep the PR focused — one theme per PR.
 > If nothing actionable is found, open no PR and report "clean".
 
-## Relationship to GitHub Actions
+## Relationship to other CI/CD workflows
 
 The deterministic, no-API-key bar runs in Actions and gates merges:
 
@@ -60,6 +60,17 @@ The deterministic, no-API-key bar runs in Actions and gates merges:
 - `.github/dependabot.yml` — weekly PRs for npm dependencies (dev bumps grouped)
   and GitHub Actions versions used by the workflows above.
 
-This Automation is the **AI-judgment** layer on top — the reasoning-heavy review
-(logic, trust boundaries, docs drift, dependency-bump risk) that a rule-based
-scanner can't do.
+Kiro-powered CI/CD (requires `KIRO_API_KEY` repo secret):
+
+- `.github/workflows/kiro.yml` — ad-hoc `/kiro` comment triggers and `kiro`
+  label triggers via `kirodotdev-labs/kiro-action`.
+- `.github/workflows/kiro-code-review.yml` — automated code review on every PR
+  using the `.kiro/agents/code-reviewer.json` agent in headless mode.
+
+Kiro Automations (configured at `app.kiro.dev/automations`):
+
+- `dependency-update.md` — weekly dependency freshness check and update PRs.
+
+This security scan Automation is the **AI-judgment** layer on top — the
+reasoning-heavy review (logic, trust boundaries, docs drift, dependency-bump
+risk) that a rule-based scanner can't do.
