@@ -17,12 +17,17 @@ updates:
           - "minor"
           - "patch"
     commit-message:
-      prefix: "chore"
-      include: "scope"
+      prefix: "chore(deps):"
     labels:
       - "dependencies"
+    # Don't update peerDependencies — those track upstream Pi versions
+    ignore:
+      - dependency-name: "@earendil-works/pi-ai"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
+      - dependency-name: "@earendil-works/pi-coding-agent"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
 
-  # Actions used by ci.yml / security-audit.yml.
+  # Actions used by ci.yml / security-audit.yml / kiro workflows.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -32,8 +37,7 @@ updates:
       timezone: "UTC"
     open-pull-requests-limit: 5
     commit-message:
-      prefix: "ci"
-      include: "scope"
+      prefix: "ci(deps):"
     labels:
       - "dependencies"
-      - "github-actions"
+      - "ci"

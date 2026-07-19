@@ -24,7 +24,10 @@
 		"test": "vitest run",
 		"check": "tsc --noEmit",
 		"scan:secrets": "node scripts/secret-scan.mjs --all",
-		"scan": "npm run check && npm test && npm run scan:secrets && npm audit --omit=dev"
+		"scan:kiro": "sh scripts/scan-kiro.sh",
+		"verify": "npm run check && npm test && npm run scan:secrets",
+		"scan": "npm run verify && npm audit --omit=dev",
+		"hooks:install": "git config core.hooksPath scripts/hooks && echo 'pre-push hook installed (core.hooksPath=scripts/hooks)'"
 	},
 	"files": [
 		"*.ts",

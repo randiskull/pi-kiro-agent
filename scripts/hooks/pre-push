@@ -1,0 +1,30 @@
+#!/bin/sh
+# pre-push gate for pi-kiro. Install with: npm run hooks:install
+#
+# Default: the fast deterministic bar (typecheck + tests + secret scan). No
+# network, so offline pushes still work; `npm audit` is left to CI. Bypass a
+# push in a pinch with `git push --no-verify`.
+#
+# Opt-in: set PIKIRO_PREPUSH_KIRO_AUDIT=1 to also run the local kiro-cli release
+# audit (scripts/scan-kiro.sh), which blocks only on a HIGH/security verdict.
+
+set -eu
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+echo "pre-push: running deterministic checks (npm run verify)…"
+if ! npm run --silent verify; then
+	echo "pre-push: checks failed. Fix them, or bypass with 'git push --no-verify'." >&2
+	exit 1
+fi
+
+if [ "${PIKIRO_PREPUSH_KIRO_AUDIT:-0}" = "1" ]; then
+	echo "pre-push: running kiro release audit (PIKIRO_PREPUSH_KIRO_AUDIT=1)…"
+	if ! sh scripts/scan-kiro.sh; then
+		echo "pre-push: kiro audit returned a BLOCK verdict. Address it, or bypass with 'git push --no-verify'." >&2
+		exit 1
+	fi
+fi
+
+echo "pre-push: all checks passed."
