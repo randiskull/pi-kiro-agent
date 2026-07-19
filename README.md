@@ -40,6 +40,15 @@ Kiro v3 note: v3's agent config (env-expanded URLs, header auth) would allow one
 | `PI_KIRO_BRIDGE` | `on` | Set `off` to disable the MCP tool bridge |
 | `PI_KIRO_BRIDGE_TOOLS` | built-in allowlist | Comma-separated override of bridged tools |
 
+## Security scanning
+
+Two layers, matching the posture upstream projects use:
+
+- **Deterministic bar (GitHub Actions, no API keys).** `ci.yml` runs typecheck, tests, and a secret scan on every push/PR; `security-audit.yml` runs `npm audit` plus a full-tree secret scan weekly, on dependency changes, and on demand (`workflow_dispatch`). The audit is advisory by default — set the repo variables `SECURITY_AUDIT_BLOCKING=true` and `NPM_AUDIT_SEVERITY` (default `high`) to make it gate merges.
+- **AI-judgment layer ([Kiro Automation](https://kiro.dev/blog/introducing-automations/)).** A scheduled cloud automation reviews `main` for security, correctness, docs drift, and release readiness, opening a PR with findings. It's configured in the web UI; the canonical prompt lives at [`.kiro/automations/security-scan.md`](.kiro/automations/security-scan.md).
+
+Run the deterministic checks locally with `npm run scan` (typecheck + tests + secret scan + `npm audit`), or just the secret scan with `npm run scan:secrets`. A false-positive secret hit can be waived with a `secret-scan:allow` comment on the offending line.
+
 ## Compliance
 
 Same posture as GSD's claude-code delegation and rpiv's external-runtime providers: the official client performs all model traffic under your own entitlement; headless usage is subject to your plan/org policies (admin governance applies to headless sessions). This extension adds no credentials handling of its own.
