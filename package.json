@@ -22,7 +22,9 @@
 	},
 	"scripts": {
 		"test": "vitest run",
-		"check": "tsc --noEmit"
+		"check": "tsc --noEmit",
+		"scan:secrets": "node scripts/secret-scan.mjs --all",
+		"scan": "npm run check && npm test && npm run scan:secrets && npm audit --omit=dev"
 	},
 	"files": [
 		"*.ts",
