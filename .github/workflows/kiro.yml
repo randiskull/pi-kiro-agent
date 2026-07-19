@@ -27,6 +27,28 @@ jobs:
       (github.event_name == 'issues' && github.event.action == 'assigned' && github.event.assignee.login == 'kirocli') ||
       (github.event_name == 'pull_request' && github.event.action == 'assigned' && github.event.assignee.login == 'kirocli')
     steps:
+      # Gate on the triggering user's repo permission before spending the
+      # KIRO_API_KEY or touching a write-capable agent. Without this, any user
+      # who can comment `/kiro` (i.e. anyone, on a public repo) could drive an
+      # agent that has contents/issues/pull-requests write. Require write+.
+      - name: Check requester permission
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const username = context.actor;
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner,
+              repo,
+              username,
+            });
+            const allowed = new Set(["admin", "maintain", "write"]);
+            if (!allowed.has(data.permission)) {
+              core.setFailed(
+                `@${username} cannot trigger Kiro: expected write, maintain, or admin; got ${data.permission}.`,
+              );
+            }
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
