@@ -6,6 +6,7 @@ import {
 	allowedToolNames,
 	type CapturedTool,
 	DEFAULT_BRIDGE_TOOLS,
+	isBridgeablePackage,
 	manifestExtensionEntries,
 	serveBridgeHttp,
 	toJsonSchema,
@@ -48,6 +49,21 @@ describe("manifestExtensionEntries", () => {
 		expect(manifestExtensionEntries({ pi: { extensions: [42, "./ok.ts"] } })).toEqual(["./ok.ts"]);
 		expect(manifestExtensionEntries({})).toEqual([]);
 		expect(manifestExtensionEntries(undefined)).toEqual([]);
+	});
+});
+
+describe("isBridgeablePackage", () => {
+	it("accepts only user-scope packages with an install path", () => {
+		expect(isBridgeablePackage({ scope: "user", installedPath: "/home/u/.pi/npm/x" })).toBe(true);
+	});
+
+	it("rejects project scope — an untrusted repo must not inject a bridge source", () => {
+		expect(isBridgeablePackage({ scope: "project", installedPath: "/repo/.pi/npm/x" })).toBe(false);
+	});
+
+	it("rejects packages that are not installed", () => {
+		expect(isBridgeablePackage({ scope: "user" })).toBe(false);
+		expect(isBridgeablePackage({ scope: "user", installedPath: "" })).toBe(false);
 	});
 });
 
