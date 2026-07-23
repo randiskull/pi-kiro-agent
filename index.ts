@@ -18,7 +18,7 @@
  *                      agent profiles through kiro
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { captureBridgeTools, type HttpBridgeHandle, serveBridgeHttp } from "./bridge.js";
 import { bridgeEnabled } from "./kiro-bridge.js";
 import { DEFAULT_SUBAGENT_MODEL, FALLBACK_MODELS, fetchKiroModels, KIRO_PROVIDER } from "./models.js";
@@ -47,15 +47,27 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string
 		const models = readiness.binaryPath
 			? await fetchKiroModels(readiness.binaryPath)
 			: FALLBACK_MODELS;
-		pi.registerProvider(KIRO_PROVIDER, {
+		// GSD (and other pi hosts) classify a provider that wraps a local CLI via
+		// authMode: "externalCli". It gates flat-rate routing detection and the
+		// workflow-MCP question/tool transport — both require authMode ===
+		// "externalCli" alongside a local:// baseUrl. Without it, kiro is resolved
+		// as an "apiKey" provider (from the dummy apiKey below), so GSD treats a
+		// seat-billed local CLI as a metered API and skips the external-CLI
+		// transport. Upstream pi's ProviderConfig type predates the field, so
+		// widen it here; hosts that don't read authMode ignore it.
+		const config: ProviderConfig & { authMode: "externalCli" } = {
 			name: "Kiro CLI (local runtime)",
+			authMode: "externalCli",
 			baseUrl: "local://kiro-cli",
-			// Never used for requests — streamSimple owns transport.
+			// Never used for requests — streamSimple owns transport. Kept because
+			// upstream pi (no authMode concept) requires apiKey/oauth when models
+			// are defined; GSD ignores it since authMode resolves first.
 			apiKey: "kiro-local",
 			api: "anthropic-messages",
 			models,
 			streamSimple: makeStreamViaKiro(deps),
-		});
+		};
+		pi.registerProvider(KIRO_PROVIDER, config);
 		registered = true;
 	}
 	return `kiro provider registered (${readiness.detail}). Select with /model ${KIRO_PROVIDER}/<id>.`;
