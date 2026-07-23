@@ -1,10 +1,20 @@
 # pi-kiro provider mislabeled `authMode: "apiKey"` instead of `"externalCli"` under GSD
 
-- **Status:** FIXED in pi-kiro (this repo), commit pending. Not an upstream issue —
-  GSD behaves correctly once the provider declares the field; the bug was ours.
+- **Status:** ✅ RESOLVED — fixed in this repo as commit `93d3e2d`, pushed to
+  `origin/main`; both installed clones (`~/.pi`, `~/.gsd`) updated to it. Not an
+  upstream issue — GSD behaves correctly once the provider declares the field;
+  the bug was ours. No filing required.
 - **Affected:** pi-kiro `kiro` provider running under GSD (`@opengsd/gsd-pi`) and
   any pi host that keys off `authMode` for external-CLI providers.
 - **Fix:** declare `authMode: "externalCli"` in `registerProvider` (index.ts).
+- **Freshness audit (2026-07-23):** fix present at `index.ts:60`; GSD's
+  `getProviderAuthMode` still resolves `config.authMode` first
+  (`provider-readiness.js:10`); sibling providers `claude-code-cli` / `google-cli`
+  still declare the field. Mechanism re-verified against the installed GSD
+  runtime (see table below).
+- **Related / still open:** the separate GSD fallback-classification issue (a
+  `400 "extra usage"` does not trigger failover) — see
+  [[gsd-400-extra-usage-not-fallback-eligible]].
 
 ## Symptom
 
