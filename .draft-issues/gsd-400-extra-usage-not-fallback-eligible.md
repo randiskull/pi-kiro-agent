@@ -6,6 +6,28 @@
 **Target repo:** `open-gsd/gsd-pi` (bugs → https://github.com/open-gsd/gsd-pi/issues)
 **Observed on version:** `1.11.0`
 
+## ⏱ Freshness audit — RUN 2026-07-23 · terminal outcome: **FILE**
+A full audit was completed against current upstream HEAD (`origin/main`):
+- **Still present on HEAD (NOT superseded).** `error-classifier.ts` `RATE_LIMIT_RE` still lacks
+  `from your extra usage`; the new `AFFORDABILITY_RE`
+  (`requires more credits|can only afford|insufficient credits|not enough credits|fewer max_tokens`)
+  is OpenRouter-credit wording and does not match; the `unsupported-model` entitlement path in
+  `agent-end-recovery.ts` fires only on a provider *model rejection* (`cls.kind === "unsupported-model"`),
+  not a usage/billing wall. The `400 "…from your extra usage…"` message still classifies `unknown`
+  → indefinite pause.
+- **Not a duplicate.** No **open** issue covers 400/usage classification. Closest prior art is
+  **#1364** *"Model fallback not triggered for 'abort' / 'unknown' provider errors"* — the **same**
+  `unknown` → no-fallback → indefinite-pause root cause — but it is **CLOSED**, fixed *narrowly* by
+  **PR #1365** (classified only the `"abort"` stop-reason as a transient connection failure; it did
+  **not** touch the usage-wall wording and did **not** make `unknown` generally fallback-eligible).
+  Our case is the un-covered sibling of the same class the maintainers just fixed for `"abort"`.
+- **Recommendation: FILE now.** Confirmed-present, non-dupe, one-line fix, and upstream is actively
+  patching this exact seam (#1364/#1365, plus the recently-added `AFFORDABILITY_RE` and entitlement
+  path) → they are receptive and fast on "string-X → unknown → pause" gaps.
+- **⚠ The filing trigger below is circular.** It waits for "you want Anthropic-primary AND upstream
+  hasn't fixed" — but you can't safely go Anthropic-primary *until* this is fixed, so the trigger may
+  never fire on its own. Treat the trigger as satisfied; the only open question is your go/no-go.
+
 ## Filing trigger
 File when BOTH hold:
 1. You still want an Anthropic-primary phase layout with a kiro (or other) `fallbacks:`
@@ -54,8 +76,12 @@ form, paste the sections into the web form fields of the same name.)
    ```
    Related error-handling issues to cross-check (from source comments): #2577
    (classifier consolidation), #4373 (rate-limit → fallback), #4513, #4528, #4558, #813.
-   If an open issue already covers 400/usage classification → **COMMENT-ON-EXISTING**
-   with the specifics below instead of filing a duplicate.
+   **CLOSEST PRIOR ART (found in the 2026-07-23 audit): #1364 / PR #1365** — same
+   `unknown` → no-fallback → pause root cause, CLOSED, fixed narrowly for the `"abort"`
+   stop-reason only. Reference it in the filed issue as the sibling case. **Audit dedup
+   result: no OPEN issue covers 400/usage classification → FILE (not comment).** Re-run the
+   `gh search` lines to reconfirm at filing time; if a *new* open issue appeared covering
+   400/usage → **COMMENT-ON-EXISTING** instead.
 5. **Strip this preamble** (everything above the `=== BODY ===` line), then file.
 <!-- ===================== BODY (bug_report.yml) — this is what gets filed ===================== -->
 <!-- === BODY === -->
@@ -139,6 +165,15 @@ Verified locally: this matches the target message and a JSON-wrapped
 cleanly reaches the rate-limit → fallback branch. (`AFFORDABILITY_RE` on line 58 is an
 equally valid home if maintainers prefer to keep "credits/affordability" separate from
 "throttle" semantics.)
+
+## Related prior art
+Same error-classification gap as **#1364** *"Model fallback not triggered for 'abort' /
+'unknown' provider errors"* (closed via **PR #1365**), which classified the `"abort"` stop-reason
+as a transient connection failure so fallbacks fire. That fix was string-specific and did **not**
+cover the Anthropic subscription "extra usage" `400` — this is the sibling case on the same
+`unknown` → no-fallback → indefinite-pause path. A broader structural fix (letting a configured
+`fallbacks:` list be tried before an `unknown` error hard-pauses) would subsume both; the
+one-line regex change above is the minimal fix for this specific, common wall.
 
 ## GSD version
 1.11.0
