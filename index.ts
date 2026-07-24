@@ -36,6 +36,28 @@ const deps: {
 } = { binaryPath: undefined };
 let registered = false;
 
+// Self-heal state: activation registers once, so a cold-start readiness miss
+// would otherwise wedge the provider until a manual /kiro. Retry registration
+// lazily and throttled on later provider requests (background, never blocking).
+const SELF_HEAL_INTERVAL_MS = 10_000;
+let lastSelfHealAt = 0;
+let selfHealing = false;
+
+function maybeSelfHeal(pi: ExtensionAPI): void {
+	if (registered || selfHealing) return;
+	const now = Date.now();
+	if (now - lastSelfHealAt < SELF_HEAL_INTERVAL_MS) return;
+	lastSelfHealAt = now;
+	selfHealing = true;
+	// Non-forced: re-probes only because a transient miss left the cache empty;
+	// a definitively-cached ENOENT/logged-out returns instantly and stays a no-op.
+	void ensureRegistered(pi)
+		.catch(() => undefined)
+		.finally(() => {
+			selfHealing = false;
+		});
+}
+
 async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string> {
 	if (force) clearKiroReadinessCache();
 	const readiness = await checkKiroReadiness(force);
@@ -79,6 +101,7 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 	});
 	pi.on("before_provider_request", (_event, ctx) => {
 		latestCtx = ctx;
+		maybeSelfHeal(pi);
 	});
 
 	deps.getBridge = async (signal) => {
