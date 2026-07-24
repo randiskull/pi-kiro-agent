@@ -31,10 +31,21 @@ import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
 import { type KiroAgentProfile, writeAgentProfile } from "./kiro-bridge.js";
+import {
+	advanceSession,
+	dropSession,
+	type ListSessionsFn,
+	makeListSessions,
+	planTurn,
+	recordFreshSession,
+	resumeEnabled,
+	snapshotSessions,
+} from "./session-manager.js";
 
 /** kiro exits with code 3 when --require-mcp-startup can't connect a server. */
 const MCP_STARTUP_EXIT_CODE = 3;
-const MAX_ATTEMPTS = 2;
+// Up to 3: one turn plus room for an MCP-startup retry and a resume→full fallback.
+const MAX_ATTEMPTS = 3;
 
 export const FINAL_OPEN = "<pi_final>";
 export const FINAL_CLOSE = "</pi_final>";
@@ -116,7 +127,23 @@ function contentToText(content: Message["content"]): string {
 		.join("\n");
 }
 
-export function buildPromptFromContext(context: Context, bridgedTools?: string[]): string {
+/** Serialize one Pi message to its XML block, or undefined if it carries no text. */
+function serializeMessage(message: Message): string | undefined {
+	if (message.role === "user") {
+		return `<user_message>\n${contentToText(message.content)}\n</user_message>`;
+	}
+	if (message.role === "assistant") {
+		const text = contentToText(message.content.filter((block) => block.type !== "thinking") as Message["content"]);
+		return text.length > 0 ? `<assistant_message>\n${text}\n</assistant_message>` : undefined;
+	}
+	if (message.role === "toolResult") {
+		return `<tool_result tool="${message.toolName}">\n${contentToText(message.content)}\n</tool_result>`;
+	}
+	return undefined;
+}
+
+/** The fixed preamble + tool-context scaffolding shared by full and delta prompts. */
+function buildScaffolding(bridgedTools?: string[]): string[] {
 	const toolContextLines = [
 		"<tool_context>",
 		"The prior context below may reference tools from the calling session (read, grep, bash, Agent, todo, ask_user_question, subagent dispatch, skills, pipeline stages). Do not refuse or explain that you lack them: perform file/search/shell work yourself with your own tools.",
@@ -141,29 +168,41 @@ export function buildPromptFromContext(context: Context, bridgedTools?: string[]
 	}
 	toolContextLines.push("</tool_context>");
 
-	const parts: string[] = [
+	return [
 		"You are the executor for a task delegated from another agent session. Complete the task in the final user message directly, using your own tools.",
 		toolContextLines.join("\n"),
 		`Wrap ONLY your final answer between ${FINAL_OPEN} and ${FINAL_CLOSE} tags — everything outside the tags is treated as working notes.`,
 		"Do not emit <user_message>, <assistant_message>, <tool_result> or <prior_system_context> tags in your reply.",
 	];
+}
+
+/** Full prompt: preamble + system prompt + the entire conversation history. */
+export function buildPromptFromContext(context: Context, bridgedTools?: string[]): string {
+	const parts = buildScaffolding(bridgedTools);
 	if (context.systemPrompt && context.systemPrompt.trim().length > 0) {
 		parts.push(`<prior_system_context>\n${context.systemPrompt}\n</prior_system_context>`);
 	}
-	const history: string[] = [];
-	for (const message of context.messages) {
-		if (message.role === "user") {
-			history.push(`<user_message>\n${contentToText(message.content)}\n</user_message>`);
-		} else if (message.role === "assistant") {
-			const text = contentToText(message.content.filter((block) => block.type !== "thinking") as Message["content"]);
-			if (text.length > 0) history.push(`<assistant_message>\n${text}\n</assistant_message>`);
-		} else if (message.role === "toolResult") {
-			history.push(`<tool_result tool="${message.toolName}">\n${contentToText(message.content)}\n</tool_result>`);
-		}
-	}
+	const history = context.messages.map(serializeMessage).filter((block): block is string => block !== undefined);
 	if (history.length > 0) {
 		parts.push(`<conversation_history>\n${history.join("\n")}\n</conversation_history>`);
 	}
+	return parts.join("\n\n");
+}
+
+/**
+ * Delta prompt for a `--resume-id` turn: the same scaffolding, but only the NEW
+ * turn's input — no <prior_system_context> and no <conversation_history> (kiro
+ * already holds those in the resumed session). Assistant messages are skipped:
+ * they are kiro's own prior replies, already in-session — re-sending them would
+ * echo the model's output back as user input.
+ */
+export function buildDeltaPrompt(deltaMessages: Message[], bridgedTools?: string[]): string {
+	const parts = buildScaffolding(bridgedTools);
+	const blocks = deltaMessages
+		.filter((message) => message.role !== "assistant")
+		.map(serializeMessage)
+		.filter((block): block is string => block !== undefined);
+	if (blocks.length > 0) parts.push(blocks.join("\n"));
 	return parts.join("\n\n");
 }
 
@@ -218,6 +257,19 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				bridge = await deps.getBridge?.(options?.signal ?? new AbortController().signal);
 				if (bridge) profile = writeAgentProfile(bridge);
 
+				// Incremental context: resume the kiro session that mirrors this Pi
+				// conversation and send only the delta, instead of re-serializing the
+				// whole history every turn. `plan` decides fresh vs resume by matching
+				// the message-prefix hash; a diverged prefix (Pi compacted/edited) or
+				// any uncertainty falls back to a full fresh send.
+				const cwd = process.cwd();
+				const listSessions: ListSessionsFn = makeListSessions(deps.binaryPath);
+				const plan = planTurn(cwd, context.messages);
+				let useResume = plan.mode === "resume";
+				// Snapshot existing sessions before a fresh spawn so we can identify the
+				// one kiro creates (exactly-one-new-in-cwd; ambiguity ⇒ fallback).
+				let preSnapshot = useResume ? new Set<string>() : await snapshotSessions(cwd, listSessions);
+
 				let raw = "";
 				let stderrText = "";
 				let exitCode = -1;
@@ -236,11 +288,16 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 
 				for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
 					const args = ["chat", "--no-interactive", "--trust-all-tools"];
+					if (useResume && plan.resumeId) args.push("--resume-id", plan.resumeId);
 					if (profile) args.push("--agent", profile.name, "--require-mcp-startup");
 					if (model.id !== "auto") args.push("--model", model.id);
 					const effort = mapEffort(options?.reasoning);
 					if (effort) args.push("--effort", effort);
-					args.push(buildPromptFromContext(context, bridge?.toolNames));
+					args.push(
+						useResume
+							? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridge?.toolNames)
+							: buildPromptFromContext(context, bridge?.toolNames),
+					);
 
 					// detached: own process group, so aborts can kill kiro's helper
 					// children too (a lone SIGTERM to the parent leaves grandchildren
@@ -302,6 +359,16 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						pushThinking("\n[bridge MCP failed to connect — retrying]\n");
 						continue;
 					}
+					// Resume fallback: a --resume-id spawn failed (stale/unusable
+					// session). Drop it and retry this turn with the full context, so a
+					// bad session never hard-fails the turn.
+					if (useResume && exitCode !== 0 && attempt + 1 < MAX_ATTEMPTS && !options?.signal?.aborted) {
+						if (plan.resumeId) dropSession(plan.resumeId);
+						useResume = false;
+						preSnapshot = await snapshotSessions(cwd, listSessions);
+						pushThinking("\n[kiro resume failed — retrying with full context]\n");
+						continue;
+					}
 					break;
 				}
 
@@ -334,6 +401,23 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				if (credits !== undefined) {
 					const usdPerCredit = Number.parseFloat(process.env.PI_KIRO_CREDIT_USD ?? "0");
 					output.usage.cost.total = Number.isFinite(usdPerCredit) ? credits * usdPerCredit : 0;
+				}
+
+				// Record/advance the kiro session BEFORE emitting `done`, so a sequential
+				// next turn sees it (else it would create a duplicate session). Advance
+				// (resume path) is sync; capture (fresh path) does one list-sessions —
+				// paid once per session, not per turn. Best-effort: never fail a good turn.
+				if (resumeEnabled()) {
+					try {
+						if (useResume && plan.resumeId) {
+							advanceSession(plan.resumeId, context.messages);
+						} else {
+							await recordFreshSession(cwd, context.messages, preSnapshot, listSessions);
+						}
+					} catch {
+						// session bookkeeping is opportunistic — a failure just means the
+						// next turn re-sends full context.
+					}
 				}
 
 				output.stopReason = "stop";
