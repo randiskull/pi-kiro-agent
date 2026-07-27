@@ -65,7 +65,14 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string
 	if (!readiness.ready) {
 		return `kiro provider NOT registered: ${readiness.detail}`;
 	}
-	if (!registered) {
+	// ALWAYS register when ready — never gate on the local `registered` flag.
+	// The host's registerProvider is an upsert (validate → apply → upsert), and
+	// the host DROPS dynamic providers on session resets (/new, /resume, fork,
+	// reload) while this module (and its flag) survive. Gating on the flag made
+	// ensureRegistered, /kiro, and the lazy self-heal all no-ops after /new,
+	// wedging the provider until a full process relaunch. The flag remains only
+	// as a status/throttle hint for maybeSelfHeal and /kiro's notify level.
+	{
 		const models = readiness.binaryPath
 			? await fetchKiroModels(readiness.binaryPath)
 			: FALLBACK_MODELS;
@@ -102,6 +109,14 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 	pi.on("before_provider_request", (_event, ctx) => {
 		latestCtx = ctx;
 		maybeSelfHeal(pi);
+	});
+	// Session starts/reloads (/new, /resume, fork, reload) drop dynamically
+	// registered providers in the host while this module survives — re-register
+	// in the background so kiro models stay selectable without a relaunch.
+	// registerProvider is an upsert, so the extra call on "startup" is harmless.
+	pi.on("session_start", () => {
+		registered = false;
+		void ensureRegistered(pi).catch(() => undefined);
 	});
 
 	deps.getBridge = async (signal) => {
