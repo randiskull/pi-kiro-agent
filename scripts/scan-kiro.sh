@@ -54,7 +54,7 @@ echo "scan:kiro: auditing with kiro/$MODEL (timeout ${TIMEOUT}s)…" >&2
 
 # Portable timeout: use `timeout` if present, else run directly.
 RUN="kiro-cli chat --no-interactive --trust-all-tools"
-[ "$MODEL" = "auto" ] || RUN="$RUN --model $MODEL"
+[ "$MODEL" = "auto" ] || RUN="$RUN --model \"$MODEL\""
 if command -v timeout >/dev/null 2>&1; then
 	RUN="timeout ${TIMEOUT} $RUN"
 fi

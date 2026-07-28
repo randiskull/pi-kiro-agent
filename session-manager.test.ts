@@ -27,6 +27,16 @@ describe("session-manager", () => {
 		delete process.env.PI_KIRO_RESUME;
 	});
 
+	it("resists content that embeds the field-separator pattern (collision test)", () => {
+		// Two distinct user messages:
+		const twoMessages = [user("x"), user("y")];
+		// A single message whose content mimics the concatenation of two message
+		// keys joined by a null-byte field separator. If the inter-message
+		// delimiter were also \0, these would hash identically.
+		const crafted = [user("x\0user\0\0y")];
+		expect(hashMessages(twoMessages)).not.toBe(hashMessages(crafted));
+	});
+
 	it("hashes deterministically and ignores volatile thinking blocks", () => {
 		const withThinkingA = {
 			role: "assistant",
