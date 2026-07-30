@@ -28,6 +28,12 @@ A full audit was completed against current upstream HEAD (`origin/main`):
   hasn't fixed" — but you can't safely go Anthropic-primary *until* this is fixed, so the trigger may
   never fire on its own. Treat the trigger as satisfied; the only open question is your go/no-go.
 
+## Batch note (2026-07-30)
+This draft is part of the **pi-kiro public-release batch** — file together with
+`gsd-doctor-externalcli-key-missing-false-positive.md` (doctor cosmetics), cross-referenced,
+once pi-kiro is public and the workflow-MCP retrial has passed. Shared framing: "we built a
+third-party externalCli provider against your API; here's what worked and the host gaps we hit."
+
 ## Filing trigger
 File when BOTH hold:
 1. You still want an Anthropic-primary phase layout with a kiro (or other) `fallbacks:`
