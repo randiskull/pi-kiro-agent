@@ -36,7 +36,10 @@ export function agentProfilesDir(): string {
  * (`*` + allowedTools `*`): delegated runs are headless, so any permission
  * prompt would hang the turn — same posture as --trust-all-tools.
  */
-export function writeAgentProfile(handle: HttpBridgeHandle): KiroAgentProfile {
+export function writeAgentProfile(
+	handle?: HttpBridgeHandle,
+	extraMcpServers?: Record<string, unknown>,
+): KiroAgentProfile {
 	const dir = agentProfilesDir();
 	mkdirSync(dir, { recursive: true });
 	profileCounter += 1;
@@ -47,9 +50,10 @@ export function writeAgentProfile(handle: HttpBridgeHandle): KiroAgentProfile {
 		// kiro silently fall back to the default agent (no bridge, no error).
 		name,
 		description:
-			"Throwaway pi-kiro delegation profile (auto-generated per turn; safe to delete). Exposes the calling Pi session's tools over a loopback MCP bridge.",
+			"Throwaway pi-kiro delegation profile (auto-generated per turn; safe to delete). Exposes the calling Pi session's tools over a loopback MCP bridge and/or the project's gsd-workflow MCP server.",
 		mcpServers: {
-			pi: { type: "http", url: handle.urlWithToken },
+			...(extraMcpServers ?? {}),
+			...(handle ? { pi: { type: "http", url: handle.urlWithToken } } : {}),
 		},
 		tools: ["*"],
 		allowedTools: ["*"],
