@@ -31,6 +31,7 @@ import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
 import { type KiroAgentProfile, writeAgentProfile } from "./kiro-bridge.js";
+import { discoverWorkflowMcpServers, synthesizeToolCallBlocks } from "./workflow-mcp.js";
 import {
 	advanceSession,
 	dropSession,
@@ -143,7 +144,7 @@ function serializeMessage(message: Message): string | undefined {
 }
 
 /** The fixed preamble + tool-context scaffolding shared by full and delta prompts. */
-function buildScaffolding(bridgedTools?: string[]): string[] {
+function buildScaffolding(bridgedTools?: string[], workflowMcp?: boolean): string[] {
 	const toolContextLines = [
 		"<tool_context>",
 		"The prior context below may reference tools from the calling session (read, grep, bash, Agent, todo, ask_user_question, subagent dispatch, skills, pipeline stages). Do not refuse or explain that you lack them: perform file/search/shell work yourself with your own tools.",
@@ -166,6 +167,11 @@ function buildScaffolding(bridgedTools?: string[]): string[] {
 			);
 		}
 	}
+	if (workflowMcp) {
+		toolContextLines.push(
+			"The gsd_* workflow tools (gsd_plan_slice, gsd_plan_task, gsd_exec, gsd_task_complete, gsd_slice_complete, gsd_uat_exec, and the rest) ARE available to you natively as MCP tools under their bare names. When the task requires them, CALL them — do not describe intended calls in prose, and do not hand-write artifacts those tools own.",
+		);
+	}
 	toolContextLines.push("</tool_context>");
 
 	return [
@@ -177,8 +183,8 @@ function buildScaffolding(bridgedTools?: string[]): string[] {
 }
 
 /** Full prompt: preamble + system prompt + the entire conversation history. */
-export function buildPromptFromContext(context: Context, bridgedTools?: string[]): string {
-	const parts = buildScaffolding(bridgedTools);
+export function buildPromptFromContext(context: Context, bridgedTools?: string[], workflowMcp?: boolean): string {
+	const parts = buildScaffolding(bridgedTools, workflowMcp);
 	if (context.systemPrompt && context.systemPrompt.trim().length > 0) {
 		parts.push(`<prior_system_context>\n${context.systemPrompt}\n</prior_system_context>`);
 	}
@@ -196,8 +202,8 @@ export function buildPromptFromContext(context: Context, bridgedTools?: string[]
  * they are kiro's own prior replies, already in-session — re-sending them would
  * echo the model's output back as user input.
  */
-export function buildDeltaPrompt(deltaMessages: Message[], bridgedTools?: string[]): string {
-	const parts = buildScaffolding(bridgedTools);
+export function buildDeltaPrompt(deltaMessages: Message[], bridgedTools?: string[], workflowMcp?: boolean): string {
+	const parts = buildScaffolding(bridgedTools, workflowMcp);
 	const blocks = deltaMessages
 		.filter((message) => message.role !== "assistant")
 		.map(serializeMessage)
@@ -255,7 +261,10 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				await options?.onPayload?.({ provider: "kiro", model: model.id }, model);
 
 				bridge = await deps.getBridge?.(options?.signal ?? new AbortController().signal);
-				if (bridge) profile = writeAgentProfile(bridge);
+				// GSD workflow-MCP transport: mount the project's gsd-workflow stdio
+				// server inside kiro so GSD units can actually call gsd_* tools.
+				const workflowServers = discoverWorkflowMcpServers(process.cwd());
+				if (bridge || workflowServers) profile = writeAgentProfile(bridge, workflowServers);
 
 				// Incremental context: resume the kiro session that mirrors this Pi
 				// conversation and send only the delta, instead of re-serializing the
@@ -295,8 +304,8 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					if (effort) args.push("--effort", effort);
 					args.push(
 						useResume
-							? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridge?.toolNames)
-							: buildPromptFromContext(context, bridge?.toolNames),
+							? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridge?.toolNames, !!workflowServers)
+							: buildPromptFromContext(context, bridge?.toolNames, !!workflowServers),
 					);
 
 					// detached: own process group, so aborts can kill kiro's helper
@@ -351,7 +360,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					// MCP-startup readiness gate: with --require-mcp-startup kiro
 					// exits 3 when the bridge didn't connect. Retry once.
 					if (
-						bridge &&
+						profile &&
 						exitCode === MCP_STARTUP_EXIT_CODE &&
 						attempt + 1 < MAX_ATTEMPTS &&
 						!options?.signal?.aborted
@@ -390,6 +399,11 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				}
 
 				const { final } = extractFinal(body);
+				// Surface MCP tool invocations that ran inside kiro as toolCall
+				// blocks (stopReason stays "stop": counted, not redispatched).
+				for (const block of synthesizeToolCallBlocks(body)) {
+					output.content.push(block);
+				}
 				output.content.push({ type: "text", text: "" });
 				const textIndex = output.content.length - 1;
 				stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
