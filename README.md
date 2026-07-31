@@ -43,6 +43,17 @@ Kiro v3 note: v3's agent config (env-expanded URLs, header auth) would allow one
 
 ## Security scanning
 
+**Known accepted findings (upstream-frozen):** `@earendil-works/pi-coding-agent` publishes an
+`npm-shrinkwrap.json`, freezing its dependency subtree — consumer `overrides`/`npm audit fix`
+cannot modify it. Two DoS-class advisories currently live there: `brace-expansion` 5.0.6
+(GHSA-3jxr-9vmj-r5cp / GHSA-mh99-v99m-4gvg, via minimatch — glob patterns here are
+developer-controlled) and `protobufjs` 7.6.4 (GHSA-j3f2-48v5-ccww, via @google/genai — unused
+by this provider). Both are unreachable in pi-kiro's usage; the fix owner is upstream via a
+republished shrinkwrap. Top-level instances are pinned safe via `overrides`
+(`brace-expansion@5.0.9`, `protobufjs@7.6.5`); `@modelcontextprotocol/sdk` is kept ≥1.30
+(clears the @hono/node-server path-traversal chain).
+
+
 Three layers, matching the posture upstream projects use:
 
 - **Deterministic bar (GitHub Actions, no API keys).** `ci.yml` runs typecheck, tests, and a secret scan on every push/PR; `security-audit.yml` runs `npm audit` plus a full-tree secret scan weekly, on dependency changes, and on demand (`workflow_dispatch`). The audit is advisory by default — set the repo variables `SECURITY_AUDIT_BLOCKING=true` and `NPM_AUDIT_SEVERITY` (default `high`) to make it gate merges.
