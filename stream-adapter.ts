@@ -31,7 +31,7 @@ import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
 import { type KiroAgentProfile, writeAgentProfile } from "./kiro-bridge.js";
-import { discoverWorkflowMcpServers, synthesizeToolCallBlocks } from "./workflow-mcp.js";
+import { discoverWorkflowMcpServers, parseKiroToolUses, synthesizeToolCallBlocks } from "./workflow-mcp.js";
 import {
 	advanceSession,
 	dropSession,
@@ -393,9 +393,23 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 
 				if (options?.signal?.aborted) throw new Error("kiro-cli run aborted");
 				const { body, credits } = cleanBody(raw);
+				// Salvage a nonzero exit when the run demonstrably completed real
+				// work: kiro-cli sometimes dies AFTER the final answer / after MCP
+				// tool calls have already landed server-side (observed on kiro-cli
+				// 2.15.2: exit 1 following a successful gsd_task_complete). Failing
+				// the whole turn would discard finished work and pause GSD auto-mode;
+				// instead, degrade to success and let the caller's own verification
+				// (artifact/DB checks) be the arbiter. A nonzero exit with NO final
+				// sentinel and NO tool activity is still a hard failure.
+				const salvageToolUses = exitCode !== 0 ? parseKiroToolUses(body) : [];
 				if (exitCode !== 0) {
-					const detail = body || stripAnsi(stderrText).trim() || `exit code ${exitCode}`;
-					throw new Error(`kiro-cli failed (exit ${exitCode}): ${detail.slice(0, 500)}`);
+					const hasFinal = body.includes(FINAL_OPEN);
+					if (!hasFinal && salvageToolUses.length === 0) {
+						const stderrClean = stripAnsi(stderrText).trim();
+						const detail = [body.slice(-400), stderrClean.slice(-200)].filter(Boolean).join(" ⏐ stderr: ") || `exit code ${exitCode}`;
+						throw new Error(`kiro-cli failed (exit ${exitCode}): ${detail.slice(0, 600)}`);
+					}
+					pushThinking(`\n[kiro-cli exited ${exitCode} after completing work (${salvageToolUses.length} tool call(s)${hasFinal ? ", final answer present" : ""}) — salvaging turn]\n`);
 				}
 
 				const { final } = extractFinal(body);

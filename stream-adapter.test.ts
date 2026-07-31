@@ -218,3 +218,43 @@ describe("makeStreamViaKiro", () => {
 		expect(args).toContain("claude-sonnet");
 	});
 });
+
+describe("nonzero-exit salvage (kiro-cli dies after completing work)", () => {
+	it("salvages exit 1 when MCP tool calls landed — done with toolCall blocks, no error", async () => {
+		const out = [
+			"working prose",
+			"Running tool gsd_task_complete with the param (from mcp server: gsdworkflow)",
+			' ⋮  { "taskId": "T05" }',
+			" - Completed in 0.72s",
+		].join("\n");
+		scriptSpawn(out, 1);
+		const events = await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
+		const done = events.find((e) => e.type === "done") as { message: { content: unknown[]; stopReason: string } } | undefined;
+		expect(done).toBeDefined();
+		expect(events.find((e) => e.type === "error")).toBeUndefined();
+		const toolCalls = (done?.message.content ?? []).filter((b) => (b as { type?: string }).type === "toolCall");
+		expect(toolCalls).toHaveLength(1);
+		expect((toolCalls[0] as { name: string }).name).toBe("gsd_task_complete");
+		expect(done?.message.stopReason).toBe("stop");
+	});
+
+	it("salvages exit 1 when a sentinel final answer is present", async () => {
+		scriptSpawn(`${FINAL_OPEN}DONE-ANYWAY${FINAL_CLOSE}`, 1);
+		const events = await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
+		const done = events.find((e) => e.type === "done") as { message: { content: Array<{ type: string; text?: string }> } } | undefined;
+		expect(done).toBeDefined();
+		expect(done?.message.content.find((b) => b.type === "text")?.text).toBe("DONE-ANYWAY");
+	});
+
+	it("still hard-fails exit 1 with no tool calls and no final — detail carries the output TAIL", async () => {
+		const longPreamble = "early prose that must NOT appear in the error detail ".repeat(20);
+		scriptSpawn(`${longPreamble}\nthe actual crash happened here at the very end`, 1);
+		const events = await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
+		const error = events.find((e) => e.type === "error") as { error?: { errorMessage?: string }; message?: { errorMessage?: string } } | undefined;
+		expect(error).toBeDefined();
+		const errorMessage = (error as { error?: { errorMessage?: string } })?.error?.errorMessage ?? "";
+		expect(errorMessage).toContain("kiro-cli failed (exit 1)");
+		// detail must carry the output TAIL (the crash point), not just the head
+		expect(errorMessage).toContain("crash happened here at the very end");
+	});
+});
