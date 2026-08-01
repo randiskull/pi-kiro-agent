@@ -22,6 +22,7 @@ hard bug in pi-kiro's history is a symptom of driving an interactive TUI as if i
 | headless SSO "Opening browser…" hangs mid-run | no auth channel in a text pipe | ACP has an auth-callback surface (kiro logs: `Wired ACP callback auth provider`) |
 | credits parsed from a `▸ Credits: N` footer line | no metadata channel | usage/metadata fields on protocol messages (verify in probe) |
 | error detail = sliced stdout | no structured errors | JSON-RPC error objects |
+| large shell heredocs hang the turn and corrupt content (killed the S03 design twice 2026-07-27; recurred 2026-07-31 during this spec's own probe campaign — template-literal backticks eaten in transit) | the entire delegated turn travels as ONE argv string through `chat --no-interactive`; huge embedded heredoc/script payloads break the TUI pipe | structured protocol messages carry arbitrary-size content without argv/TTY mangling |
 
 **Design principle carried over from v1:** all model traffic stays inside the user's own
 authenticated kiro-cli (seat-billed, no credential handling). ACP doesn't change the trust
