@@ -31,7 +31,7 @@ concurrency:
 env:
   # Repository variables (Settings → Secrets and variables → Actions → Variables).
   # Both optional — defaults keep the audit non-blocking and advisory.
-  SECURITY_AUDIT_BLOCKING: ${{ vars.SECURITY_AUDIT_BLOCKING }} # "true" to fail the job on findings
+  SECURITY_AUDIT_BLOCKING: ${{ vars.SECURITY_AUDIT_BLOCKING || 'true' }} # blocking by default; set repo var to "false" for advisory-only
   NPM_AUDIT_SEVERITY: ${{ vars.NPM_AUDIT_SEVERITY }} # info|low|moderate|high|critical (default: high)
 
 jobs:
@@ -62,14 +62,30 @@ jobs:
           const audit = JSON.parse(fs.readFileSync("dependency-audit.json", "utf8") || "{}");
           const counts = { info: 0, low: 0, moderate: 0, high: 0, critical: 0 };
 
-          if (audit.metadata?.vulnerabilities) {
-            for (const severity of severityOrder) {
-              counts[severity] = Number(audit.metadata.vulnerabilities[severity] || 0);
-            }
-          } else if (audit.vulnerabilities) {
+          // Allowlist: advisories accepted as unfixable-by-consumer (upstream
+          // shrinkwrap-frozen — see .audit-allowlist.json). Allowlisted findings
+          // are reported but never block; anything NEW blocks as configured.
+          let allow = [];
+          try { allow = JSON.parse(fs.readFileSync(".audit-allowlist.json", "utf8")).allow ?? []; } catch {}
+          const allowed = new Set(allow);
+          let allowlistedCount = 0;
+          const ghsaOf = (via) => (Array.isArray(via) ? via : [via])
+            .filter((v) => v && typeof v === "object")
+            .map((v) => (v.url || "").split("/").pop())
+            .filter(Boolean);
+
+          if (audit.vulnerabilities) {
             for (const vulnerability of Object.values(audit.vulnerabilities)) {
               const severity = vulnerability?.severity;
-              if (severity in counts) counts[severity] += 1;
+              if (!(severity in counts)) continue;
+              const ids = ghsaOf(vulnerability.via ?? []);
+              const isAllowed = ids.length > 0 && ids.every((id) => allowed.has(id));
+              if (isAllowed) { allowlistedCount += 1; continue; }
+              counts[severity] += 1;
+            }
+          } else if (audit.metadata?.vulnerabilities) {
+            for (const severity of severityOrder) {
+              counts[severity] = Number(audit.metadata.vulnerabilities[severity] || 0);
             }
           }
 
@@ -83,6 +99,7 @@ jobs:
             `Blocking: ${blocking}`,
             `Threshold: ${severityOrder[thresholdIndex]}`,
             `Findings at or above threshold: ${findingsAtThreshold}`,
+            `Allowlisted (upstream-frozen, non-blocking): ${allowlistedCount}`,
             "",
             "| Severity | Count |",
             "| --- | ---: |",
