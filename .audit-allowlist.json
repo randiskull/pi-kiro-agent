@@ -1,0 +1,8 @@
+{
+  "comment": "GHSA advisories accepted as unfixable-by-consumer: they live inside @earendil-works/pi-coding-agent's npm-shrinkwrap-frozen subtree (see README 'Security scanning'). Remove entries when upstream republishes with an updated shrinkwrap.",
+  "allow": [
+    "GHSA-3jxr-9vmj-r5cp",
+    "GHSA-mh99-v99m-4gvg",
+    "GHSA-j3f2-48v5-ccww"
+  ]
+}
