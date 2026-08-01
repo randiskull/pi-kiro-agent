@@ -258,3 +258,25 @@ describe("nonzero-exit salvage (kiro-cli dies after completing work)", () => {
 		expect(errorMessage).toContain("crash happened here at the very end");
 	});
 });
+
+describe("live tool-use streaming + end-of-turn reconciliation", () => {
+	it("final message has exactly ONE authoritative block per tool use (no live-placeholder dupes) with parsed args", async () => {
+		const out = [
+			"prose",
+			"Running tool gsd_exec with the param (from mcp server: gsdworkflow)",
+			' ⋮  { "cmd": "cargo test" }',
+			" - Completed in 2s",
+			`${FINAL_OPEN}done${FINAL_CLOSE}`,
+		].join("\n");
+		scriptSpawn(out, 0);
+		const events = await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
+		const done = events.find((e) => e.type === "done") as { message: { content: Array<{ type: string; id?: string; name?: string; arguments?: unknown }> } };
+		const toolCalls = done.message.content.filter((b) => b.type === "toolCall");
+		expect(toolCalls).toHaveLength(1);
+		expect(toolCalls[0]?.id).not.toContain("kiro-live-");
+		expect(toolCalls[0]?.arguments).toEqual({ cmd: "cargo test" });
+		// the live marker made it into the thinking feed
+		const thinking = done.message.content.find((b) => b.type === "thinking") as { thinking?: string } | undefined;
+		expect(thinking?.thinking).toContain("⚙ gsd_exec");
+	});
+});
