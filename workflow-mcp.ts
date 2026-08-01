@@ -152,6 +152,33 @@ export function parseKiroToolUses(body: string): KiroToolUse[] {
 	return uses;
 }
 
+
+/**
+ * Incremental tool-use detector for LIVE progress feedback: feed raw
+ * (ANSI-stripped) stdout chunks as they stream and get back tool-use starts
+ * the moment kiro prints them — so the host can surface "⚙ gsd_plan_slice"
+ * mid-turn instead of a bare spinner. Arguments are NOT parsed here (the ⋮
+ * param block may still be streaming); the end-of-turn
+ * `synthesizeToolCallBlocks` pass remains the authoritative reconciliation
+ * and replaces live placeholder blocks with fully-parsed ones.
+ */
+export function createToolUseStreamParser(): { feed(text: string): Array<Pick<KiroToolUse, "name" | "server">> } {
+	let pending = "";
+	return {
+		feed(text: string) {
+			pending += text;
+			const lines = pending.split("\n");
+			pending = lines.pop() ?? "";
+			const uses: Array<Pick<KiroToolUse, "name" | "server">> = [];
+			for (const line of lines) {
+				const match = line.match(TOOL_USE_LINE);
+				if (match) uses.push({ name: match[1] ?? "", server: match[2] ?? "" });
+			}
+			return uses;
+		},
+	};
+}
+
 /**
  * Map parsed tool uses onto pi ToolCall content blocks for the final
  * AssistantMessage. Emitted alongside stopReason "stop": the host counts and

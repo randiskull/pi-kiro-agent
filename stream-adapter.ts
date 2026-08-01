@@ -31,7 +31,7 @@ import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
 import { type KiroAgentProfile, writeAgentProfile } from "./kiro-bridge.js";
-import { discoverWorkflowMcpServers, parseKiroToolUses, synthesizeToolCallBlocks } from "./workflow-mcp.js";
+import { createToolUseStreamParser, discoverWorkflowMcpServers, parseKiroToolUses, synthesizeToolCallBlocks } from "./workflow-mcp.js";
 import {
 	advanceSession,
 	dropSession,
@@ -338,10 +338,30 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 
 					raw = "";
 					stderrText = "";
+					// LIVE progress: detect tool-use lines as they stream and surface
+					// them immediately — a placeholder toolCall block on the partial
+					// message (dashboards/ledgers see tool-by-tool activity mid-turn)
+					// plus a clean ⚙ marker in the thinking feed. Reconciled at end of
+					// turn by the authoritative synthesizeToolCallBlocks pass.
+					// Per-attempt: a retried attempt drops its predecessor's live blocks.
+					output.content = output.content.filter(
+						(block) => !(block.type === "toolCall" && String(block.id).startsWith("kiro-live-")),
+					);
+					const liveParser = createToolUseStreamParser();
+					let liveCount = 0;
 					child.stdout.on("data", (chunk: Buffer) => {
 						const text = chunk.toString("utf8");
 						raw += text;
 						pushThinking(stripAnsi(text));
+						for (const use of liveParser.feed(stripAnsi(text))) {
+							output.content.push({
+								type: "toolCall",
+								id: `kiro-live-${liveCount++}-${use.name}`,
+								name: use.name,
+								arguments: {},
+							});
+							pushThinking(`\n⚙ ${use.name}\n`);
+						}
 					});
 					child.stderr.on("data", (chunk: Buffer) => {
 						stderrText += chunk.toString("utf8");
@@ -413,6 +433,11 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				}
 
 				const { final } = extractFinal(body);
+				// Reconcile: replace live placeholder blocks with the authoritative
+				// end-of-turn parse (full arguments; stable ids; no duplicates).
+				output.content = output.content.filter(
+					(block) => !(block.type === "toolCall" && String(block.id).startsWith("kiro-live-")),
+				);
 				// Surface MCP tool invocations that ran inside kiro as toolCall
 				// blocks (stopReason stays "stop": counted, not redispatched).
 				for (const block of synthesizeToolCallBlocks(body)) {

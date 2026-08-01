@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeAgentProfile } from "./kiro-bridge.js";
 import {
 	WORKFLOW_MCP_SERVER_KEY,
+	createToolUseStreamParser,
 	discoverWorkflowMcpServers,
 	parseKiroToolUses,
 	synthesizeToolCallBlocks,
@@ -164,5 +165,23 @@ describe("writeAgentProfile with workflow servers", () => {
 		} finally {
 			profile.remove();
 		}
+	});
+});
+
+describe("createToolUseStreamParser (live progress)", () => {
+	it("detects tool-use lines fed in arbitrary chunk splits", () => {
+		const parser = createToolUseStreamParser();
+		expect(parser.feed("working prose\nRunning tool gsd_plan_sl")).toEqual([]);
+		expect(parser.feed("ice with the param (from mcp server: gsdworkflow)\n")).toEqual([
+			{ name: "gsd_plan_slice", server: "gsdworkflow" },
+		]);
+		expect(parser.feed("Running tool fs_read (from mcp server: pi)\nmore prose\n")).toEqual([
+			{ name: "fs_read", server: "pi" },
+		]);
+	});
+
+	it("ignores non-tool lines and incomplete trailing lines", () => {
+		const parser = createToolUseStreamParser();
+		expect(parser.feed("just text\npartial Running tool nope")).toEqual([]);
 	});
 });
