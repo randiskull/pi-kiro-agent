@@ -107,6 +107,30 @@ describe("output parsing", () => {
 		expect(prompt).toContain("<prior_system_context>\nYou are rpiv.\n</prior_system_context>");
 		expect(prompt).toContain("<user_message>\nhello\n</user_message>");
 	});
+
+	it("omits the sentinel instruction when opts.sentinel is false (ACP variant)", () => {
+		const promptAcp = buildPromptFromContext(
+			{ systemPrompt: "You are rpiv.", messages: [{ role: "user", content: "hello", timestamp: 0 }] },
+			undefined,
+			undefined,
+			{ sentinel: false },
+		);
+		// sentinel instruction line must be absent
+		expect(promptAcp).not.toContain(FINAL_OPEN);
+		expect(promptAcp).not.toContain(FINAL_CLOSE);
+		expect(promptAcp).not.toContain("Wrap ONLY your final answer");
+		// scaffolding and history must still be present
+		expect(promptAcp).toContain("You are the executor");
+		expect(promptAcp).toContain("<user_message>\nhello\n</user_message>");
+		expect(promptAcp).toContain("Do not emit <user_message>");
+
+		// default (chat) variant still includes the sentinel
+		const promptChat = buildPromptFromContext(
+			{ systemPrompt: "You are rpiv.", messages: [{ role: "user", content: "hello", timestamp: 0 }] },
+		);
+		expect(promptChat).toContain(FINAL_OPEN);
+		expect(promptChat).toContain("Wrap ONLY your final answer");
+	});
 });
 
 describe("makeStreamViaKiro", () => {
