@@ -23,6 +23,7 @@ import { captureBridgeTools, type HttpBridgeHandle, serveBridgeHttp } from "./br
 import { bridgeEnabled } from "./kiro-bridge.js";
 import { DEFAULT_SUBAGENT_MODEL, FALLBACK_MODELS, fetchKiroModels, KIRO_PROVIDER } from "./models.js";
 import { checkKiroReadiness, clearKiroReadinessCache } from "./readiness.js";
+import { makeStreamViaAcp } from "./acp-transport.js";
 import { makeStreamViaKiro } from "./stream-adapter.js";
 import { wireSubagents } from "./subagent-wiring.js";
 
@@ -84,6 +85,10 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string
 		// seat-billed local CLI as a metered API and skips the external-CLI
 		// transport. Upstream pi's ProviderConfig type predates the field, so
 		// widen it here; hosts that don't read authMode ignore it.
+		//
+		// PI_KIRO_TRANSPORT=acp: use the persistent ACP transport instead of the
+		// per-turn chat transport. See acp-transport.ts and docs/design/acp-transport.md.
+		const useAcp = process.env.PI_KIRO_TRANSPORT === "acp";
 		const config: ProviderConfig & { authMode: "externalCli" } = {
 			name: "Kiro CLI (local runtime)",
 			authMode: "externalCli",
@@ -94,7 +99,7 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string
 			apiKey: "kiro-local",
 			api: "anthropic-messages",
 			models,
-			streamSimple: makeStreamViaKiro(deps),
+			streamSimple: useAcp ? makeStreamViaAcp(deps) : makeStreamViaKiro(deps),
 		};
 		pi.registerProvider(KIRO_PROVIDER, config);
 		registered = true;
