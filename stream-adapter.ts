@@ -50,6 +50,9 @@ const MAX_ATTEMPTS = 3;
 
 export const FINAL_OPEN = "<pi_final>";
 export const FINAL_CLOSE = "</pi_final>";
+// TODO(acp-dod): delete FINAL_OPEN, FINAL_CLOSE, extractFinal, and the sentinel instruction
+// in buildScaffolding after the ACP field gate passes (PI_KIRO_TRANSPORT=acp, zero salvages,
+// zero synthesized tool calls). See .rpiv/artifacts/designs/2026-07-31_17-59-51_acp-transport.md §7.
 
 /** Map Pi thinking levels onto kiro-cli --effort values. */
 export function mapEffort(level: ThinkingLevel | undefined): string | undefined {
@@ -143,8 +146,23 @@ function serializeMessage(message: Message): string | undefined {
 	return undefined;
 }
 
+export interface PromptBuildOpts {
+	/**
+	 * Whether to include the sentinel instruction line (`Wrap ONLY your final answer
+	 * between <pi_final>…</pi_final>`).
+	 *
+	 * - `true` (default): included. Used by the chat transport, which relies on
+	 *   sentinel extraction to separate working notes from the final answer.
+	 * - `false`: omitted. Used by the ACP transport, which receives structured
+	 *   protocol events instead of parsing raw text; the sentinel is never needed and
+	 *   must not appear (spec §3.4).
+	 */
+	sentinel?: boolean;
+}
+
 /** The fixed preamble + tool-context scaffolding shared by full and delta prompts. */
-function buildScaffolding(bridgedTools?: string[], workflowMcp?: boolean): string[] {
+function buildScaffolding(bridgedTools?: string[], workflowMcp?: boolean, opts?: PromptBuildOpts): string[] {
+	const includeSentinel = opts?.sentinel !== false; // default true
 	const toolContextLines = [
 		"<tool_context>",
 		"The prior context below may reference tools from the calling session (read, grep, bash, Agent, todo, ask_user_question, subagent dispatch, skills, pipeline stages). Do not refuse or explain that you lack them: perform file/search/shell work yourself with your own tools.",
@@ -174,17 +192,22 @@ function buildScaffolding(bridgedTools?: string[], workflowMcp?: boolean): strin
 	}
 	toolContextLines.push("</tool_context>");
 
-	return [
+	const lines = [
 		"You are the executor for a task delegated from another agent session. Complete the task in the final user message directly, using your own tools.",
 		toolContextLines.join("\n"),
-		`Wrap ONLY your final answer between ${FINAL_OPEN} and ${FINAL_CLOSE} tags — everything outside the tags is treated as working notes.`,
-		"Do not emit <user_message>, <assistant_message>, <tool_result> or <prior_system_context> tags in your reply.",
 	];
+	if (includeSentinel) {
+		lines.push(
+			`Wrap ONLY your final answer between ${FINAL_OPEN} and ${FINAL_CLOSE} tags — everything outside the tags is treated as working notes.`,
+		);
+	}
+	lines.push("Do not emit <user_message>, <assistant_message>, <tool_result> or <prior_system_context> tags in your reply.");
+	return lines;
 }
 
 /** Full prompt: preamble + system prompt + the entire conversation history. */
-export function buildPromptFromContext(context: Context, bridgedTools?: string[], workflowMcp?: boolean): string {
-	const parts = buildScaffolding(bridgedTools, workflowMcp);
+export function buildPromptFromContext(context: Context, bridgedTools?: string[], workflowMcp?: boolean, opts?: PromptBuildOpts): string {
+	const parts = buildScaffolding(bridgedTools, workflowMcp, opts);
 	if (context.systemPrompt && context.systemPrompt.trim().length > 0) {
 		parts.push(`<prior_system_context>\n${context.systemPrompt}\n</prior_system_context>`);
 	}
@@ -202,8 +225,8 @@ export function buildPromptFromContext(context: Context, bridgedTools?: string[]
  * they are kiro's own prior replies, already in-session — re-sending them would
  * echo the model's output back as user input.
  */
-export function buildDeltaPrompt(deltaMessages: Message[], bridgedTools?: string[], workflowMcp?: boolean): string {
-	const parts = buildScaffolding(bridgedTools, workflowMcp);
+export function buildDeltaPrompt(deltaMessages: Message[], bridgedTools?: string[], workflowMcp?: boolean, opts?: PromptBuildOpts): string {
+	const parts = buildScaffolding(bridgedTools, workflowMcp, opts);
 	const blocks = deltaMessages
 		.filter((message) => message.role !== "assistant")
 		.map(serializeMessage)
@@ -277,6 +300,10 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				let useResume = plan.mode === "resume";
 				// Snapshot existing sessions before a fresh spawn so we can identify the
 				// one kiro creates (exactly-one-new-in-cwd; ambiguity ⇒ fallback).
+				// TODO(acp-dod): delete snapshotSessions, makeListSessions, preSnapshot, and
+				// recordFreshSession (lines below) after ACP field gate — ACP gives sessionId
+				// directly from session/new; snapshot-diff capture is unnecessary.
+				// See .rpiv/artifacts/designs/2026-07-31_17-59-51_acp-transport.md §7.
 				let preSnapshot = useResume ? new Set<string>() : await snapshotSessions(cwd, listSessions);
 
 				let raw = "";
@@ -421,6 +448,9 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				// instead, degrade to success and let the caller's own verification
 				// (artifact/DB checks) be the arbiter. A nonzero exit with NO final
 				// sentinel and NO tool activity is still a hard failure.
+				// TODO(acp-dod): delete salvage heuristic (salvageToolUses, hasFinal, pushThinking salvage)
+				// after ACP field gate — under ACP, turn completion = protocol event; exit salvage unnecessary.
+				// See .rpiv/artifacts/designs/2026-07-31_17-59-51_acp-transport.md §7.
 				const salvageToolUses = exitCode !== 0 ? parseKiroToolUses(body) : [];
 				if (exitCode !== 0) {
 					const hasFinal = body.includes(FINAL_OPEN);
