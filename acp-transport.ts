@@ -69,8 +69,31 @@ interface AcpDeps {
 
 /** ACP protocol version — pinned to guard against kiro-cli drift (§5 row 1). */
 const ACP_PROTOCOL_VERSION = 1;
-/** Idle-timeout before killing the persistent acp child (10 min per §3.1). */
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+/** Parse a positive-integer millisecond override from the environment. */
+function envMs(name: string, fallback: number): number {
+	const raw = Number.parseInt(process.env[name] ?? "", 10);
+	return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+/**
+ * Idle-timeout before killing the persistent acp child (10 min per §3.1).
+ * "Idle" means the child has been SILENT for this long — any inbound NDJSON
+ * traffic (streaming updates, tool events, responses) resets the clock. A
+ * turn that runs longer than this but keeps streaming is not idle.
+ * Override: PI_KIRO_IDLE_TIMEOUT_MS.
+ */
+function idleTimeoutMs(): number {
+	return envMs("PI_KIRO_IDLE_TIMEOUT_MS", 10 * 60 * 1000);
+}
+/**
+ * Hard ceiling for a single pending turn. While a request is in flight the
+ * child may be legitimately silent for long stretches (a tool call running a
+ * cold cargo build emits nothing), so silence alone must not kill it — but a
+ * turn pending past this ceiling is treated as wedged and the child is killed.
+ * Override: PI_KIRO_TURN_TIMEOUT_MS.
+ */
+function turnTimeoutMs(): number {
+	return envMs("PI_KIRO_TURN_TIMEOUT_MS", 45 * 60 * 1000);
+}
 /** Startup timeout: wait up to 30s for all MCP servers to initialize after session/new. */
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
 
@@ -125,6 +148,8 @@ interface AcpChild {
 	alive: boolean;
 	ready: boolean;
 	idleTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Epoch ms when pending went 0 → 1; undefined while nothing is in flight. */
+	oldestPendingSince: number | undefined;
 	nextId: number;
 }
 
@@ -164,8 +189,21 @@ function killChild(entry: AcpChild, reason: string): void {
 function resetIdleTimer(entry: AcpChild): void {
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
 	entry.idleTimer = setTimeout(() => {
-		if (entry.alive) killChild(entry, "idle timeout");
-	}, IDLE_TIMEOUT_MS);
+		if (!entry.alive) return;
+		if (entry.pending.size > 0) {
+			// A request is in flight: silence may just be a long-running tool
+			// (e.g. a cargo build streaming nothing). Extend in idle-window
+			// increments until the hard turn ceiling, then treat as wedged.
+			const pendingForMs = Date.now() - (entry.oldestPendingSince ?? Date.now());
+			if (pendingForMs < turnTimeoutMs()) {
+				resetIdleTimer(entry);
+				return;
+			}
+			killChild(entry, `turn timeout (pending ${Math.round(pendingForMs / 1000)}s, silent ${Math.round(idleTimeoutMs() / 1000)}s)`);
+			return;
+		}
+		killChild(entry, "idle timeout");
+	}, idleTimeoutMs());
 	entry.idleTimer.unref?.();
 }
 
@@ -177,6 +215,7 @@ function sendRaw(entry: AcpChild, msg: object): void {
 function request(entry: AcpChild, method: string, params: object): Promise<AcpMessage> {
 	return new Promise((resolve) => {
 		const id = entry.nextId++;
+		if (entry.pending.size === 0) entry.oldestPendingSince = Date.now();
 		entry.pending.set(id, resolve);
 		sendRaw(entry, { jsonrpc: "2.0", id, method, params });
 	});
@@ -193,9 +232,14 @@ function onNotification(
 }
 
 function dispatchMessage(entry: AcpChild, msg: AcpMessage): void {
+	// Any inbound traffic proves the child is alive — reset the idle clock.
+	// This is what makes "idle" mean silence rather than turn duration: a
+	// multi-minute working turn streams session/update chunks continuously.
+	if (entry.alive && entry.idleTimer) resetIdleTimer(entry);
 	if (msg.id !== undefined && entry.pending.has(msg.id)) {
 		const resolve = entry.pending.get(msg.id)!;
 		entry.pending.delete(msg.id);
+		if (entry.pending.size === 0) entry.oldestPendingSince = undefined;
 		resolve(msg);
 		return;
 	}
@@ -329,6 +373,7 @@ async function spawnAcpChild(
 		alive: true,
 		ready: false,
 		idleTimer: undefined,
+		oldestPendingSince: undefined,
 		nextId: 1,
 	};
 
