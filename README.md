@@ -39,6 +39,7 @@ Kiro v3 note: v3's agent config (env-expanded URLs, header auth) would allow one
 | `PI_KIRO_CREDIT_USD` | `0` | USD per Kiro credit, for cost tracking in Pi |
 | `PI_KIRO_BRIDGE` | `on` | Set `off` to disable the MCP tool bridge |
 | `PI_KIRO_BRIDGE_TOOLS` | built-in allowlist | Comma-separated override of bridged tools |
+| `PI_KIRO_WORKFLOW_MCP` | `on` | Set `off` to disable auto-mounting the GSD workflow-MCP server in delegated turns |
 | `PI_KIRO_RESUME` | (enabled) | Set `off` to disable incremental context / session resume (forces full-context re-send every turn) |
 
 ## Security scanning
