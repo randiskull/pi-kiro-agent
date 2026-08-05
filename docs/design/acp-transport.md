@@ -47,7 +47,12 @@ stdio. Per the ACP spec, the client (us) drives:
 
 ### 3.1 Process & session model
 - **One `kiro-cli acp` child per (cwd, agent-profile) pair**, lazily started, kept alive
-  across turns; supervised with idle-timeout shutdown (e.g. 10 min) and crash-restart.
+  across turns; supervised with idle-timeout shutdown and crash-restart. "Idle" means
+  *silence*: any inbound NDJSON traffic resets the clock (default 10 min,
+  `PI_KIRO_IDLE_TIMEOUT_MS`). While a request is pending, silence alone never kills the
+  child — a mute long-running tool (cold cargo build) is legitimate — but a turn pending
+  past the hard ceiling (default 45 min, `PI_KIRO_TURN_TIMEOUT_MS`) is treated as wedged
+  and reaped. A turn that merely *runs long* while streaming is never killed.
 - **One ACP session per pi conversation.** Keyed by the same prefix-hash identity the
   session-manager uses today — but the ledger shrinks to `{acpSessionId, sentMessageCount,
   sentPrefixHash}` with no `--list-sessions` snapshot-diffing (the id comes back from
@@ -116,7 +121,8 @@ if not → keep `PI_KIRO_CREDIT_USD` with credits unavailable (0), and note it i
 |---|---|
 | ACP schema drift between kiro-cli releases (2.13→2.15 in three weeks here) | pin protocol version at `initialize`; probe fixtures re-run in CI (`PI_KIRO_LIVE=1`) |
 | `--agent-engine` variance (v2 default vs v3) | pin engine explicitly; v3 note in kiro-bridge.ts already flags config differences |
-| Long-lived child leaks/hangs (the TUI's `tui.js chat` heritage) | idle-timeout reaper + crash-restart supervision; hard cap one child per cwd |
+| Long-lived child leaks/hangs (the TUI's `tui.js chat` heritage) | silence-based idle reaper (traffic resets) + pending-aware turn ceiling + crash-restart supervision; hard cap one child per cwd |
+| Idle reaper kills a busy child mid-turn (observed 2026-08-04: 10-min turn limit killed an M030 refactor turn; gsd's single retry died identically) | idle clock resets on every inbound message; pending turns extend to `PI_KIRO_TURN_TIMEOUT_MS` before being treated as wedged |
 | Headless permission requests beyond tool-use (e.g. trust prompts) | auto-respond in the client; P1 probe enumerates request types |
 | Session count growth server-side | reuse aggressively; `session/cancel`+drop on divergence |
 | Concurrent turns (GSD parallel units, same cwd) | one ACP session per pi conversation already isolates; child multiplexes sessions — verify in P3, else per-conversation children |

@@ -877,6 +877,116 @@ describe("makeStreamViaAcp", () => {
 		});
 	});
 
+	describe("idle/turn timeout robustness (long-running turns must not be killed as idle)", () => {
+		const savedEnv: Record<string, string | undefined> = {};
+		beforeEach(() => {
+			savedEnv.idle = process.env.PI_KIRO_IDLE_TIMEOUT_MS;
+			savedEnv.turn = process.env.PI_KIRO_TURN_TIMEOUT_MS;
+			return () => {
+				if (savedEnv.idle === undefined) delete process.env.PI_KIRO_IDLE_TIMEOUT_MS;
+				else process.env.PI_KIRO_IDLE_TIMEOUT_MS = savedEnv.idle;
+				if (savedEnv.turn === undefined) delete process.env.PI_KIRO_TURN_TIMEOUT_MS;
+				else process.env.PI_KIRO_TURN_TIMEOUT_MS = savedEnv.turn;
+			};
+		});
+
+		const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+		/** Handshake driver shared by the timeout tests. Returns the prompt request id. */
+		async function handshake(child: AcpScriptChild, sessionId: string): Promise<number> {
+			const initReq = (await child.awaitLine()) as { id: number };
+			child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: {
+				protocolVersion: 1,
+				agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} },
+				authMethods: [],
+				agentInfo: { name: "Kiro CLI Agent", version: "test" },
+			}});
+			const sessionReq = (await child.awaitLine()) as { id: number };
+			child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+			child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
+			const promptReq = (await child.awaitLine()) as { id: number };
+			return promptReq.id;
+		}
+
+		it("turn_streaming_past_the_idle_window_survives_because_traffic_resets_the_clock", async () => {
+			// Idle window far shorter than the turn; streaming chunks arrive
+			// throughout. Old behavior killed the child mid-turn; traffic-based
+			// reset must keep it alive to completion.
+			process.env.PI_KIRO_IDLE_TIMEOUT_MS = "120";
+			process.env.PI_KIRO_TURN_TIMEOUT_MS = "60000";
+
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			void (async () => {
+				const promptId = await handshake(child, "sess-idle-1");
+				// Work for ~4 idle windows, streaming a chunk each half-window.
+				for (let i = 0; i < 8; i++) {
+					await sleep(60);
+					child.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-idle-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `chunk${i} ` }}}});
+				}
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId: "sess-idle-1", contextUsagePercentage: 1.5, meteringUsage: [{ value: 0.01, unit: "credit" }], turnDurationMs: 480 }});
+				child.sendLine({ jsonrpc: "2.0", id: promptId, result: { stopReason: "end_turn" }});
+				child.end();
+			})();
+
+			const events = await collect({ messages: [user("long streaming turn")] });
+			const done = events.find((e) => e.type === "done");
+			expect(done).toBeDefined();
+			const err = events.find((e) => e.type === "error");
+			expect(err).toBeUndefined();
+		});
+
+		it("silent_pending_turn_survives_idle_windows_but_is_killed_at_the_turn_ceiling", async () => {
+			// Nothing streams after the prompt is sent. The idle window alone
+			// must not kill a pending turn; the (short) turn ceiling must.
+			process.env.PI_KIRO_IDLE_TIMEOUT_MS = "60";
+			process.env.PI_KIRO_TURN_TIMEOUT_MS = "250";
+
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			void (async () => {
+				await handshake(child, "sess-silent-1");
+				// Say nothing: the transport must decide when to give up.
+			})();
+
+			const start = Date.now();
+			const events = await collect({ messages: [user("silent turn")] });
+			const elapsed = Date.now() - start;
+			const err = events.find((e) => e.type === "error");
+			expect(err).toBeDefined();
+			if (err?.type === "error") {
+				expect(err.error.errorMessage).toMatch(/turn timeout/);
+			}
+			// Died at the ceiling (~250ms), not the first idle window (~60ms).
+			expect(elapsed).toBeGreaterThanOrEqual(200);
+		});
+
+		it("idle_child_with_no_pending_request_is_still_killed_after_the_idle_window", async () => {
+			// Complete a turn, then let the child sit idle past the window; the
+			// next turn must respawn (proving the idle kill still works).
+			process.env.PI_KIRO_IDLE_TIMEOUT_MS = "80";
+			process.env.PI_KIRO_TURN_TIMEOUT_MS = "60000";
+
+			const events1 = await driveConversation({ messages: [user("turn 1")] }, { sessionId: "sess-idle-kill" });
+			expect(events1.find((e) => e.type === "done")).toBeDefined();
+
+			await sleep(220); // > idle window with nothing pending
+
+			const child2 = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child2);
+			void (async () => {
+				const promptId = await handshake(child2, "sess-idle-kill-2");
+				child2.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-idle-kill-2", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "fresh" }}}});
+				child2.sendLine({ jsonrpc: "2.0", id: promptId, result: { stopReason: "end_turn" }});
+				child2.end();
+			})();
+			const events2 = await collect({ messages: [user("turn 2")] });
+			expect(events2.find((e) => e.type === "done")).toBeDefined();
+			// The idle kill forced a respawn: two children total.
+			expect(spawnMock).toHaveBeenCalledTimes(2);
+		});
+	});
+
 	describe("ACP-specific: DoD assertions", () => {
 		it("does not import or use FINAL_OPEN/FINAL_CLOSE sentinel constants", async () => {
 			// Static: check the import graph
