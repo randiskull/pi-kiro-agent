@@ -23,6 +23,7 @@ import { captureBridgeTools, type HttpBridgeHandle, serveBridgeHttp } from "./br
 import { bridgeEnabled } from "./kiro-bridge.js";
 import { DEFAULT_SUBAGENT_MODEL, FALLBACK_MODELS, fetchKiroModels, KIRO_PROVIDER } from "./models.js";
 import { checkKiroReadiness, clearKiroReadinessCache } from "./readiness.js";
+import { reapOrphanedKiroChildren } from "./orphan-reaper.js";
 import { makeStreamViaAcp } from "./acp-transport.js";
 import { makeStreamViaKiro } from "./stream-adapter.js";
 import { wireSubagents } from "./subagent-wiring.js";
@@ -108,6 +109,16 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string
 }
 
 export default async function piKiro(pi: ExtensionAPI): Promise<void> {
+	// Kill kiro-cli delegations orphaned by a parent that died uncleanly — the
+	// process "exit" tether cannot run on SIGKILL/crash, so each activation
+	// sweeps the process table (see orphan-reaper.ts). Best-effort: a reaper
+	// failure must never break activation.
+	try {
+		reapOrphanedKiroChildren();
+	} catch {
+		// ignore — worst case the orphans survive until the next activation
+	}
+
 	pi.on("context", (_event, ctx) => {
 		latestCtx = ctx;
 	});

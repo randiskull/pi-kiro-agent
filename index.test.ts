@@ -36,6 +36,12 @@ vi.mock("./kiro-bridge.js", () => ({ bridgeEnabled: () => false }));
 vi.mock("./subagent-wiring.js", () => ({
 	wireSubagents: vi.fn(() => ({ changed: [], skipped: [] })),
 }));
+// Mocked so activation tests never scan (or reap on) the real process table.
+vi.mock("./orphan-reaper.js", () => ({
+	reapOrphanedKiroChildren: vi.fn(() => ({ scanned: 0, reaped: 0 })),
+	registerChildForCleanup: vi.fn(),
+	unregisterChildForCleanup: vi.fn(),
+}));
 
 type Handler = (event: unknown, ctx?: unknown) => void;
 
@@ -84,6 +90,21 @@ describe("provider registration lifecycle", () => {
 		await piKiro(fake.pi);
 		expect(fake.registerProvider).toHaveBeenCalledTimes(1);
 		expect(fake.registerProvider).toHaveBeenCalledWith("kiro", expect.objectContaining({ authMode: "externalCli" }));
+	});
+
+	it("runs the orphan reaper at activation, and a reaper failure never breaks activation", async () => {
+		// Load first: loadExtension resets modules, so the mock instance must be
+		// grabbed from the same registry generation index.js imports from.
+		const piKiro = await loadExtension();
+		const { reapOrphanedKiroChildren } = await import("./orphan-reaper.js");
+		const reapMock = vi.mocked(reapOrphanedKiroChildren);
+		reapMock.mockImplementationOnce(() => {
+			throw new Error("ps exploded");
+		});
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		expect(reapMock).toHaveBeenCalledTimes(1);
+		expect(fake.registerProvider).toHaveBeenCalledTimes(1);
 	});
 
 	it("re-registers on session_start — the /new regression", async () => {
