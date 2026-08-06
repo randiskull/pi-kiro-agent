@@ -283,6 +283,49 @@ describe("nonzero-exit salvage (kiro-cli dies after completing work)", () => {
 	});
 });
 
+describe("chat-turn hard ceiling (PI_KIRO_CHAT_TIMEOUT_MS)", () => {
+	beforeEach(() => {
+		spawnMock.mockReset();
+	});
+
+	it("kills a wedged child and fails the turn naming the env knob", async () => {
+		process.env.PI_KIRO_CHAT_TIMEOUT_MS = "30";
+		const child = new FakeChild();
+		// The ceiling fires killTree → group SIGTERM; the fake dies on it.
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+			child.emit("exit", 130);
+			return true;
+		});
+		// The child streams nothing and never exits on its own.
+		spawnMock.mockImplementation(() => child);
+		const events = await collect({ messages: [] });
+		delete process.env.PI_KIRO_CHAT_TIMEOUT_MS;
+		expect(killSpy).toHaveBeenCalledWith(-4242, "SIGTERM");
+		killSpy.mockRestore();
+		const error = events.find((event) => event.type === "error");
+		if (error?.type !== "error") throw new Error("expected error");
+		expect(error.error.stopReason).toBe("error");
+		expect(error.error.errorMessage).toContain("PI_KIRO_CHAT_TIMEOUT_MS");
+		expect(error.error.errorMessage).toContain("30 ms");
+		// A timed-out turn is terminal: no MCP-retry or resume-fallback respawn.
+		expect(spawnMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not fire when the turn completes first", async () => {
+		process.env.PI_KIRO_CHAT_TIMEOUT_MS = "60000";
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+		scriptSpawn(`> ${FINAL_OPEN}FAST${FINAL_CLOSE}\n ▸ Credits: 0.01 • Time: 1s`);
+		const events = await collect({ messages: [] });
+		delete process.env.PI_KIRO_CHAT_TIMEOUT_MS;
+		expect(killSpy).not.toHaveBeenCalled();
+		killSpy.mockRestore();
+		const done = events.find((event) => event.type === "done");
+		if (done?.type !== "done") throw new Error("expected done");
+		const text = done.message.content.find((block) => block.type === "text");
+		expect(text && "text" in text ? text.text : "").toBe("FAST");
+	});
+});
+
 describe("live tool-use streaming + end-of-turn reconciliation", () => {
 	it("final message has exactly ONE authoritative block per tool use (no live-placeholder dupes) with parsed args", async () => {
 		const out = [

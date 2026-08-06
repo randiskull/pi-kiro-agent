@@ -31,6 +31,7 @@ import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
 import { type KiroAgentProfile, writeAgentProfile } from "./kiro-bridge.js";
+import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import { createToolUseStreamParser, discoverWorkflowMcpServers, parseKiroToolUses, synthesizeToolCallBlocks } from "./workflow-mcp.js";
 import {
 	advanceSession,
@@ -47,6 +48,22 @@ import {
 const MCP_STARTUP_EXIT_CODE = 3;
 // Up to 3: one turn plus room for an MCP-startup retry and a resume→full fallback.
 const MAX_ATTEMPTS = 3;
+
+/** Parse a positive-integer millisecond override from the environment. */
+function envMs(name: string, fallback: number): number {
+	const raw = Number.parseInt(process.env[name] ?? "", 10);
+	return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+/**
+ * Hard ceiling for one chat-transport turn (default 45 min). Unlike the ACP
+ * transport there is no protocol heartbeat to distinguish "working" from
+ * "wedged", so a stuck kiro-cli child would otherwise live as long as its
+ * parent does — the ceiling bounds it. Mirrors the ACP transport's
+ * PI_KIRO_TURN_TIMEOUT_MS. Override: PI_KIRO_CHAT_TIMEOUT_MS.
+ */
+function chatTimeoutMs(): number {
+	return envMs("PI_KIRO_CHAT_TIMEOUT_MS", 45 * 60 * 1000);
+}
 
 export const FINAL_OPEN = "<pi_final>";
 export const FINAL_CLOSE = "</pi_final>";
@@ -309,6 +326,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				let raw = "";
 				let stderrText = "";
 				let exitCode = -1;
+				let turnTimedOut = false;
 				let thinkingIndex = -1;
 				const pushThinking = (delta: string) => {
 					if (delta.length === 0) return;
@@ -345,6 +363,9 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						stdio: ["ignore", "pipe", "pipe"],
 						detached,
 					});
+					// Detached children outlive an uncleanly-dying parent — tether them
+					// to the parent's exit hook (see orphan-reaper.ts).
+					registerChildForCleanup(child, detached);
 
 					const killTree = (signal: NodeJS.Signals) => {
 						try {
@@ -362,6 +383,17 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						killTimer.unref?.();
 					};
 					options?.signal?.addEventListener("abort", onAbort, { once: true });
+					// Hard turn ceiling: a wedged child even with a live, patient parent
+					// must not run forever. Env read at spawn time; unref'd so the timer
+					// never keeps the host alive.
+					const ceilingMs = chatTimeoutMs();
+					const ceilingTimer = setTimeout(() => {
+						turnTimedOut = true;
+						killTree("SIGTERM");
+						killTimer = setTimeout(() => killTree("SIGKILL"), 1_500);
+						killTimer.unref?.();
+					}, ceilingMs);
+					ceilingTimer.unref?.();
 
 					raw = "";
 					stderrText = "";
@@ -402,8 +434,13 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						child.on("exit", (code) => resolve(code ?? -1));
 					});
 					options?.signal?.removeEventListener("abort", onAbort);
+					clearTimeout(ceilingTimer);
 					if (killTimer) clearTimeout(killTimer);
+					unregisterChildForCleanup(child);
 
+					// A ceiling kill is terminal for this turn: never retried (a fresh
+					// attempt would just burn another 45 min) and never exit-salvaged.
+					if (turnTimedOut) break;
 					// MCP-startup readiness gate: with --require-mcp-startup kiro
 					// exits 3 when the bridge didn't connect. Retry once.
 					if (
@@ -439,6 +476,11 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				}
 
 				if (options?.signal?.aborted) throw new Error("kiro-cli run aborted");
+				if (turnTimedOut) {
+					throw new Error(
+						`kiro-cli chat turn exceeded PI_KIRO_CHAT_TIMEOUT_MS (${chatTimeoutMs()} ms) — child killed. Raise PI_KIRO_CHAT_TIMEOUT_MS for longer turns.`,
+					);
+				}
 				const { body, credits } = cleanBody(raw);
 				// Salvage a nonzero exit when the run demonstrably completed real
 				// work: kiro-cli sometimes dies AFTER the final answer / after MCP
