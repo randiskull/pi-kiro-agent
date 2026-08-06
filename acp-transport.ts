@@ -50,6 +50,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
+import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import { buildDeltaPrompt, buildPromptFromContext, mapEffort } from "./stream-adapter.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp.js";
 import {
@@ -180,6 +181,7 @@ function killChild(entry: AcpChild, reason: string): void {
 		if (pid && process.platform !== "win32") process.kill(-pid, "SIGTERM");
 		else entry.child.kill("SIGTERM");
 	} catch { /* already gone */ }
+	unregisterChildForCleanup(entry.child);
 	for (const [, resolve] of entry.pending) {
 		resolve({ jsonrpc: "2.0", error: { code: -1, message: `acp child terminated: ${reason}` } });
 	}
@@ -361,6 +363,9 @@ async function spawnAcpChild(
 		stdio: ["pipe", "pipe", "pipe"],
 		detached,
 	});
+	// Detached children outlive an uncleanly-dying parent — tether them to the
+	// parent's exit hook (see orphan-reaper.ts).
+	registerChildForCleanup(child, detached);
 
 	const entry: AcpChild = {
 		child,
@@ -387,6 +392,7 @@ async function spawnAcpChild(
 	});
 	child.stderr?.on("data", () => { /* consumed */ });
 	child.on("exit", () => {
+		unregisterChildForCleanup(child);
 		entry.alive = false;
 		entry.ready = false;
 		if (entry.idleTimer) clearTimeout(entry.idleTimer);
