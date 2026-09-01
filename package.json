@@ -1,6 +1,6 @@
 {
 	"name": "pi-kiro",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Kiro CLI backend for the Pi coding agent: a `kiro` provider that delegates turns to your local authenticated kiro-cli (seat/credit-billed, official client), with an MCP bridge exposing the calling Pi session's tools inside delegated runs.",
 	"keywords": [
 		"pi-package",
@@ -32,6 +32,7 @@
 	"files": [
 		"*.ts",
 		"README.md",
+		"CHANGELOG.md",
 		"LICENSE",
 		"!*.test.ts",
 		"!test-setup.ts",
