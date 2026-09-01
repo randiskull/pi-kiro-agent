@@ -1,14 +1,16 @@
 /**
  * ACP session manager for the kiro ACP transport.
  *
- * Tracks, per logical Pi conversation (keyed by (cwd, agentName) pair), the
+ * Tracks, per logical Pi conversation (keyed by (cwd, sessionKey) pair), the
  * kiro ACP session that mirrors it. Identity is anchored on the hash of the
  * sent message prefix — the same divergence-detection mechanism as
  * session-manager.ts, but without the snapshot-diff capture: ACP gives us
  * the sessionId directly from session/new.
  *
- * Sessions are per (cwd, agentName) pair so concurrent Pi conversations on
- * the same cwd but different agent profiles don't collide.
+ * `sessionKey` is a caller-chosen secondary key used to scope sessions within
+ * a cwd. The ACP transport passes the acpSessionId as the sessionKey (it is
+ * already unique, so no collision is possible). The parameter was formerly
+ * named `agentName`, which was misleading — it is not a literal agent name.
  */
 
 import { createHash } from "node:crypto";
@@ -17,7 +19,7 @@ import type { Message } from "@earendil-works/pi-ai";
 interface AcpSession {
 	sessionId: string;
 	cwd: string;
-	agentName: string;
+	sessionKey: string;
 	/** Number of Pi messages already mirrored into the ACP session. */
 	sentMessageCount: number;
 	/** SHA-256 of messages[0..sentMessageCount] — append anchor / divergence guard. */
@@ -90,14 +92,14 @@ function upsert(session: AcpSession): void {
 /**
  * Decide how to handle this turn.
  *
- * Returns `resume` only when an existing ACP session for this (cwd, agentName)
+ * Returns `resume` only when an existing ACP session for this (cwd, sessionKey)
  * pair is a verified pure-append prefix of `messages` AND the delta carries
  * genuinely new (non-assistant) input. Otherwise returns `fresh`.
  */
-export function planAcpTurn(cwd: string, agentName: string, messages: Message[]): AcpTurnPlan {
+export function planAcpTurn(cwd: string, sessionKey: string, messages: Message[]): AcpTurnPlan {
 	for (let i = sessions.length - 1; i >= 0; i--) {
 		const session = sessions[i];
-		if (session.cwd !== cwd || session.agentName !== agentName) continue;
+		if (session.cwd !== cwd || session.sessionKey !== sessionKey) continue;
 		if (messages.length < session.sentMessageCount) continue; // truncated/diverged
 		if (hashMessages(messages.slice(0, session.sentMessageCount)) !== session.prefixHash) continue; // prefix changed
 		const delta = messages.slice(session.sentMessageCount);
@@ -113,14 +115,14 @@ export function planAcpTurn(cwd: string, agentName: string, messages: Message[])
  */
 export function recordAcpSession(
 	cwd: string,
-	agentName: string,
+	sessionKey: string,
 	acpSessionId: string,
 	messages: Message[],
 ): void {
 	upsert({
 		sessionId: acpSessionId,
 		cwd,
-		agentName,
+		sessionKey,
 		sentMessageCount: messages.length,
 		prefixHash: hashMessages(messages),
 	});

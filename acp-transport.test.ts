@@ -16,7 +16,7 @@ import { Writable } from "node:stream";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetAcpSessions } from "./acp-session.js";
-import { _resetAcpChildren, makeStreamViaAcp } from "./acp-transport.js";
+import { _getAcpChildRegistry, _resetAcpChildren, makeStreamViaAcp } from "./acp-transport.js";
 
 // ─── Spawn mock ───────────────────────────────────────────────────────────────
 
@@ -507,6 +507,84 @@ describe("makeStreamViaAcp", () => {
 			const error = events.find((e) => e.type === "error");
 			expect(error?.type === "error").toBe(true);
 			expect(error?.type === "error" && error.error.stopReason).toBe("error");
+		});
+	});
+
+	describe("startSession error cleanup (VN6: listener leak fix)", () => {
+		it("session/new error response removes the _kiro.dev/commands/available listener", async () => {
+			// Regression test for: startSession() left a dangling _kiro.dev/commands/available
+			// listener (offCmd inside the Promise constructor was unreachable from error paths).
+			// Fix: capture offCmdRef outside the Promise constructor; call offCmd() on every
+			// error path before throwing.
+			//
+			// Verification strategy: after session/new returns an error, inspect the AcpChild's
+			// `listeners` Map directly via the _getAcpChildRegistry() test hook. The child exit
+			// handler does NOT clear the listeners Map (it only clears entry.pending), so the
+			// Map state from the error path is still readable after child.end(1) fires.
+			//
+			// If offCmd() was called on the error path, entry.listeners.get(
+			// "_kiro.dev/commands/available") will be an empty Set (size 0) — the handler was
+			// deleted. If offCmd() was NOT called (the pre-fix bug), the Set would still contain
+			// the handler function (size >= 1).
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+
+			// Drive the error: session/new returns an error response.
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({
+					jsonrpc: "2.0",
+					id: initReq.id,
+					result: {
+						protocolVersion: 1,
+						agentCapabilities: {
+							loadSession: true,
+							mcpCapabilities: { http: true, sse: false },
+							sessionCapabilities: {},
+							auth: {},
+						},
+						authMethods: [],
+						agentInfo: { name: "Kiro", version: "test" },
+					},
+				});
+				const sessionReq = (await child.awaitLine()) as { id: number };
+				// Respond to session/new with an error — this is the path that previously
+				// left the _kiro.dev/commands/available listener dangling.
+				child.sendLine({
+					jsonrpc: "2.0",
+					id: sessionReq.id,
+					error: { code: -32603, message: "session/new failed for test" },
+				});
+				child.end(1);
+			})();
+
+			const events = await collect({ messages: [user("hi")] });
+
+			// 1. Observable contract: transport emits an error event (not "done").
+			const error = events.find((e) => e.type === "error");
+			expect(error?.type).toBe("error");
+			expect(error?.type === "error" && error.error.errorMessage).toContain("session/new failed");
+			expect(events.at(-1)?.type).not.toBe("done");
+
+			// 2. Direct listeners Map inspection via the test hook.
+			//    The child exit handler does NOT clear entry.listeners, so the Map state
+			//    from the error path is still visible here. The entry may still be in the
+			//    registry (exit handler marks alive=false but does not call registry.delete).
+			//    _resetAcpChildren() (called in beforeEach) will remove it, so we must
+			//    inspect before the next beforeEach runs — which we are, right now.
+			const cwd = process.cwd();
+			const registry = _getAcpChildRegistry();
+			const entry = registry.get(cwd);
+			// The entry exists (child exited but registry.delete was not called by the exit handler).
+			// If it does exist, the _kiro.dev/commands/available Set must be empty (size 0):
+			// offCmd() deleted the handler before throwing. A size >= 1 means offCmd() was skipped.
+			if (entry !== undefined) {
+				const cmdSet = entry.listeners.get("_kiro.dev/commands/available");
+				// Either the key was never added back (undefined) or the Set was emptied by offCmd()
+				expect(cmdSet === undefined || cmdSet.size === 0).toBe(true);
+			}
+			// NOTE: if entry is undefined, the child was dead-and-removed before we reach here.
+			// That path also proves cleanup: a removed entry cannot have a dangling handler.
 		});
 	});
 
