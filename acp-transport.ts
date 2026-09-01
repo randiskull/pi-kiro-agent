@@ -182,6 +182,7 @@ function killChild(entry: AcpChild, reason: string): void {
 		else entry.child.kill("SIGTERM");
 	} catch { /* already gone */ }
 	unregisterChildForCleanup(entry.child);
+	setChildKeepalive(entry, false);
 	for (const [, resolve] of entry.pending) {
 		resolve({ jsonrpc: "2.0", error: { code: -1, message: `acp child terminated: ${reason}` } });
 	}
@@ -209,6 +210,44 @@ function resetIdleTimer(entry: AcpChild): void {
 	entry.idleTimer.unref?.();
 }
 
+/** A runtime handle that participates in event-loop reference counting. */
+type RefCountable = { ref?: () => void; unref?: () => void };
+
+/**
+ * Event-loop keepalive for the persistent child.
+ *
+ * The child is spawned `detached` with piped stdio. Node counts the
+ * ChildProcess handle AND each of the three pipes as event-loop references, so
+ * a live-but-idle child keeps the HOST process alive: `pi -p` printed its answer
+ * and then sat there until the idle timeout killed the child (~10 min at the
+ * default PI_KIRO_IDLE_TIMEOUT_MS). Measured: unref'ing the child alone, or the
+ * pipes alone, changes nothing — the remaining handles still hold the loop. All
+ * four have to go.
+ *
+ * A blanket unref would be worse than the bug: a turn is an awaited promise
+ * resolved from the (now unreferenced) stdout pipe, and a pending promise is not
+ * an event-loop reference, so node would exit MID-TURN. Keepalive therefore
+ * tracks `pending` — referenced while any request is in flight, unreferenced the
+ * moment the last one settles. Re-referencing is verified to restore keepalive.
+ */
+function setChildKeepalive(entry: AcpChild, active: boolean): void {
+	const { child } = entry;
+	// The stdio streams are typed Readable | Writable, but at runtime a piped
+	// child stdio handle is a net.Socket / Pipe and does carry ref/unref.
+	const handles: Array<RefCountable | null | undefined> = [
+		child.stdin as unknown as RefCountable | null,
+		child.stdout as unknown as RefCountable | null,
+		child.stderr as unknown as RefCountable | null,
+	];
+	if (active) {
+		child.ref?.();
+		for (const handle of handles) handle?.ref?.();
+		return;
+	}
+	child.unref?.();
+	for (const handle of handles) handle?.unref?.();
+}
+
 function sendRaw(entry: AcpChild, msg: object): void {
 	if (!entry.alive) return;
 	entry.child.stdin?.write(JSON.stringify(msg) + "\n");
@@ -217,7 +256,11 @@ function sendRaw(entry: AcpChild, msg: object): void {
 function request(entry: AcpChild, method: string, params: object): Promise<AcpMessage> {
 	return new Promise((resolve) => {
 		const id = entry.nextId++;
-		if (entry.pending.size === 0) entry.oldestPendingSince = Date.now();
+		if (entry.pending.size === 0) {
+			entry.oldestPendingSince = Date.now();
+			// A turn is starting: the child must hold the event loop again.
+			setChildKeepalive(entry, true);
+		}
 		entry.pending.set(id, resolve);
 		sendRaw(entry, { jsonrpc: "2.0", id, method, params });
 	});
@@ -241,7 +284,12 @@ function dispatchMessage(entry: AcpChild, msg: AcpMessage): void {
 	if (msg.id !== undefined && entry.pending.has(msg.id)) {
 		const resolve = entry.pending.get(msg.id)!;
 		entry.pending.delete(msg.id);
-		if (entry.pending.size === 0) entry.oldestPendingSince = undefined;
+		if (entry.pending.size === 0) {
+			entry.oldestPendingSince = undefined;
+			// Nothing in flight: stop holding the host's event loop open so a
+			// one-shot (`pi -p`) can exit instead of waiting out the idle timer.
+			setChildKeepalive(entry, false);
+		}
 		resolve(msg);
 		return;
 	}
@@ -382,6 +430,10 @@ async function spawnAcpChild(
 		nextId: 1,
 	};
 
+	// Hold the event loop across spawn and the initialize/session-new handshake;
+	// request() and dispatchMessage() take over the ref/unref cycle from here.
+	setChildKeepalive(entry, true);
+
 	const rl = createInterface({ input: child.stdout! });
 	rl.on("line", (line) => {
 		if (!line.trim()) return;
@@ -393,6 +445,7 @@ async function spawnAcpChild(
 	child.stderr?.on("data", () => { /* consumed */ });
 	child.on("exit", () => {
 		unregisterChildForCleanup(child);
+		setChildKeepalive(entry, false);
 		entry.alive = false;
 		entry.ready = false;
 		if (entry.idleTimer) clearTimeout(entry.idleTimer);

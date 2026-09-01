@@ -52,6 +52,14 @@ class AcpScriptChild extends EventEmitter {
 	stdout: PassThrough;
 	stderr: PassThrough;
 
+	/**
+	 * Event-loop keepalive audit trail: every ref/unref the transport performs,
+	 * in order, tagged with the handle it targeted ("child", "stdin", …).
+	 * Real ChildProcess handles and piped stdio sockets carry ref/unref; the
+	 * stream fakes used here do not, so we attach spies.
+	 */
+	refOps: string[] = [];
+
 	private _stdinLines: string[] = [];
 	private _stdinWaiters: Array<(line: string) => void> = [];
 	private _stdinBuf = "";
@@ -80,6 +88,27 @@ class AcpScriptChild extends EventEmitter {
 				cb();
 			},
 		});
+		this.instrumentRef("child", this);
+		this.instrumentRef("stdin", this.stdin);
+		this.instrumentRef("stdout", this.stdout);
+		this.instrumentRef("stderr", this.stderr);
+	}
+
+	/** Attach ref/unref spies to a handle so setChildKeepalive calls are observable. */
+	private instrumentRef(name: string, handle: object): void {
+		const target = handle as { ref?: () => void; unref?: () => void };
+		target.ref = () => void this.refOps.push(name + ":ref");
+		target.unref = () => void this.refOps.push(name + ":unref");
+	}
+
+	/** The last op recorded per handle, e.g. { child: "unref", stdout: "unref" }. */
+	lastRefOps(): Record<string, string> {
+		const last: Record<string, string> = {};
+		for (const op of this.refOps) {
+			const [name, verb] = op.split(":");
+			last[name] = verb;
+		}
+		return last;
 	}
 
 	/** Emit a NDJSON line on stdout (server → client). */
@@ -554,6 +583,91 @@ describe("makeStreamViaAcp", () => {
 			await collect({ messages: [user("original")] });
 			await collect({ messages: [user("SUMMARY: replaced"), user("new turn")] });
 			expect(sessionNewCount).toBe(2); // initial + diverged
+		});
+	});
+
+	describe("event-loop keepalive (a one-shot host must be able to exit)", () => {
+		// Regression: `pi -p` printed its answer under ACP and then hung until the
+		// idle timeout killed the child (~10 min). The detached child handle plus
+		// its three pipes each hold an event-loop reference, so the transport must
+		// unreference all four whenever no request is in flight.
+		it("leaves the idle child fully unreferenced once the turn settles", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
+				const sessionReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-k1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-k1", commands: [] }});
+				const promptReq = (await child.awaitLine()) as { id: number };
+				await deliverTurn(child, "sess-k1", "done");
+				child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+				// Deliberately NOT calling child.end(): the child stays alive for reuse,
+				// which is exactly the state that used to hang the host.
+			})();
+
+			const events = await collect({ messages: [user("hi")] });
+			expect(doneText(events)).toContain("done");
+			// The handshake referenced the child...
+			expect(child.refOps).toContain("child:ref");
+			// ...and settling the last request released every handle.
+			expect(child.lastRefOps()).toEqual({
+				child: "unref",
+				stdin: "unref",
+				stdout: "unref",
+				stderr: "unref",
+			});
+		});
+
+		it("re-references the child for a second turn, then releases it again", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementation(() => child);
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
+				const sessionReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-k2", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-k2", commands: [] }});
+				for (const text of ["one", "two"]) {
+					const promptReq = (await child.awaitLine()) as { id: number };
+					await deliverTurn(child, "sess-k2", text);
+					child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+				}
+			})();
+
+			await collect({ messages: [user("turn one")] });
+			const afterFirst = child.refOps.length;
+			await collect({ messages: [user("turn one"), assistant("one"), user("turn two")] });
+
+			expect(spawnMock).toHaveBeenCalledTimes(1);
+			// A dormant child was re-referenced rather than left unreferenced for the
+			// whole second turn (which would let the host exit mid-turn).
+			expect(child.refOps.slice(afterFirst)).toContain("child:ref");
+			expect(child.lastRefOps()).toEqual({
+				child: "unref",
+				stdin: "unref",
+				stdout: "unref",
+				stderr: "unref",
+			});
+		});
+
+		it("releases the handles when the child is killed with a request still pending", async () => {
+			const child = new AcpScriptChild();
+			const controller = new AbortController();
+			spawnMock.mockImplementationOnce(() => {
+				queueMicrotask(() => queueMicrotask(() => controller.abort()));
+				return child;
+			});
+			// Handshake is never answered: initialize is still pending when the kill lands.
+			const events = await collect({ messages: [user("hi")] }, { signal: controller.signal });
+			expect(events.find((e) => e.type === "error")).toBeDefined();
+			expect(child.lastRefOps()).toEqual({
+				child: "unref",
+				stdin: "unref",
+				stdout: "unref",
+				stderr: "unref",
+			});
 		});
 	});
 
