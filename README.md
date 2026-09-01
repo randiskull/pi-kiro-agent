@@ -32,6 +32,39 @@ Kiro CLI has no machine-readable output yet ([kirodotdev/Kiro#5423](https://gith
 
 Kiro v3 note: v3's agent config (env-expanded URLs, header auth) would allow one stable profile, but v3 currently has no working headless mode — the extension targets v2 agent profiles until that changes.
 
+## The GSD workflow-MCP server
+
+[GSD](https://github.com/open-gsd/gsd-pi) auto-mode units (`plan-slice`, `execute-task`,
+`complete-slice`…) require the model to call GSD's `gsd_*` workflow tools. For API providers
+Pi sends tool schemas with the request, but for an external-CLI provider the CLI owns the
+agentic loop — so the supported pattern (same as GSD's own claude-code-cli backend) is to
+mount GSD's `gsd-workflow` stdio MCP server **inside** the delegated kiro run. Without it a
+unit can write files but can never call `gsd_task_complete`: the task row stays `pending`,
+the runtime unit stays `dispatched`, and the operator has to reconcile GSD's DB by hand.
+
+Discovery is zero-config. In order of precedence:
+
+1. A `gsd-workflow` entry in the project's `.mcp.json` (what `/gsd mcp init .` writes) always wins.
+2. Otherwise, if the cwd is inside a GSD project (a `.gsd/` directory at or above it, stopping
+   at the `.git` boundary), the entry is **synthesized**: the `gsd` CLI is resolved from
+   `GSD_CLI_PATH`/`GSD_BIN_PATH` or `PATH`, the workflow server from
+   `packages/mcp-server/dist/cli.js` in that install (or in-tree for a GSD checkout), and
+   GSD's live extension modules from `$GSD_CODING_AGENT_DIR` / `$GSD_HOME/agent` / `~/.gsd/agent`.
+   Every unresolved path bails out to *no server* rather than a wrong one — a plain non-GSD
+   kiro turn is never blocked by discovery. A cwd inside a `.gsd/worktrees/` milestone
+   worktree resolves to the real project root.
+
+Because kiro's agent-profile MCP schema has no `cwd` field, an entry with a `cwd` is launched
+via `/bin/sh -c "cd … && exec …"`.
+
+**Transport matters here.** Only `PI_KIRO_TRANSPORT=acp` passes MCP servers inline through
+`session/new` and returns real, fully-parsed tool-call arguments. The default `chat` transport
+has to text-parse kiro's console output, which fabricates tool-call ids (`kiro-mcp-<n>-<name>`)
+and degrades arguments to `{}` — enough to satisfy GSD's zero-tool-call guard, not enough to
+round-trip a real `gsd_task_complete` payload. **Run GSD on kiro with
+`PI_KIRO_TRANSPORT=acp`.** Set `PI_KIRO_WORKFLOW_MCP=off` to opt out of mounting the server
+entirely.
+
 ## Environment
 
 | Variable | Default | Purpose |

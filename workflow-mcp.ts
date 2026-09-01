@@ -14,11 +14,12 @@
  * exhaustion").
  *
  * Three pieces, all pure and independently testable:
- *  - discoverWorkflowMcpServers(cwd): read the project's `.mcp.json`
- *    (written/maintained by GSD's own mcp-project-config machinery) and
- *    translate the `gsd-workflow` stdio entry into kiro's agent-profile
- *    mcpServers schema. kiro has no `cwd` field, so a `cwd` is honored by
- *    wrapping in `/bin/sh -c "cd … && exec …"`.
+ *  - discoverWorkflowMcpServers(cwd): resolve the `gsd-workflow` stdio entry
+ *    and translate it into kiro's agent-profile mcpServers schema. The
+ *    project's `.mcp.json` (written/maintained by GSD's own mcp-project-config
+ *    machinery) wins; a GSD project without one gets a synthesized entry so
+ *    zero-config projects still get real `gsd_*` tools. kiro has no `cwd`
+ *    field, so a `cwd` is honored by wrapping in `/bin/sh -c "cd … && exec …"`.
  *  - parseKiroToolUses(body): extract MCP tool invocations from kiro's
  *    non-interactive output ("Running tool X with the param (from mcp
  *    server: Y)" followed by ⋮-prefixed JSON param lines).
@@ -31,8 +32,9 @@
  * Opt-out: PI_KIRO_WORKFLOW_MCP=off.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import type { ToolCall } from "@earendil-works/pi-ai";
 
 /** Kiro agent-profile MCP server entry (stdio). */
@@ -57,8 +59,8 @@ export const WORKFLOW_MCP_SERVER_KEY = "gsdworkflow";
 /** The `.mcp.json` server name GSD maintains for its workflow MCP server. */
 export const WORKFLOW_MCP_CONFIG_NAME = "gsd-workflow";
 
-export function workflowMcpEnabled(): boolean {
-	return process.env.PI_KIRO_WORKFLOW_MCP !== "off";
+export function workflowMcpEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env.PI_KIRO_WORKFLOW_MCP !== "off";
 }
 
 function shellQuote(value: string): string {
@@ -79,35 +81,231 @@ function findMcpConfig(start: string): string | undefined {
 	}
 }
 
+/** A `gsd-workflow` stdio entry — read from `.mcp.json` or synthesized. */
+export interface WorkflowMcpEntry {
+	command: string;
+	args?: string[];
+	env?: Record<string, string>;
+	cwd?: string;
+}
+
+/** Read the `gsd-workflow` entry out of the nearest `.mcp.json`, if any. */
+function readWorkflowMcpEntry(cwd: string): WorkflowMcpEntry | undefined {
+	const configPath = findMcpConfig(cwd);
+	if (!configPath) return undefined;
+	const parsed = JSON.parse(readFileSync(configPath, "utf8")) as {
+		mcpServers?: Record<string, WorkflowMcpEntry>;
+	};
+	const entry = parsed.mcpServers?.[WORKFLOW_MCP_CONFIG_NAME];
+	if (!entry || typeof entry.command !== "string" || entry.command.length === 0) return undefined;
+	return entry;
+}
+
 /**
- * Discover the project's `gsd-workflow` MCP server and translate it for a
- * kiro agent profile. Returns undefined when disabled, absent, or malformed —
- * a plain non-GSD kiro turn must never be blocked by discovery.
+ * Translate one stdio entry into kiro's agent-profile mcpServers schema. Single
+ * code path for both sources (file and synthesized) so they cannot diverge.
+ * kiro's schema has no `cwd` field, so a `cwd` is honored by wrapping the
+ * command in `/bin/sh -c "cd … && exec …"`.
  */
-export function discoverWorkflowMcpServers(cwd: string): Record<string, KiroStdioMcpServer> | undefined {
-	if (!workflowMcpEnabled()) return undefined;
+function translateEntry(entry: WorkflowMcpEntry): Record<string, KiroStdioMcpServer> | undefined {
+	if (typeof entry.command !== "string" || entry.command.length === 0) return undefined;
+	const args = Array.isArray(entry.args) ? entry.args : [];
+	const server: KiroStdioMcpServer = entry.cwd
+		? {
+				command: "/bin/sh",
+				args: ["-c", `cd ${shellQuote(entry.cwd)} && exec ${[entry.command, ...args].map(shellQuote).join(" ")}`],
+			}
+		: { command: entry.command, args };
+	if (entry.env && Object.keys(entry.env).length > 0) server.env = entry.env;
+	server.timeout = 30_000;
+	return { [WORKFLOW_MCP_SERVER_KEY]: server };
+}
+
+/** Path of the workflow MCP server entrypoint inside a gsd-pi install/checkout. */
+const MCP_SERVER_RELATIVE_PATH = join("packages", "mcp-server", "dist", "cli.js");
+
+/** A GSD milestone worktree lives under `<projectRoot>/.gsd/worktrees/…`; the
+ * workflow server must still start at the real project root (that is where the
+ * DB and artifacts live). Mirrors GSD's own resolveWorkflowMcpProjectRoot. */
+function stripWorktreeSuffix(cwd: string): string {
+	const resolved = resolve(cwd);
+	const marker = `${sep}.gsd${sep}worktrees${sep}`;
+	const index = resolved.indexOf(marker);
+	return index > 0 ? resolved.slice(0, index) : resolved;
+}
+
+/** Walk up from `start` looking for a `.gsd/` project marker (same walk and
+ * `.git` boundary rules as findMcpConfig). */
+function findGsdProjectRoot(start: string): string | undefined {
+	let dir = stripWorktreeSuffix(start);
+	for (;;) {
+		if (existsSync(join(dir, ".gsd"))) return dir;
+		if (existsSync(join(dir, ".git"))) return undefined;
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+}
+
+/** Resolve an executable by scanning PATH. Pure — no subprocess, unlike GSD's
+ * own `which` shell-out, which we deliberately avoid on a hot turn path. */
+function lookupOnPath(command: string, env: NodeJS.ProcessEnv): string | undefined {
+	for (const dir of (env.PATH ?? "").split(delimiter)) {
+		if (!dir) continue;
+		const candidate = join(dir, command);
+		if (existsSync(candidate)) return candidate;
+	}
+	return undefined;
+}
+
+/** The `gsd` CLI: GSD's own env anchors first, then PATH. */
+function resolveGsdCliPath(env: NodeJS.ProcessEnv): string | undefined {
+	const explicit = env.GSD_CLI_PATH?.trim() || env.GSD_BIN_PATH?.trim();
+	if (explicit && existsSync(explicit)) return explicit;
+	return lookupOnPath("gsd", env);
+}
+
+/**
+ * Find the gsd-pi install (or dev checkout) root by walking up from `anchor`
+ * looking for `packages/mcp-server/dist/cli.js`. `anchor` is normally the `gsd`
+ * binary, which is a symlink into the install, so realpath first — this is the
+ * same semantic anchor GSD's findGsdPiRepoRoot uses, rather than a fixed depth
+ * that would silently break on a layout change.
+ */
+function findGsdInstallRoot(anchor: string): string | undefined {
+	let dir: string;
 	try {
-		const configPath = findMcpConfig(cwd);
-		if (!configPath) return undefined;
-		const parsed = JSON.parse(readFileSync(configPath, "utf8")) as {
-			mcpServers?: Record<string, { command?: string; args?: string[]; env?: Record<string, string>; cwd?: string }>;
-		};
-		const entry = parsed.mcpServers?.[WORKFLOW_MCP_CONFIG_NAME];
-		if (!entry || typeof entry.command !== "string" || entry.command.length === 0) return undefined;
-		const args = Array.isArray(entry.args) ? entry.args : [];
-		const server: KiroStdioMcpServer = entry.cwd
-			? {
-					// kiro's mcp schema has no cwd — wrap so the server starts in its
-					// project root (GSD's server resolves the DB/artifacts from there).
-					command: "/bin/sh",
-					args: ["-c", `cd ${shellQuote(entry.cwd)} && exec ${[entry.command, ...args].map(shellQuote).join(" ")}`],
-				}
-			: { command: entry.command, args };
-		if (entry.env && Object.keys(entry.env).length > 0) server.env = entry.env;
-		server.timeout = 30_000;
-		return { [WORKFLOW_MCP_SERVER_KEY]: server };
+		dir = realpathSync(resolve(anchor));
 	} catch {
-		return undefined;
+		dir = resolve(anchor);
+	}
+	for (;;) {
+		if (existsSync(join(dir, MCP_SERVER_RELATIVE_PATH))) return dir;
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+}
+
+/** GSD's agent dir: `$GSD_CODING_AGENT_DIR`, else `$GSD_HOME`/agent, else `~/.gsd/agent`. */
+function resolveGsdAgentDir(env: NodeJS.ProcessEnv): string {
+	const explicit = env.GSD_CODING_AGENT_DIR?.trim();
+	if (explicit) return explicit;
+	return join(env.GSD_HOME?.trim() || join(homedir(), ".gsd"), "agent");
+}
+
+/**
+ * Resolve one gsd extension module (workflow executors / write gate). The LIVE
+ * copy under the agent dir wins: GSD copies its extensions there at install and
+ * loads them from there, so the install-tree copy can be stale. Best-effort by
+ * design — GSD's own buildWorkflowLaunchEnv also spreads these conditionally,
+ * and the MCP server has its own resolution fallback that fails loudly rather
+ * than silently, which beats mounting no server at all.
+ */
+function resolveGsdExtensionModule(
+	env: NodeJS.ProcessEnv,
+	explicit: string | undefined,
+	installRoot: string | undefined,
+	relative: string[],
+): string | undefined {
+	const fromEnv = explicit?.trim();
+	if (fromEnv && existsSync(fromEnv)) return fromEnv;
+	const candidates = [
+		join(resolveGsdAgentDir(env), "extensions", "gsd", ...relative),
+		...(installRoot ? [join(installRoot, "dist", "resources", "extensions", "gsd", ...relative)] : []),
+	];
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) return candidate;
+	}
+	return undefined;
+}
+
+/** The node that will run the MCP server: prefer the node already running pi. */
+function resolveNodeBinary(env: NodeJS.ProcessEnv): string | undefined {
+	const execPath = process.execPath;
+	if (execPath && basename(execPath).startsWith("node")) return execPath;
+	return lookupOnPath("node", env);
+}
+
+/**
+ * Build a `gsd-workflow` entry programmatically for a GSD project that has no
+ * `.mcp.json` (never touched by GSD's mcp-project-config machinery, or started
+ * on the kiro provider). Without this the delegated kiro turn gets no `gsd_*`
+ * tools at all, so a GSD unit can write files but can never call
+ * `gsd_task_complete` — the task row stays `pending` and the operator has to
+ * reconcile the DB by hand.
+ *
+ * Every unresolved path bails (returns undefined): a wrong synthesized server
+ * is worse than none, and a plain non-GSD kiro turn must never be blocked.
+ */
+export function synthesizeWorkflowMcpEntry(
+	cwd: string,
+	env: NodeJS.ProcessEnv = process.env,
+): WorkflowMcpEntry | undefined {
+	const projectRoot = findGsdProjectRoot(cwd);
+	if (!projectRoot) return undefined;
+
+	// A GSD dev checkout ships the server in-tree; otherwise resolve the install
+	// from the `gsd` binary. Checked at the project root only (no walk up) —
+	// mirrors GSD's own detectWorkflowMcpLaunchConfig.
+	const gsdCliPath = resolveGsdCliPath(env);
+	const installRoot = existsSync(join(projectRoot, MCP_SERVER_RELATIVE_PATH))
+		? projectRoot
+		: gsdCliPath
+			? findGsdInstallRoot(gsdCliPath)
+			: undefined;
+	if (!installRoot) return undefined;
+
+	const nodeBinary = resolveNodeBinary(env);
+	if (!nodeBinary) return undefined;
+
+	const executorsModule = resolveGsdExtensionModule(env, env.GSD_WORKFLOW_EXECUTORS_MODULE, installRoot, [
+		"tools",
+		"workflow-tool-executors.js",
+	]);
+	const writeGateModule = resolveGsdExtensionModule(env, env.GSD_WORKFLOW_WRITE_GATE_MODULE, installRoot, [
+		"bootstrap",
+		"write-gate.js",
+	]);
+
+	return {
+		command: nodeBinary,
+		args: [join(installRoot, MCP_SERVER_RELATIVE_PATH)],
+		cwd: projectRoot,
+		env: {
+			...(gsdCliPath ? { GSD_CLI_PATH: gsdCliPath, GSD_BIN_PATH: gsdCliPath } : {}),
+			...(executorsModule ? { GSD_WORKFLOW_EXECUTORS_MODULE: executorsModule } : {}),
+			...(writeGateModule ? { GSD_WORKFLOW_WRITE_GATE_MODULE: writeGateModule } : {}),
+			GSD_PERSIST_WRITE_GATE_STATE: "1",
+			GSD_WORKFLOW_PROJECT_ROOT: projectRoot,
+		},
+	};
+}
+
+/**
+ * Discover the project's `gsd-workflow` MCP server and translate it for a kiro
+ * agent profile. An explicit `.mcp.json` entry always wins; a GSD project
+ * without one gets a synthesized entry (see synthesizeWorkflowMcpEntry).
+ * Returns undefined when disabled or unresolvable — a plain non-GSD kiro turn
+ * must never be blocked by discovery.
+ */
+export function discoverWorkflowMcpServers(
+	cwd: string,
+	env: NodeJS.ProcessEnv = process.env,
+): Record<string, KiroStdioMcpServer> | undefined {
+	if (!workflowMcpEnabled(env)) return undefined;
+	try {
+		const entry = readWorkflowMcpEntry(cwd) ?? synthesizeWorkflowMcpEntry(cwd, env);
+		if (!entry) return undefined;
+		return translateEntry(entry);
+	} catch {
+		// A malformed .mcp.json still gets the synthesis path — but never throw.
+		try {
+			const synthesized = synthesizeWorkflowMcpEntry(cwd, env);
+			return synthesized ? translateEntry(synthesized) : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 }
 

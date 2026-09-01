@@ -6,7 +6,7 @@
  * "Running tool … (from mcp server: …)" grammar with ⋮-prefixed param lines.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -17,6 +17,7 @@ import {
 	discoverWorkflowMcpServers,
 	parseKiroToolUses,
 	synthesizeToolCallBlocks,
+	synthesizeWorkflowMcpEntry,
 } from "./workflow-mcp.js";
 
 // Captured (ANSI-stripped) from the live probe: one real gsd tool round-trip.
@@ -135,6 +136,164 @@ describe("discoverWorkflowMcpServers", () => {
 		writeConfig({ mcpServers: { "gsd-workflow": { command: "gsd-mcp" } } });
 		process.env.PI_KIRO_WORKFLOW_MCP = "off";
 		expect(discoverWorkflowMcpServers(dir)).toBeUndefined();
+	});
+});
+
+/**
+ * Zero-config synthesis: a GSD project with no `.mcp.json` must still get the
+ * gsd-workflow server, or a delegated kiro turn can write files but can never
+ * call gsd_task_complete (task row stuck `pending`, hand reconcile).
+ *
+ * The fixture reproduces the real install layout: a `gsd` symlink on PATH
+ * pointing into `<install>/dist/loader.js`, the workflow server at
+ * `<install>/packages/mcp-server/dist/cli.js`, and the LIVE extension copies
+ * under the agent dir (`$GSD_HOME/agent/extensions/gsd/…`).
+ */
+describe("synthesizeWorkflowMcpEntry", () => {
+	let root: string;
+	let projectDir: string;
+	let installRoot: string;
+	let serverCli: string;
+	let gsdBin: string;
+	let gsdHome: string;
+	let env: NodeJS.ProcessEnv;
+
+	function touch(path: string, body = "// fixture\n"): void {
+		mkdirSync(join(path, ".."), { recursive: true });
+		writeFileSync(path, body);
+	}
+
+	beforeEach(() => {
+		// realpath the tmpdir: on macOS /var is a symlink to /private/var, and
+		// install-root resolution realpaths the gsd binary.
+		root = realpathSync(mkdtempSync(join(tmpdir(), "pi-kiro-synth-")));
+		projectDir = join(root, "project");
+		installRoot = join(root, "lib", "node_modules", "@opengsd", "gsd-pi");
+		serverCli = join(installRoot, "packages", "mcp-server", "dist", "cli.js");
+		gsdHome = join(root, "gsdhome");
+		gsdBin = join(root, "bin", "gsd");
+
+		mkdirSync(join(projectDir, ".gsd"), { recursive: true });
+		touch(serverCli);
+		touch(join(installRoot, "dist", "loader.js"));
+		mkdirSync(join(root, "bin"), { recursive: true });
+		symlinkSync(join(installRoot, "dist", "loader.js"), gsdBin);
+		touch(join(gsdHome, "agent", "extensions", "gsd", "tools", "workflow-tool-executors.js"));
+		touch(join(gsdHome, "agent", "extensions", "gsd", "bootstrap", "write-gate.js"));
+
+		env = { PATH: join(root, "bin"), GSD_HOME: gsdHome };
+	});
+
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("synthesizes a complete entry for a GSD project with no .mcp.json", () => {
+		const entry = synthesizeWorkflowMcpEntry(projectDir, env);
+		expect(entry).toEqual({
+			command: process.execPath,
+			args: [serverCli],
+			cwd: projectDir,
+			env: {
+				GSD_CLI_PATH: gsdBin,
+				GSD_BIN_PATH: gsdBin,
+				GSD_WORKFLOW_EXECUTORS_MODULE: join(gsdHome, "agent", "extensions", "gsd", "tools", "workflow-tool-executors.js"),
+				GSD_WORKFLOW_WRITE_GATE_MODULE: join(gsdHome, "agent", "extensions", "gsd", "bootstrap", "write-gate.js"),
+				GSD_PERSIST_WRITE_GATE_STATE: "1",
+				GSD_WORKFLOW_PROJECT_ROOT: projectDir,
+			},
+		});
+	});
+
+	it("finds the project root from a nested cwd and from a milestone worktree", () => {
+		const nested = join(projectDir, "src", "deep");
+		mkdirSync(nested, { recursive: true });
+		expect(synthesizeWorkflowMcpEntry(nested, env)?.cwd).toBe(projectDir);
+		// A worktree cwd must resolve to the real project root, not the worktree.
+		const worktree = join(projectDir, ".gsd", "worktrees", "M038", "pkg");
+		mkdirSync(worktree, { recursive: true });
+		expect(synthesizeWorkflowMcpEntry(worktree, env)?.cwd).toBe(projectDir);
+	});
+
+	it("returns undefined for a non-GSD project", () => {
+		const plain = join(root, "plain");
+		mkdirSync(plain, { recursive: true });
+		expect(synthesizeWorkflowMcpEntry(plain, env)).toBeUndefined();
+	});
+
+	it("stops at a .git boundary rather than leaking to a parent .gsd", () => {
+		const inner = join(projectDir, "vendored");
+		mkdirSync(join(inner, ".git"), { recursive: true });
+		expect(synthesizeWorkflowMcpEntry(inner, env)).toBeUndefined();
+	});
+
+	it("returns undefined when the gsd install is unresolvable", () => {
+		expect(synthesizeWorkflowMcpEntry(projectDir, { PATH: join(root, "nowhere") })).toBeUndefined();
+		// gsd on PATH but no workflow server built in the install
+		rmSync(serverCli, { force: true });
+		expect(synthesizeWorkflowMcpEntry(projectDir, env)).toBeUndefined();
+	});
+
+	it("honors GSD_CLI_PATH ahead of PATH", () => {
+		const entry = synthesizeWorkflowMcpEntry(projectDir, { GSD_CLI_PATH: gsdBin, GSD_HOME: gsdHome, PATH: "" });
+		expect(entry?.args).toEqual([serverCli]);
+		expect(entry?.env?.GSD_CLI_PATH).toBe(gsdBin);
+	});
+
+	it("supports a GSD dev checkout that ships the server in-tree", () => {
+		const checkout = join(root, "checkout");
+		mkdirSync(join(checkout, ".gsd"), { recursive: true });
+		touch(join(checkout, "packages", "mcp-server", "dist", "cli.js"));
+		const entry = synthesizeWorkflowMcpEntry(checkout, { PATH: "", GSD_HOME: gsdHome });
+		expect(entry?.args).toEqual([join(checkout, "packages", "mcp-server", "dist", "cli.js")]);
+		expect(entry?.env?.GSD_CLI_PATH).toBeUndefined();
+	});
+
+	it("prefers the live agent-dir extension copy over the install-tree copy", () => {
+		touch(join(installRoot, "dist", "resources", "extensions", "gsd", "tools", "workflow-tool-executors.js"));
+		const entry = synthesizeWorkflowMcpEntry(projectDir, env);
+		expect(entry?.env?.GSD_WORKFLOW_EXECUTORS_MODULE).toBe(
+			join(gsdHome, "agent", "extensions", "gsd", "tools", "workflow-tool-executors.js"),
+		);
+	});
+
+	it("still synthesizes when the extension modules are unresolvable, omitting those vars", () => {
+		rmSync(join(gsdHome, "agent"), { recursive: true, force: true });
+		const entry = synthesizeWorkflowMcpEntry(projectDir, env);
+		expect(entry?.args).toEqual([serverCli]);
+		expect(entry?.env?.GSD_WORKFLOW_EXECUTORS_MODULE).toBeUndefined();
+		expect(entry?.env?.GSD_WORKFLOW_WRITE_GATE_MODULE).toBeUndefined();
+		expect(entry?.env?.GSD_WORKFLOW_PROJECT_ROOT).toBe(projectDir);
+	});
+
+	describe("via discoverWorkflowMcpServers", () => {
+		it("wraps the synthesized entry through the same sh -c cwd translation", () => {
+			const server = discoverWorkflowMcpServers(projectDir, env)?.[WORKFLOW_MCP_SERVER_KEY];
+			expect(server?.command).toBe("/bin/sh");
+			expect(server?.args?.[1]).toBe(`cd '${projectDir}' && exec '${process.execPath}' '${serverCli}'`);
+			expect(server?.timeout).toBe(30_000);
+			expect(server?.env?.GSD_WORKFLOW_PROJECT_ROOT).toBe(projectDir);
+		});
+
+		it("lets an explicit .mcp.json entry win over synthesis", () => {
+			writeFileSync(
+				join(projectDir, ".mcp.json"),
+				JSON.stringify({ mcpServers: { "gsd-workflow": { command: "explicit-gsd-mcp" } } }),
+			);
+			const server = discoverWorkflowMcpServers(projectDir, env)?.[WORKFLOW_MCP_SERVER_KEY];
+			expect(server).toEqual({ command: "explicit-gsd-mcp", args: [], timeout: 30_000 });
+		});
+
+		it("falls back to synthesis when .mcp.json is malformed or lacks the entry", () => {
+			writeFileSync(join(projectDir, ".mcp.json"), "{not json");
+			expect(discoverWorkflowMcpServers(projectDir, env)).toBeDefined();
+			writeFileSync(join(projectDir, ".mcp.json"), JSON.stringify({ mcpServers: { other: { command: "x" } } }));
+			expect(discoverWorkflowMcpServers(projectDir, env)).toBeDefined();
+		});
+
+		it("respects PI_KIRO_WORKFLOW_MCP=off for synthesized entries too", () => {
+			expect(discoverWorkflowMcpServers(projectDir, { ...env, PI_KIRO_WORKFLOW_MCP: "off" })).toBeUndefined();
+		});
 	});
 });
 
