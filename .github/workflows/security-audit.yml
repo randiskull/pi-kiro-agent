@@ -30,7 +30,7 @@ concurrency:
 
 env:
   # Repository variables (Settings → Secrets and variables → Actions → Variables).
-  # Both optional — defaults keep the audit non-blocking and advisory.
+  # Both optional — SECURITY_AUDIT_BLOCKING defaults to true (blocking); set to "false" for advisory-only.
   SECURITY_AUDIT_BLOCKING: ${{ vars.SECURITY_AUDIT_BLOCKING || 'true' }} # blocking by default; set repo var to "false" for advisory-only
   NPM_AUDIT_SEVERITY: ${{ vars.NPM_AUDIT_SEVERITY }} # info|low|moderate|high|critical (default: high)
 

@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-001",
+  "type": "docs",
+  "description": "Fix README and workflow-file docs inaccuracy: both claim the security audit is 'advisory by default', but the workflow's actual default expression `${{ vars.SECURITY_AUDIT_BLOCKING || 'true' }}` makes it blocking by default. The README instructs users to SET SECURITY_AUDIT_BLOCKING=true to make it blocking — which is backwards. The workflow's own line-33 comment repeats the same false claim. The end-of-line comment on line 34 correctly says 'blocking by default; set repo var to false for advisory-only' and matches the actual behavior.",
+  "status": "completed",
+  "steps": [
+    "In README.md line 60: change 'The audit is advisory by default — set the repo variables `SECURITY_AUDIT_BLOCKING=true` and `NPM_AUDIT_SEVERITY` (default `high`) to make it gate merges.' to accurately reflect that it is BLOCKING by default: 'The audit is blocking by default — set the repo variable `SECURITY_AUDIT_BLOCKING=false` to make it advisory-only; `NPM_AUDIT_SEVERITY` (default `high`) sets the failure threshold.'",
+    "In .github/workflows/security-audit.yml line 33: fix the comment '# Both optional — defaults keep the audit non-blocking and advisory.' to '# Both optional — SECURITY_AUDIT_BLOCKING defaults to true (blocking); set to \"false\" for advisory-only.' This removes the internal contradiction between line 33 (says advisory) and line 34's end-of-line comment (says blocking).",
+    "No code changes needed — the workflow behavior is already correct (blocking by default). Only the two documentation strings are wrong."
+  ],
+  "acceptance_criteria": [
+    "README.md no longer says 'advisory by default' or instructs users to set SECURITY_AUDIT_BLOCKING=true",
+    "README.md correctly states the audit is blocking by default and how to make it advisory",
+    ".github/workflows/security-audit.yml line 33 comment no longer contradicts the actual default on line 34",
+    "No functional code changes — only documentation strings modified"
+  ],
+  "verification": [
+    "grep -n 'advisory by default' README.md should return no matches",
+    "grep -n 'SECURITY_AUDIT_BLOCKING=true' README.md should return no matches (it now correctly describes SECURITY_AUDIT_BLOCKING=false)",
+    "grep -n 'blocking by default\\|blocking.*default\\|default.*blocking' README.md should return a match",
+    "grep -n 'non-blocking and advisory' .github/workflows/security-audit.yml should return no matches",
+    "The workflow's actual default expression (${{ vars.SECURITY_AUDIT_BLOCKING || 'true' }}) must not be changed"
+  ],
+  "blocked_reason": null,
+  "findings": "PR #19 opened at https://github.com/randiskull/pi-kiro/pull/19. Two doc strings corrected: README.md line 60 (advisory -> blocking default) and .github/workflows/security-audit.yml line 33 comment (non-blocking -> blocking). No code changes. All verification grep checks passed."
+}
