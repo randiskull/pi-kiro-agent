@@ -165,6 +165,15 @@ export function _resetAcpChildren(): void {
 	childRegistry.clear();
 }
 
+/**
+ * Test hook: return the raw child registry Map for direct state inspection.
+ * Allows tests to assert on listeners Map size (leak detection) without
+ * reaching into private module internals through other means.
+ */
+export function _getAcpChildRegistry(): Map<string, { listeners: Map<string, Set<(msg: unknown) => void>> }> {
+	return childRegistry as Map<string, { listeners: Map<string, Set<(msg: unknown) => void>> }>;
+}
+
 // ─── Child lifecycle ──────────────────────────────────────────────────────────
 
 function killChild(entry: AcpChild, reason: string): void {
@@ -360,15 +369,20 @@ async function startSession(
 	// Register _kiro.dev/commands/available listener BEFORE sending session/new to
 	// avoid a race: the server may send commands/available synchronously after the
 	// session/new response (before any await yields control back to this function).
+	let offCmdRef: (() => void) | undefined;
 	const cmdAvailablePromise = new Promise<void>((resolve) => {
-		const offCmd = onNotification(entry, "_kiro.dev/commands/available", () => {
+		offCmdRef = onNotification(entry, "_kiro.dev/commands/available", () => {
 			// After all servers are ready, the next commands/available has the full tool list
 			if (expectedServers.size === 0 || readyServers.size >= expectedServers.size) {
-				offCmd();
+				offCmdRef?.();
 				resolve();
 			}
 		});
 	});
+	// Capture a stable reference to offCmd for use in error paths below.
+	// offCmdRef is assigned synchronously inside the Promise constructor, so it
+	// is defined by the time we reach the first await.
+	const offCmd = offCmdRef!;
 
 	const sessionResp = await request(entry, "session/new", {
 		cwd: entry.cwd,
@@ -376,10 +390,11 @@ async function startSession(
 	});
 	if (sessionResp.error) {
 		off();
+		offCmd();
 		throw new Error(`kiro-cli acp session/new failed: ${sessionResp.error.message}`);
 	}
 	const sessionId = (sessionResp.result as { sessionId?: string })?.sessionId;
-	if (!sessionId) { off(); throw new Error("kiro-cli acp session/new: no sessionId"); }
+	if (!sessionId) { off(); offCmd(); throw new Error("kiro-cli acp session/new: no sessionId"); }
 	entry.acpSessionId = sessionId;
 
 	// Wait for both: all servers initialized + commands/available with full tool list
