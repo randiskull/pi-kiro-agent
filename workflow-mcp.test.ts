@@ -79,6 +79,45 @@ describe("synthesizeToolCallBlocks", () => {
 	});
 });
 
+describe("synthesizeToolCallBlocks id uniqueness", () => {
+	// GSD derives a workflow idempotency key from the ToolCall id
+	// (`pi:gsd_task_complete:<id>`) and rejects a completion whose key already
+	// belongs to another canonical operation. A bare positional id restarts at 0
+	// each response, so `kiro-mcp-0-gsd_task_complete` collides across sessions
+	// and every later completion throws — the work succeeds but is never
+	// recorded. Observed in the wild: ordinals 0-7,9,11 consumed in one project,
+	// leaving two finished tasks permanently uncloseable.
+	const bodyFor = (arg: string) =>
+		`Running tool gsd_task_complete with the param (from mcp server: gsdworkflow)\n ⋮  {\n ⋮    "taskId": "${arg}"\n ⋮  }`;
+
+	it("does not collide across different response bodies", () => {
+		const a = synthesizeToolCallBlocks(bodyFor("T05"));
+		const b = synthesizeToolCallBlocks(bodyFor("T02"));
+		expect(a).toHaveLength(1);
+		expect(b).toHaveLength(1);
+		expect(a[0]?.id).not.toBe(b[0]?.id);
+	});
+
+	it("is replay-stable — the same body yields the same ids", () => {
+		const body = bodyFor("T05");
+		expect(synthesizeToolCallBlocks(body).map((c) => c.id))
+			.toEqual(synthesizeToolCallBlocks(body).map((c) => c.id));
+	});
+
+	it("still disambiguates repeated tool names within one response", () => {
+		const body = `${bodyFor("T01")}\n${bodyFor("T02")}`;
+		const ids = synthesizeToolCallBlocks(body).map((c) => c.id);
+		expect(ids).toHaveLength(2);
+		expect(new Set(ids).size).toBe(2);
+	});
+
+	it("keeps the kiro-mcp prefix and tool name in the id", () => {
+		const id = synthesizeToolCallBlocks(bodyFor("T05"))[0]?.id ?? "";
+		expect(id.startsWith("kiro-mcp-")).toBe(true);
+		expect(id.endsWith("-gsd_task_complete")).toBe(true);
+	});
+});
+
 describe("discoverWorkflowMcpServers", () => {
 	let dir: string;
 	beforeEach(() => {

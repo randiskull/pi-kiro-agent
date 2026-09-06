@@ -32,6 +32,7 @@
  * Opt-out: PI_KIRO_WORKFLOW_MCP=off.
  */
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
@@ -382,11 +383,27 @@ export function createToolUseStreamParser(): { feed(text: string): Array<Pick<Ki
  * AssistantMessage. Emitted alongside stopReason "stop": the host counts and
  * renders them (GSD's zero-tool-call guard reads exactly these blocks) but
  * never redispatches — execution already happened inside kiro via MCP.
+ *
+ * The id must be GLOBALLY unique, not merely unique within one response.
+ * GSD derives a workflow idempotency key from it
+ * (`pi:gsd_task_complete:<id>`) and rejects a completion whose key already
+ * belongs to another canonical operation. A bare positional `kiro-mcp-<index>`
+ * restarts at 0 on every response, so the low ordinals are consumed almost
+ * immediately and every later `gsd_task_complete` throws
+ * "Task completion idempotency identity belongs to a different canonical
+ * operation" — the task's work succeeds but can never be recorded. The
+ * claude-code provider avoids this by emitting random `tooluse_*` ids.
+ *
+ * The digest of the response body is mixed in so ids stay REPLAY-STABLE:
+ * parsing the same body twice yields the same ids (so a genuine replay is
+ * still recognized as one), while different bodies — and therefore different
+ * sessions — never collide.
  */
 export function synthesizeToolCallBlocks(body: string): ToolCall[] {
+	const bodyDigest = createHash("sha256").update(body).digest("hex").slice(0, 16);
 	return parseKiroToolUses(body).map((use, index) => ({
 		type: "toolCall",
-		id: `kiro-mcp-${index}-${use.name}`,
+		id: `kiro-mcp-${bodyDigest}-${index}-${use.name}`,
 		name: use.name,
 		arguments: use.arguments,
 	}));
