@@ -176,6 +176,33 @@ describe("discoverWorkflowMcpServers", () => {
 		process.env.PI_KIRO_WORKFLOW_MCP = "off";
 		expect(discoverWorkflowMcpServers(dir)).toBeUndefined();
 	});
+
+	it(".git file (linked worktree) does not stop the .mcp.json walk", () => {
+		// Layout: dir/parent/.mcp.json and dir/parent/worktree/.git (FILE)
+		const parent = join(dir, "parent");
+		const worktree = join(parent, "worktree");
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(
+			join(parent, ".mcp.json"),
+			JSON.stringify({ mcpServers: { "gsd-workflow": { command: "gsd-mcp" } } }),
+		);
+		// .git as a FILE (linked worktree) — must NOT stop the walk
+		writeFileSync(join(worktree, ".git"), "gitdir: ../../.git/worktrees/test\n");
+		expect(discoverWorkflowMcpServers(worktree)).toBeDefined();
+	});
+
+	it(".git directory still stops the .mcp.json walk", () => {
+		// Layout: dir/parent/.mcp.json and dir/parent/sub/.git (DIRECTORY)
+		const parent = join(dir, "parent");
+		const sub = join(parent, "sub");
+		mkdirSync(join(sub, ".git"), { recursive: true });
+		writeFileSync(
+			join(parent, ".mcp.json"),
+			JSON.stringify({ mcpServers: { "gsd-workflow": { command: "gsd-mcp" } } }),
+		);
+		// .git as a DIRECTORY — must stop the walk (sub is a different project)
+		expect(discoverWorkflowMcpServers(sub)).toBeUndefined();
+	});
 });
 
 /**
@@ -264,6 +291,17 @@ describe("synthesizeWorkflowMcpEntry", () => {
 		const inner = join(projectDir, "vendored");
 		mkdirSync(join(inner, ".git"), { recursive: true });
 		expect(synthesizeWorkflowMcpEntry(inner, env)).toBeUndefined();
+	});
+
+	it(".git file (linked worktree) does not stop GSD project root discovery", () => {
+		// Layout: projectDir/.gsd/ (project marker) and projectDir/sub/.git (FILE)
+		const sub = join(projectDir, "sub");
+		mkdirSync(sub, { recursive: true });
+		// .git as a FILE (linked worktree) — must NOT stop the upward walk
+		writeFileSync(join(sub, ".git"), "gitdir: ../../.git/worktrees/test\n");
+		const entry = synthesizeWorkflowMcpEntry(sub, env);
+		expect(entry).toBeDefined();
+		expect(entry?.cwd).toBe(projectDir);
 	});
 
 	it("returns undefined when the gsd install is unresolvable", () => {

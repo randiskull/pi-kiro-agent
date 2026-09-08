@@ -33,7 +33,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import type { ToolCall } from "@earendil-works/pi-ai";
@@ -68,6 +68,15 @@ function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+/** Returns true only if `dir/.git` exists and is a directory (real repo root); .git files (linked worktrees) return false. */
+function isGitDirectory(dir: string): boolean {
+	try {
+		return lstatSync(join(dir, ".git")).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
 /** Walk up from `start` looking for `.mcp.json` (stop at a `.git` boundary or fs root). */
 function findMcpConfig(start: string): string | undefined {
 	let dir = start;
@@ -75,7 +84,7 @@ function findMcpConfig(start: string): string | undefined {
 		const candidate = join(dir, ".mcp.json");
 		if (existsSync(candidate)) return candidate;
 		// A .git dir marks the project root — don't search above it.
-		if (existsSync(join(dir, ".git"))) return undefined;
+		if (isGitDirectory(dir)) return undefined;
 		const parent = dirname(dir);
 		if (parent === dir) return undefined;
 		dir = parent;
@@ -141,7 +150,7 @@ function findGsdProjectRoot(start: string): string | undefined {
 	let dir = stripWorktreeSuffix(start);
 	for (;;) {
 		if (existsSync(join(dir, ".gsd"))) return dir;
-		if (existsSync(join(dir, ".git"))) return undefined;
+		if (isGitDirectory(dir)) return undefined;
 		const parent = dirname(dir);
 		if (parent === dir) return undefined;
 		dir = parent;
