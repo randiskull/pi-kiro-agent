@@ -393,8 +393,15 @@ export async function serveBridgeHttp(
 	});
 	const address = httpServer.address() as AddressInfo;
 
-	const close = async () => {
-		await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+	// Idempotent: the owner closes the handle explicitly AND the signal's own
+	// listener fires on abort, so close() is routinely called twice for one
+	// server. Memoizing the shutdown promise makes the second call await the
+	// first instead of issuing a redundant httpServer.close() whose callback
+	// receives ERR_SERVER_NOT_RUNNING.
+	let closed: Promise<void> | undefined;
+	const close = () => {
+		closed ??= new Promise<void>((resolve) => httpServer.close(() => resolve()));
+		return closed;
 	};
 	signal.addEventListener("abort", () => void close(), { once: true });
 

@@ -143,14 +143,80 @@ const user = (text: string): Message => ({ role: "user", content: text, timestam
 const assistant = (text: string): Message =>
 	({ role: "assistant", content: [{ type: "text", text }], timestamp: 0 }) as unknown as Message;
 
+type AcpDeps = Parameters<typeof makeStreamViaAcp>[0];
+
 async function collect(
 	context: Context,
 	options?: { signal?: AbortSignal; reasoning?: string },
+	deps: AcpDeps = { binaryPath: "kiro-cli" },
 ): Promise<AssistantMessageEvent[]> {
-	const stream = makeStreamViaAcp({ binaryPath: "kiro-cli" })(MODEL, context, options as never);
+	const stream = makeStreamViaAcp(deps)(MODEL, context, options as never);
 	const events: AssistantMessageEvent[] = [];
 	for await (const event of stream) events.push(event);
 	return events;
+}
+
+/** The transport does `bridge.close().catch(...)`, so the spy must be thenable. */
+const makeCloseSpy = () => vi.fn(() => Promise.resolve());
+
+/** One recorded getBridge() call: the signal it was handed and its close spy. */
+interface BridgeCall {
+	signal: AbortSignal;
+	close: ReturnType<typeof makeCloseSpy>;
+}
+
+/**
+ * Deps whose getBridge hands back a fake HttpBridgeHandle and records the
+ * AbortSignal it was given. The signal is the whole point of the F1 tests:
+ * serveBridgeHttp uses it both to shut the HTTP server down and as the
+ * cancellation signal for every bridged tool.execute call.
+ */
+function makeBridgeDeps(): { calls: BridgeCall[]; deps: AcpDeps } {
+	const calls: BridgeCall[] = [];
+	const getBridge = async (signal: AbortSignal) => {
+		const close = makeCloseSpy();
+		calls.push({ signal, close });
+		return {
+			url: "http://127.0.0.1:1/mcp",
+			urlWithToken: "http://127.0.0.1:1/mcp/fake-token",
+			token: "fake-token",
+			toolNames: ["todo"],
+			close,
+		} as never;
+	};
+	return { calls, deps: { binaryPath: "kiro-cli", getBridge } };
+}
+
+/** Let the transport's post-turn `finally` and any pending microtasks settle. */
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+/**
+ * Answer initialize + session/new, then report every MCP server named in the
+ * session/new params as initialized and emit commands/available — i.e. pass the
+ * startup gate for whatever server set the transport actually mounted. Returns
+ * the mcpServers array so tests can assert on the bridge mount.
+ */
+async function passStartupGate(
+	child: AcpScriptChild,
+	sessionId: string,
+	{ handshake = true }: { handshake?: boolean } = {},
+): Promise<Array<{ name: string }>> {
+	if (handshake) {
+		const initReq = (await child.awaitLine()) as { id: number };
+		child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: {
+			protocolVersion: 1,
+			agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} },
+			authMethods: [],
+			agentInfo: { name: "Kiro CLI Agent", version: "test" },
+		}});
+	}
+	const sessionReq = (await child.awaitLine()) as { id: number; params: { mcpServers: Array<{ name: string }> } };
+	child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+	for (const server of sessionReq.params.mcpServers) {
+		child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/mcp/server_initialized", params: { sessionId, serverName: server.name }});
+	}
+	child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
+	return sessionReq.params.mcpServers;
 }
 
 function doneText(events: AssistantMessageEvent[]): string {
@@ -648,6 +714,153 @@ describe("makeStreamViaAcp", () => {
 				if (prev === undefined) delete process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS;
 				else process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS = prev;
 			}
+		});
+	});
+
+	describe("bridge lifetime is session-scoped, not turn-scoped (Kiro review F1)", () => {
+		// The module documents the loopback bridge as per-session, but both
+		// getBridge call sites used to pass the caller's PER-TURN AbortSignal.
+		// serveBridgeHttp consumes that signal twice — it closes the HTTP server on
+		// abort, and hands the same signal to every bridged tool.execute call — so
+		// the wiring decided both the bridge's lifetime and tool cancellation scope.
+		// The fix passes the child's session-scoped sessionAbort.signal instead.
+
+		it("hands getBridge a session signal, so a post-turn abort by the host leaves the bridge up", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			const controller = new AbortController();
+			const { calls, deps } = makeBridgeDeps();
+			let mounted: string[] = [];
+
+			void (async () => {
+				mounted = (await passStartupGate(child, "sess-f1-a")).map((server) => server.name);
+				const promptReq = (await child.awaitLine()) as { id: number };
+				await deliverTurn(child, "sess-f1-a", "ok");
+				child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+				// The child is deliberately left running: this test is about what a
+				// post-turn host abort does to a session that is still alive.
+			})();
+
+			const events = await collect({ messages: [user("hi")] }, { signal: controller.signal }, deps);
+			expect(events.find((e) => e.type === "done")).toBeDefined();
+			expect(mounted).toContain("pi");
+			expect(calls).toHaveLength(1);
+			expect(calls[0].signal).not.toBe(controller.signal);
+			expect(calls[0].signal.aborted).toBe(false);
+
+			// A host that aborts its per-request controller as post-turn cleanup must
+			// not take a live session's MCP endpoint down with it. The transport's own
+			// onAbort is detached in its finally, so the child survives — but before
+			// this fix the bridge's own listener was still attached to that same
+			// signal, and the next turn resumed the session with a dead `pi` server.
+			controller.abort();
+			await settle();
+			expect(calls[0].signal.aborted).toBe(false);
+			expect(calls[0].close).not.toHaveBeenCalled();
+		});
+
+		it("still closes the bridge and aborts its signal when the turn is aborted in flight", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			const controller = new AbortController();
+			const { calls, deps } = makeBridgeDeps();
+
+			void (async () => {
+				await passStartupGate(child, "sess-f1-b");
+				await child.awaitLine(); // session/prompt — never answered
+				controller.abort(); // user hits ESC mid-turn
+			})();
+
+			const events = await collect({ messages: [user("hi")] }, { signal: controller.signal }, deps);
+			const error = events.find((e) => e.type === "error");
+			expect(error?.type === "error" && error.error.stopReason).toBe("aborted");
+			expect(calls).toHaveLength(1);
+			// Abort propagation survives the move off the turn signal, one hop later:
+			// onAbort → killChild → sessionAbort.abort(). That matters because the same
+			// signal is what an in-flight bridged tool call (ask_user_question, Agent)
+			// is cancelled through.
+			expect(calls[0].signal.aborted).toBe(true);
+			expect(calls[0].close).toHaveBeenCalled();
+		});
+	});
+
+	describe("startSession startup-gate timeout (Kiro review F2)", () => {
+		let savedTimeout: string | undefined;
+		beforeEach(() => {
+			savedTimeout = process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS;
+			process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS = "80";
+			return () => {
+				if (savedTimeout === undefined) delete process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS;
+				else process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS = savedTimeout;
+			};
+		});
+
+		it("clears acpSessionId so the next turn takes the new-session path, not the divergence path", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementation(() => child);
+			const { calls, deps } = makeBridgeDeps();
+
+			// Turn 1: session/new succeeds — so entry.acpSessionId is assigned — and
+			// then the child never reports its MCP servers initialized, so the startup
+			// gate loses the race to the timeout and `ready` is never set.
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: {
+					protocolVersion: 1,
+					agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} },
+					authMethods: [],
+					agentInfo: { name: "Kiro CLI Agent", version: "test" },
+				}});
+				const sessionReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-orphan", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				// Silence: no server_initialized, no commands/available.
+			})();
+
+			const events1 = await collect({ messages: [user("turn one")] }, undefined, deps);
+			const error = events1.find((e) => e.type === "error");
+			expect(error?.type === "error" && error.error.errorMessage).toMatch(/startup timed out/);
+
+			// The orphaned id must be gone. recordAcpSession never ran for it, so
+			// keeping it would make the next turn plan against a session nothing
+			// tracks — the exact condition that routes control into the divergence
+			// branch instead of the clean new-session branch.
+			const entry = _getAcpChildRegistry().get(process.cwd());
+			expect(entry?.ready).toBe(false);
+			expect(entry?.acpSessionId).toBeUndefined();
+
+			// A startup timeout discards the half-started SESSION, not the child.
+			// Nothing on this path calls killChild, so the session controller is
+			// untouched and its bridge is still up — which is precisely what lets
+			// turn 2 recover on the same child.
+			expect(calls[0].signal.aborted).toBe(false);
+			expect(calls[0].close).not.toHaveBeenCalled();
+
+			// Turn 2 on the same, still-live child. The child is deliberately NOT
+			// ended here: an exit would abort sessionAbort via the child exit handler
+			// and destroy the very state this test asserts on. _resetAcpChildren() in
+			// beforeEach reaps it.
+			void (async () => {
+				await passStartupGate(child, "sess-good", { handshake: false });
+				const promptReq = (await child.awaitLine()) as { id: number };
+				await deliverTurn(child, "sess-good", "recovered");
+				child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+			})();
+
+			const events2 = await collect({ messages: [user("turn two")] }, undefined, deps);
+			expect(doneText(events2)).toContain("recovered");
+			expect(spawnMock).toHaveBeenCalledTimes(1); // same child, no respawn
+
+			// Which branch turn 2 took. `!acpEntry.acpSessionId` is the predicate, and
+			// the two branches leave different traces on the bridge:
+			//  - new-session branch closes the stale bridge and keeps the session
+			//    controller, so both getBridge calls share one signal;
+			//  - divergence branch calls sessionAbort.abort() and installs a fresh
+			//    controller, so calls[0].signal would be aborted and calls[1].signal
+			//    would be a different object.
+			expect(calls).toHaveLength(2);
+			expect(calls[0].close).toHaveBeenCalled();
+			expect(calls[0].signal.aborted).toBe(false);
+			expect(calls[1].signal).toBe(calls[0].signal);
 		});
 	});
 

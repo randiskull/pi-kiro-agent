@@ -9,7 +9,9 @@
  * 2. Option B tool mounting (gate: probes/p3-gate-findings.md — PASSED):
  *    - Both bridge (HTTP) and gsd-workflow (stdio) injected directly in session/new.mcpServers
  *    - No agent profile file; writeAgentProfile() untouched (chat transport unchanged)
- *    - Per-session bridge: getBridge() called once at session creation, lives until session end
+ *    - Per-session bridge: getBridge() called once at session creation, lives until session end.
+ *      It is handed `entry.sessionAbort.signal` — NOT the caller's per-turn signal — so the
+ *      bridge outlives a turn exactly as long as the ACP session it is mounted into does.
  *    - Bridge closed on session end (divergence reset / idle-timeout / child crash)
  *    - Discovery code (discoverWorkflowMcpServers, getBridge) unchanged per Q3 decision
  *
@@ -65,7 +67,12 @@ import {
 
 interface AcpDeps {
 	binaryPath: string | undefined;
-	/** Builds the loopback HTTP MCP bridge. Per-session under ACP (not per-turn). */
+	/**
+	 * Builds the loopback HTTP MCP bridge. Per-session under ACP (not per-turn),
+	 * so this transport passes the child's session-scoped `sessionAbort.signal`.
+	 * The chat transport (stream-adapter.ts) mounts a genuinely per-turn bridge
+	 * and correctly passes the caller's turn signal to the same dep.
+	 */
 	getBridge?: (signal: AbortSignal) => Promise<HttpBridgeHandle | undefined>;
 }
 
@@ -150,7 +157,17 @@ interface AcpChild {
 	pending: Map<number, (msg: AcpMessage) => void>;
 	/** Notification listeners: method → handlers. */
 	listeners: Map<string, Set<(msg: AcpMessage) => void>>;
-	/** AbortController for the current session's bridge and startup signals. */
+	/**
+	 * Lifetime controller for the CURRENT ACP session. Its signal is what
+	 * `getBridge` receives, so it is both the bridge's shutdown trigger and the
+	 * cancellation signal every bridged `tool.execute` call is handed.
+	 *
+	 * Aborted at exactly three places, all of them genuine session ends:
+	 * killChild (abort / idle timeout / turn ceiling / stale child), the child
+	 * `exit` handler, and the divergence reset — which then replaces it with a
+	 * fresh controller for the successor session. It is module-internal: no host
+	 * can reach it, so it never fires on a normal successful turn.
+	 */
 	sessionAbort: AbortController;
 	alive: boolean;
 	ready: boolean;
@@ -171,13 +188,22 @@ export function _resetAcpChildren(): void {
 	childRegistry.clear();
 }
 
+/** The slice of AcpChild state tests are allowed to inspect directly. */
+interface AcpChildProbe {
+	listeners: Map<string, Set<(msg: unknown) => void>>;
+	/** Undefined unless a session reached `ready` — see startSession's finally. */
+	acpSessionId: string | undefined;
+	ready: boolean;
+}
+
 /**
  * Test hook: return the raw child registry Map for direct state inspection.
- * Allows tests to assert on listeners Map size (leak detection) without
- * reaching into private module internals through other means.
+ * Allows tests to assert on listeners Map size (leak detection) and on
+ * post-failure session state without reaching into private module internals
+ * through other means.
  */
-export function _getAcpChildRegistry(): Map<string, { listeners: Map<string, Set<(msg: unknown) => void>> }> {
-	return childRegistry as Map<string, { listeners: Map<string, Set<(msg: unknown) => void>> }>;
+export function _getAcpChildRegistry(): Map<string, AcpChildProbe> {
+	return childRegistry as unknown as Map<string, AcpChildProbe>;
 }
 
 // ─── Child lifecycle ──────────────────────────────────────────────────────────
@@ -354,6 +380,10 @@ async function startSession(
 	entry: AcpChild,
 	mcpServers: AcpMcpServer[],
 ): Promise<void> {
+	// A session is not ready until the startup gate below passes. Stating that
+	// here (rather than relying on every caller to have cleared it) is what makes
+	// the `!entry.ready` check in the finally locally sound.
+	entry.ready = false;
 	const expectedServers = new Set(mcpServers.map((s) => s.name));
 	const readyServers = new Set<string>();
 
@@ -420,6 +450,14 @@ async function startSession(
 	} finally {
 		off();
 		offCmd();
+		// The startup gate can fail (timeout, or a throw between the session/new
+		// response and `ready`) with acpSessionId already assigned. Leaving it set
+		// hands the next turn a session id that recordAcpSession never tracked, so
+		// planAcpTurn returns "fresh" and control lands in the DIVERGENCE branch —
+		// which drops a session that was never tracked and recycles the bridge and
+		// session controller for nothing. Clearing it restores the invariant the
+		// new-session branch tests: an acpSessionId means a *usable* session.
+		if (!entry.ready) entry.acpSessionId = undefined;
 	}
 }
 
@@ -637,7 +675,29 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 
 				if (!acpEntry.acpSessionId) {
 					// New child: no session yet — create one now.
-					const bridge = await deps.getBridge?.(turnSignal);
+					// A previous startSession attempt may have failed the MCP startup gate
+					// after mounting a bridge (its session never went ready, so acpSessionId
+					// was cleared). Nothing else owns that handle now that bridge lifetime is
+					// session-scoped, so close it here or its HTTP server leaks for the life
+					// of the child.
+					if (acpEntry.bridge) {
+						await acpEntry.bridge.close().catch(() => undefined);
+						acpEntry.bridge = undefined;
+					}
+					// Session-scoped signal, not turnSignal: the bridge must outlive this
+					// turn and die with the session (see AcpChild.sessionAbort).
+					//
+					// sessionAbort is deliberately REUSED here, not aborted-and-replaced
+					// the way the divergence branch below does it. The asymmetry tracks
+					// the state, not an oversight: divergence discards a session that
+					// reached `ready`, whose bridge may have tool calls in flight, so its
+					// controller has to be retired to cancel them. This branch only ever
+					// discards a session that never reached `ready` — no prompt was sent,
+					// so nothing can be in flight — and the controller was never aborted,
+					// so it is still a valid handle on the child's current session.
+					// Aborting it would also be wrong on the common path, where this is a
+					// brand-new child with no predecessor session at all.
+					const bridge = await deps.getBridge?.(acpEntry.sessionAbort.signal);
 					acpEntry.bridge = bridge;
 					const mcpServers = buildMcpServersConfig(bridge, workflowServers);
 					await startSession(acpEntry, mcpServers);
@@ -652,7 +712,9 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					await acpEntry.bridge?.close().catch(() => undefined);
 					acpEntry.bridge = undefined;
 					acpEntry.sessionAbort = new AbortController();
-					const newBridge = await deps.getBridge?.(turnSignal);
+					// The successor session's bridge rides the successor controller — the
+					// one aborted above is spent.
+					const newBridge = await deps.getBridge?.(acpEntry.sessionAbort.signal);
 					acpEntry.bridge = newBridge;
 					const mcpServers = buildMcpServersConfig(newBridge, workflowServers);
 					await startSession(acpEntry, mcpServers);
