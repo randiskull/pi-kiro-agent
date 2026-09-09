@@ -99,13 +99,32 @@ export interface WorkflowMcpEntry {
 	cwd?: string;
 }
 
-/** Read the `gsd-workflow` entry out of the nearest `.mcp.json`, if any. */
+/**
+ * Read the `gsd-workflow` entry out of the nearest `.mcp.json`, if any.
+ *
+ * TRUST BOUNDARY: this reads a project-supplied `.mcp.json` with a bare
+ * `readFileSync` and hands its `command`/`args`/`env` straight into a kiro-cli
+ * run launched `--trust-all-tools` with an `allowedTools: ["*"]` profile — it
+ * does NOT pass through pi's project-trust machinery. This is the *opposite*
+ * posture to `bridge.ts:isBridgeablePackage`, which deliberately refuses
+ * project-scope packages because "an untrusted cloned repo could point at
+ * attacker-controlled entry files." A hostile repo whose `.mcp.json` names a
+ * `gsd-workflow` entry therefore executes as-is on the first prompt. The guard
+ * for unreviewed repos is `PI_KIRO_WORKFLOW_MCP=off` (see `workflowMcpEnabled`).
+ * Only the `gsd-workflow` key is consumed; no other `.mcp.json` key is mounted.
+ */
 function readWorkflowMcpEntry(cwd: string): WorkflowMcpEntry | undefined {
 	const configPath = findMcpConfig(cwd);
 	if (!configPath) return undefined;
-	const parsed = JSON.parse(readFileSync(configPath, "utf8")) as {
-		mcpServers?: Record<string, WorkflowMcpEntry>;
-	};
+	let parsed: { mcpServers?: Record<string, WorkflowMcpEntry> };
+	try {
+		parsed = JSON.parse(readFileSync(configPath, "utf8")) as {
+			mcpServers?: Record<string, WorkflowMcpEntry>;
+		};
+	} catch {
+		// Malformed/unreadable .mcp.json: fall back to synthesis rather than throw.
+		return undefined;
+	}
 	const entry = parsed.mcpServers?.[WORKFLOW_MCP_CONFIG_NAME];
 	if (!entry || typeof entry.command !== "string" || entry.command.length === 0) return undefined;
 	return entry;
@@ -309,13 +328,10 @@ export function discoverWorkflowMcpServers(
 		if (!entry) return undefined;
 		return translateEntry(entry);
 	} catch {
-		// A malformed .mcp.json still gets the synthesis path — but never throw.
-		try {
-			const synthesized = synthesizeWorkflowMcpEntry(cwd, env);
-			return synthesized ? translateEntry(synthesized) : undefined;
-		} catch {
-			return undefined;
-		}
+		// readWorkflowMcpEntry no longer throws (malformed .mcp.json → undefined,
+		// which falls through to synthesis above). Reaching here means synthesis
+		// or translation itself threw — there is nothing left to retry. Never throw.
+		return undefined;
 	}
 }
 

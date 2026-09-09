@@ -369,45 +369,51 @@ async function startSession(
 	// Register _kiro.dev/commands/available listener BEFORE sending session/new to
 	// avoid a race: the server may send commands/available synchronously after the
 	// session/new response (before any await yields control back to this function).
-	let offCmdRef: (() => void) | undefined;
+	// offCmd is assigned synchronously inside the Promise constructor, so it is
+	// defined by the time we reach the first await (definite assignment).
+	let offCmd!: () => void;
 	const cmdAvailablePromise = new Promise<void>((resolve) => {
-		offCmdRef = onNotification(entry, "_kiro.dev/commands/available", () => {
+		offCmd = onNotification(entry, "_kiro.dev/commands/available", () => {
 			// After all servers are ready, the next commands/available has the full tool list
 			if (expectedServers.size === 0 || readyServers.size >= expectedServers.size) {
-				offCmdRef?.();
+				offCmd();
 				resolve();
 			}
 		});
 	});
-	// Capture a stable reference to offCmd for use in error paths below.
-	// offCmdRef is assigned synchronously inside the Promise constructor, so it
-	// is defined by the time we reach the first await.
-	const offCmd = offCmdRef!;
 
-	const sessionResp = await request(entry, "session/new", {
-		cwd: entry.cwd,
-		mcpServers,
-	});
-	if (sessionResp.error) {
+	// Both notification listeners live on the long-lived child. Remove them on
+	// EVERY exit path — the startup-timeout rejection and the zero-server path
+	// (expectedServers.size === 0, so server_initialized never fires) both used
+	// to leave `off`/`offCmd` attached, accumulating on the child across turns.
+	// Both are Set.delete closures, so double-invocation is safe.
+	try {
+		const sessionResp = await request(entry, "session/new", {
+			cwd: entry.cwd,
+			mcpServers,
+		});
+		if (sessionResp.error) {
+			throw new Error(`kiro-cli acp session/new failed: ${sessionResp.error.message}`);
+		}
+		const sessionId = (sessionResp.result as { sessionId?: string })?.sessionId;
+		if (!sessionId) throw new Error("kiro-cli acp session/new: no sessionId");
+		entry.acpSessionId = sessionId;
+
+		// Wait for both: all servers initialized + commands/available with full tool list
+		const timeout = new Promise<void>((_, reject) =>
+			setTimeout(() => reject(new Error(`ACP MCP startup timed out after ${MCP_STARTUP_TIMEOUT_MS}ms`)), MCP_STARTUP_TIMEOUT_MS).unref?.()
+		);
+
+		await Promise.race([
+			Promise.all([serversReadyPromise, cmdAvailablePromise]),
+			timeout,
+		]);
+
+		entry.ready = true;
+	} finally {
 		off();
 		offCmd();
-		throw new Error(`kiro-cli acp session/new failed: ${sessionResp.error.message}`);
 	}
-	const sessionId = (sessionResp.result as { sessionId?: string })?.sessionId;
-	if (!sessionId) { off(); offCmd(); throw new Error("kiro-cli acp session/new: no sessionId"); }
-	entry.acpSessionId = sessionId;
-
-	// Wait for both: all servers initialized + commands/available with full tool list
-	const timeout = new Promise<void>((_, reject) =>
-		setTimeout(() => reject(new Error(`ACP MCP startup timed out after ${MCP_STARTUP_TIMEOUT_MS}ms`)), MCP_STARTUP_TIMEOUT_MS).unref?.()
-	);
-
-	await Promise.race([
-		Promise.all([serversReadyPromise, cmdAvailablePromise]),
-		timeout,
-	]);
-
-	entry.ready = true;
 }
 
 // ─── Child spawn ──────────────────────────────────────────────────────────────
