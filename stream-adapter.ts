@@ -133,6 +133,19 @@ export function extractFinal(body: string): { working: string; final: string } {
 	return { working: "", final: body };
 }
 
+/**
+ * Escape a string for safe use inside an XML attribute value (double-quoted).
+ * Prevents attribute injection when user-controlled data (e.g. toolName) is
+ * interpolated into `<tag attr="...">` markup.
+ */
+export function escapeXmlAttr(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/"/g, "&quot;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+}
+
 function contentToText(content: Message["content"]): string {
 	if (typeof content === "string") return content;
 	return content
@@ -158,7 +171,7 @@ function serializeMessage(message: Message): string | undefined {
 		return text.length > 0 ? `<assistant_message>\n${text}\n</assistant_message>` : undefined;
 	}
 	if (message.role === "toolResult") {
-		return `<tool_result tool="${message.toolName}">\n${contentToText(message.content)}\n</tool_result>`;
+		return `<tool_result tool="${escapeXmlAttr(message.toolName ?? "")}">\n${contentToText(message.content)}\n</tool_result>`;
 	}
 	return undefined;
 }

@@ -1,0 +1,7 @@
+{
+  "task_id": "task-security-audit-2025",
+  "task_description": "Security and release-readiness audit of pi-kiro. FEAT-001 (docs fix, already completed in a prior PR). FEAT-002: fix XML attribute injection in serializeMessage() toolName. FEAT-003: fix README inaccuracy about chat-transport argument parsing. All features go into one PR focused on the security/correctness/docs theme.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
+  "blocked_reason": null
+}
