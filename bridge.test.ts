@@ -109,6 +109,19 @@ describe("serveBridgeHttp", () => {
 		}
 	});
 
+	it("close() is idempotent", async () => {
+		// The handle's owner closes it explicitly AND the signal's own listener
+		// fires close() on abort, so a double close is routine rather than
+		// exceptional. Both calls must share one shutdown instead of issuing a
+		// second httpServer.close() that resolves off an ERR_SERVER_NOT_RUNNING.
+		const handle = await serveBridgeHttp([makeTool()], () => FAKE_CTX, new AbortController().signal);
+		if (!handle) throw new Error("expected handle");
+		const first = handle.close();
+		expect(handle.close()).toBe(first);
+		await expect(first).resolves.toBeUndefined();
+		await expect(handle.close()).resolves.toBeUndefined();
+	});
+
 	it("tears down on abort", async () => {
 		const controller = new AbortController();
 		const handle = await serveBridgeHttp([makeTool()], () => FAKE_CTX, controller.signal);
