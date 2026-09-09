@@ -586,6 +586,69 @@ describe("makeStreamViaAcp", () => {
 			// NOTE: if entry is undefined, the child was dead-and-removed before we reach here.
 			// That path also proves cleanup: a removed entry cannot have a dangling handler.
 		});
+
+		it("startup timeout cleans up BOTH notification listeners (M1 + A21)", async () => {
+			// A21: exercise the MCP_STARTUP_TIMEOUT_MS path, which was previously
+			// untested. It also pins M1: on the timeout path, startSession must
+			// remove BOTH the server_initialized (`off`) and commands/available
+			// (`offCmd`) listeners. Before the try/finally fix, the timeout
+			// rejection left both attached to the long-lived child.
+			//
+			// Drive: initialize OK, session/new returns a valid sessionId, but the
+			// server NEVER sends server_initialized or commands/available, so
+			// Promise.race resolves via the timeout. A tiny PI_KIRO_MCP_STARTUP_TIMEOUT_MS
+			// keeps the test fast.
+			const prev = process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS;
+			process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS = "20";
+			try {
+				const child = new AcpScriptChild();
+				spawnMock.mockImplementationOnce(() => child);
+
+				void (async () => {
+					const initReq = (await child.awaitLine()) as { id: number };
+					child.sendLine({
+						jsonrpc: "2.0",
+						id: initReq.id,
+						result: {
+							protocolVersion: 1,
+							agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} },
+							authMethods: [],
+							agentInfo: { name: "Kiro", version: "test" },
+						},
+					});
+					const sessionReq = (await child.awaitLine()) as { id: number };
+					// Valid session/new response, but deliberately NO server_initialized
+					// and NO commands/available → startup race resolves via timeout.
+					child.sendLine({
+						jsonrpc: "2.0",
+						id: sessionReq.id,
+						result: { sessionId: "sess-timeout", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } },
+					});
+					// Give the timeout time to fire, then let the child exit.
+					setTimeout(() => child.end(1), 60);
+				})();
+
+				const events = await collect({ messages: [user("hi")] });
+
+				// Observable contract: an error event mentioning the startup timeout.
+				const error = events.find((e) => e.type === "error");
+				expect(error?.type).toBe("error");
+				expect(error?.type === "error" && error.error.errorMessage).toContain("startup timed out");
+				expect(events.at(-1)?.type).not.toBe("done");
+
+				// M1: both listener Sets must be empty (the finally removed them).
+				const entry = _getAcpChildRegistry().get(process.cwd());
+				if (entry !== undefined) {
+					const initSet = entry.listeners.get("_kiro.dev/mcp/server_initialized");
+					const cmdSet = entry.listeners.get("_kiro.dev/commands/available");
+					expect(initSet === undefined || initSet.size === 0).toBe(true);
+					expect(cmdSet === undefined || cmdSet.size === 0).toBe(true);
+				}
+			} finally {
+				if (prev === undefined) delete process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS;
+				else process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS = prev;
+			}
+		});
 	});
 
 	describe("session reuse (ACP parity with --resume-id)", () => {

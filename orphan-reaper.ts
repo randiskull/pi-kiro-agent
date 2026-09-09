@@ -165,6 +165,21 @@ export function _runExitCleanup(): void {
 }
 
 /**
+ * Test hook: detach the installed "exit" listener and reset the install flag, so
+ * a test can observe the FIRST installation from a clean baseline. Without this,
+ * the one-hook-per-process test is vacuous — an earlier test in the same file has
+ * already flipped the flag, so `registerChildForCleanup` never adds a listener
+ * and `after - before === 0` passes without asserting anything.
+ */
+export function _resetExitHookForTest(): void {
+	if (exitHookInstalled) {
+		process.removeListener("exit", killTrackedChildren);
+		exitHookInstalled = false;
+	}
+	trackedChildren.clear();
+}
+
+/**
  * Track a spawned kiro-cli child so an orderly parent exit takes it (and, when
  * detached, its whole group) down. The hook is installed lazily on first
  * registration so merely importing this module has no process-level side effect.

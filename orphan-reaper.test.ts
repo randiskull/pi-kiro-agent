@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	_resetExitHookForTest,
 	_runExitCleanup,
 	parsePsTable,
 	reapOrphanedKiroChildren,
@@ -189,12 +190,16 @@ describe("parent-exit tether", () => {
 	});
 
 	it("installs exactly one process exit hook across registrations", () => {
+		// Reset to a clean baseline: an earlier test in this file has already
+		// installed the hook, which would make this assertion vacuous otherwise.
+		_resetExitHookForTest();
 		const before = process.listeners("exit").length;
 		registerChildForCleanup(fakeChild(106), true);
 		registerChildForCleanup(fakeChild(107), false);
 		const after = process.listeners("exit").length;
-		// At most one new listener, ever — repeat registrations must not stack.
-		expect(after - before).toBeLessThanOrEqual(1);
+		// Exactly one new listener from the first registration; the second must
+		// not stack another.
+		expect(after - before).toBe(1);
 		_runExitCleanup();
 	});
 });
