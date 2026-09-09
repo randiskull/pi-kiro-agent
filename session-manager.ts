@@ -22,8 +22,12 @@
  */
 
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
+import { hashMessages } from "./message-hash.js";
+
+// Re-exported so existing importers (and the collision test) keep their import
+// site; the implementation now lives in message-hash.ts, shared with acp-session.
+export { hashMessages };
 
 /** Master switch — set PI_KIRO_RESUME=off to force the legacy full-send path. */
 export function resumeEnabled(): boolean {
@@ -53,37 +57,9 @@ export interface TurnPlan {
 	deltaStart: number;
 }
 
-/** Stable, thinking-insensitive text of one message's content (for hashing). */
-function messageText(content: Message["content"]): string {
-	if (typeof content === "string") return content;
-	return content
-		.map((block) => {
-			if (block.type === "text") return block.text;
-			if (block.type === "toolCall") return `toolCall:${block.name}:${JSON.stringify(block.arguments ?? {})}`;
-			if (block.type === "image") return "[image]";
-			return ""; // thinking and unknowns are volatile — excluded so a settled prefix stays stable
-		})
-		.filter((piece) => piece.length > 0)
-		.join("\n");
-}
-
-function messageKey(message: Message): string {
-	const toolName = (message as { toolName?: string }).toolName ?? "";
-	return message.role + "\x00" + toolName + "\x00" + messageText(message.content);
-}
-
-/** Deterministic hash of a message sequence — thinking/signatures excluded. */
-export function hashMessages(messages: Message[]): string {
-	const hash = createHash("sha256");
-	for (const message of messages) {
-		hash.update(messageKey(message));
-		// Inter-message delimiter uses SOH (\x01), NOT \0, because messageKey
-		// uses \0 as its field separator. A distinct byte here prevents crafted
-		// content from mimicking a message boundary.
-		hash.update("\x01");
-	}
-	return hash.digest("hex");
-}
+/** Stable, thinking-insensitive text of one message's content (for hashing)
+ * and the deterministic sequence hash both live in message-hash.ts (shared with
+ * acp-session.ts). hashMessages is re-exported above. */
 
 /**
  * Decide how to run this turn. Returns `resume` only when a tracked session in

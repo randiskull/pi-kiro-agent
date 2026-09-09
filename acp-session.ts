@@ -13,8 +13,13 @@
  * named `agentName`, which was misleading — it is not a literal agent name.
  */
 
-import { createHash } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
+import { hashMessages } from "./message-hash.js";
+
+// Re-exported so this module's import surface is unchanged; the implementation
+// (formerly duplicated verbatim from session-manager.ts) now lives in the shared
+// message-hash.ts, so the two transports cannot silently diverge.
+export { hashMessages };
 
 interface AcpSession {
 	sessionId: string;
@@ -37,43 +42,10 @@ export interface AcpTurnPlan {
 	deltaStart: number;
 }
 
-// ─── Hash helpers (verbatim from session-manager.ts) ──────────────────────────
+// ─── Hash helpers ─────────────────────────────────────────────────────────────
+// messageText/messageKey/hashMessages moved to the shared message-hash.ts (see
+// the re-export at the top of this file). Previously duplicated verbatim here.
 
-function messageText(content: Message["content"]): string {
-	if (typeof content === "string") return content;
-	return content
-		.map((block) => {
-			if (block.type === "text") return block.text;
-			if (block.type === "toolCall") return `toolCall:${block.name}:${JSON.stringify(block.arguments ?? {})}`;
-			if (block.type === "image") return "[image]";
-			return "";
-		})
-		.filter((piece) => piece.length > 0)
-		.join("\n");
-}
-
-function messageKey(message: Message): string {
-	const toolName = (message as { toolName?: string }).toolName ?? "";
-	return message.role + "\x00" + toolName + "\x00" + messageText(message.content);
-}
-
-/**
- * Deterministic, thinking-insensitive SHA-256 hash of a message sequence.
- * Uses SOH (\x01) as the inter-message delimiter — distinct from the \x00
- * field separator in messageKey, preventing crafted content from mimicking
- * a message boundary (collision test: session-manager.test.ts:9).
- */
-export function hashMessages(messages: Message[]): string {
-	const hash = createHash("sha256");
-	for (const message of messages) {
-		hash.update(messageKey(message));
-		// Inter-message delimiter uses SOH (\x01), NOT \0, because messageKey
-		// uses \0 as its field separator. A distinct byte here prevents crafted
-		// content from mimicking a message boundary.
-		hash.update("\x01");
-	}
-	return hash.digest("hex");
-}
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 

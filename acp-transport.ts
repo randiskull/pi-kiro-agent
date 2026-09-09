@@ -96,8 +96,13 @@ function idleTimeoutMs(): number {
 function turnTimeoutMs(): number {
 	return envMs("PI_KIRO_TURN_TIMEOUT_MS", 45 * 60 * 1000);
 }
-/** Startup timeout: wait up to 30s for all MCP servers to initialize after session/new. */
-const MCP_STARTUP_TIMEOUT_MS = 30_000;
+/** Startup timeout: wait up to 30s for all MCP servers to initialize after
+ * session/new. Overridable via PI_KIRO_MCP_STARTUP_TIMEOUT_MS (used by tests to
+ * exercise the timeout path without a 30s wall). */
+function mcpStartupTimeoutMs(): number {
+	const raw = Number.parseInt(process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS ?? "", 10);
+	return Number.isFinite(raw) && raw > 0 ? raw : 30_000;
+}
 
 // ─── NDJSON message types ─────────────────────────────────────────────────────
 
@@ -401,8 +406,9 @@ async function startSession(
 		entry.acpSessionId = sessionId;
 
 		// Wait for both: all servers initialized + commands/available with full tool list
+		const timeoutMs = mcpStartupTimeoutMs();
 		const timeout = new Promise<void>((_, reject) =>
-			setTimeout(() => reject(new Error(`ACP MCP startup timed out after ${MCP_STARTUP_TIMEOUT_MS}ms`)), MCP_STARTUP_TIMEOUT_MS).unref?.()
+			setTimeout(() => reject(new Error(`ACP MCP startup timed out after ${timeoutMs}ms`)), timeoutMs).unref?.()
 		);
 
 		await Promise.race([
@@ -494,6 +500,15 @@ async function spawnAcpChild(
 		registry.delete(cwd);
 		killChild(entry, "initialize failed");
 		throw new Error(`kiro-cli acp initialize failed: ${initResp.error.message}`);
+	}
+	// Fail open on protocol drift: kiro-cli's ACP protocol is still moving, so a
+	// version mismatch is a warning, not a hard failure — the handshake succeeded
+	// and the transport is resilient to unknown update kinds.
+	const negotiated = (initResp.result as { protocolVersion?: number })?.protocolVersion;
+	if (negotiated !== undefined && negotiated !== ACP_PROTOCOL_VERSION) {
+		console.error(
+			`[pi-kiro] ACP protocolVersion mismatch: client=${ACP_PROTOCOL_VERSION}, server=${negotiated}. Proceeding; update pi-kiro if the transport misbehaves.`,
+		);
 	}
 	if (turnSignal.aborted) {
 		registry.delete(cwd);
