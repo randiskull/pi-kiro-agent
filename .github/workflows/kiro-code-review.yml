@@ -43,9 +43,13 @@ jobs:
         env:
           KIRO_API_KEY: ${{ secrets.KIRO_API_KEY }}
         run: |
+          # Capture raw output, then strip ANSI escape codes (kiro-cli emits terminal
+          # color codes even when non-interactive, which render as garbled ^[[...m
+          # sequences in the posted PR comment).
           kiro-cli chat --no-interactive --trust-all-tools --agent code-reviewer \
-            "Review the changes in this PR. The base branch is ${{ github.event.pull_request.base.ref }} and the head is ${{ github.event.pull_request.head.sha }}. Use git diff to see what changed." \
-            > review-output.md
+            "Review the changes in this PR. The base branch is ${{ github.event.pull_request.base.ref }} and the head is ${{ github.event.pull_request.head.sha }}. Use git diff to see what changed. Wrap ONLY your final review between the exact markers <REVIEW> and </REVIEW> on their own lines, with nothing after </REVIEW>." \
+            > review-raw.txt
+          sed -E $'s/\x1b\\[[0-9;?]*[a-zA-Z]//g' review-raw.txt > review-output.md
 
       - name: Post review comment
         if: steps.check-key.outputs.available == 'true' && success()
@@ -53,7 +57,15 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const review = fs.readFileSync('review-output.md', 'utf8').trim();
+            const raw = fs.readFileSync('review-output.md', 'utf8');
+            // The captured output interleaves kiro-cli tool-use narration
+            // (directory reads, greps, "Completed in Xs" lines) with the final
+            // review. The prompt asks the agent to wrap its review in
+            // <REVIEW>…</REVIEW>; extract only that. If the markers are missing
+            // (model didn't comply), fall back to the full stripped output so we
+            // still post something rather than nothing.
+            const match = raw.match(/<REVIEW>\s*([\s\S]*?)\s*<\/REVIEW>/);
+            const review = (match ? match[1] : raw).trim();
             if (review) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
