@@ -38,6 +38,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import type {
 	AssistantMessage,
@@ -574,6 +575,11 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 		(async () => {
 			let removeUpdateHandler: (() => void) | undefined;
 			let removeMetadataHandler: (() => void) | undefined;
+			// Hoisted so the catch can detach it on any throw from getOrCreateChild,
+			// getBridge, startSession, or request (registered { once: true }, but the
+			// captured closure otherwise lingers on the per-turn AbortSignal).
+			let onAbort: (() => void) | undefined;
+			let abortSignal: AbortSignal | undefined;
 
 			try {
 				stream.push({ type: "start", partial: output });
@@ -584,7 +590,8 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				const turnSignal = options?.signal ?? new AbortController().signal;
 
 				// Abort handler: kill child on abort
-				const onAbort = () => {
+				abortSignal = options?.signal;
+				onAbort = () => {
 					const entry = childRegistry.get(cwd);
 					if (entry) {
 						killChild(entry, "aborted");
@@ -597,13 +604,11 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				try {
 					acpEntry = await getOrCreateChild(deps, cwd, turnSignal);
 				} catch (err) {
-					options?.signal?.removeEventListener("abort", onAbort);
 					if (options?.signal?.aborted) throw new Error("kiro-cli acp run aborted");
 					throw err;
 				}
 
 				if (options?.signal?.aborted) {
-					options.signal.removeEventListener("abort", onAbort);
 					throw new Error("kiro-cli acp run aborted");
 				}
 
@@ -676,8 +681,14 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 						case "tool_call":
 							output.content.push({
 								type: "toolCall",
-								id: u.toolCallId ?? `acp-tool-${Date.now()}`,
-								name: u._meta?.kiro?.toolName ?? u.title ?? "unknown",
+								// randomUUID (not Date.now()): tool_call updates arrive in bursts,
+								// so two fallbacks in the same millisecond would collide inside one
+								// AssistantMessage. The fallback only fires under protocol drift
+								// (toolCallId is normally protocol-supplied).
+								id: u.toolCallId ?? `acp-tool-${randomUUID()}`,
+								// u.title can be a "Running: @<server>/<tool>" progress string; strip
+								// that prefix so history carries the bare tool name, not the banner.
+								name: u._meta?.kiro?.toolName ?? u.title?.replace(/^Running:\s*@[^/]*\//, "") ?? "unknown",
 								arguments: (u.rawInput as Record<string, unknown>) ?? {},
 							} as AssistantMessage["content"][number]);
 							break;
@@ -721,7 +732,6 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				removeUpdateHandler = undefined;
 				removeMetadataHandler();
 				removeMetadataHandler = undefined;
-				options?.signal?.removeEventListener("abort", onAbort);
 
 				if (options?.signal?.aborted) throw new Error("kiro-cli acp run aborted");
 
@@ -796,6 +806,12 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					error: output,
 				});
 				stream.end();
+			} finally {
+				// Detach the abort listener on every exit path. It is registered
+				// { once: true }, so this only matters when the turn ends without
+				// aborting (success or a thrown error), where the closure would
+				// otherwise linger attached to the caller's AbortSignal.
+				if (onAbort) abortSignal?.removeEventListener("abort", onAbort);
 			}
 		})();
 
