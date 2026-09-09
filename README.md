@@ -60,7 +60,7 @@ via `/bin/sh -c "cd … && exec …"`.
 **Transport matters here.** Only `PI_KIRO_TRANSPORT=acp` passes MCP servers inline through
 `session/new` and returns real, fully-parsed tool-call arguments. The default `chat` transport
 has to text-parse kiro's console output, which fabricates tool-call ids (`kiro-mcp-<n>-<name>`)
-and degrades arguments to `{}` — enough to satisfy GSD's zero-tool-call guard, not enough to
+and best-effort parses arguments from CLI log output (unparseable blocks degrade to `{}`) — enough to satisfy GSD's zero-tool-call guard, not enough to
 round-trip a real `gsd_task_complete` payload. **Run GSD on kiro with
 `PI_KIRO_TRANSPORT=acp`.** Set `PI_KIRO_WORKFLOW_MCP=off` to opt out of mounting the server
 entirely.
