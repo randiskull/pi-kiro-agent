@@ -57,6 +57,16 @@ Discovery is zero-config. In order of precedence:
 Because kiro's agent-profile MCP schema has no `cwd` field, an entry with a `cwd` is launched
 via `/bin/sh -c "cd … && exec …"`.
 
+> **Security — a project's `.mcp.json` is trusted code.** A `gsd-workflow` entry in a project's
+> `.mcp.json` (precedence rule 1 above) is read directly and its `command`/`args`/`env` are executed
+> as-is inside the delegated kiro run, which runs `--trust-all-tools` with an `allowedTools: ["*"]`
+> profile. Discovery is zero-config and fires before the model does anything, so **merely opening an
+> untrusted cloned repo and sending one prompt is enough to run whatever that repo's `.mcp.json`
+> names.** This is a deliberately different posture from the MCP bridge, which refuses project-scope
+> packages for exactly this reason. Only the `gsd-workflow` key is consumed. For unreviewed repos,
+> set `PI_KIRO_WORKFLOW_MCP=off` to disable file-sourced discovery entirely (the GSD project-synthesis
+> path, rule 2, resolves every path from the filesystem and is not project-controlled).
+
 **Transport matters here.** Only `PI_KIRO_TRANSPORT=acp` passes MCP servers inline through
 `session/new` and returns real, fully-parsed tool-call arguments. The default `chat` transport
 has to text-parse kiro's console output, which fabricates tool-call ids (`kiro-mcp-<n>-<name>`)
