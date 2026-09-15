@@ -5,6 +5,30 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Release path is gated.** `CODEOWNERS` puts the workflows, both manifests, `scripts/` and
+  itself under `@randiskull`, and `.github/workflows/publish.yml` cuts releases from a `v*` tag
+  via npm trusted publishing (OIDC, no long-lived token in the repo). New constraint tests assert
+  the package declares no install-time lifecycle scripts, that `publishConfig` stays pinned to
+  npmjs.org, and that `prepublishOnly` stays wired to `npm run verify`.
+- A one-time stderr audit line when the `gsd-workflow` MCP server is mounted from a project's
+  `.mcp.json` rather than synthesized. That path deliberately does not go through pi's
+  project-trust prompt, so the line names the config path and the opt-out
+  (`PI_KIRO_WORKFLOW_MCP=off`). Synthesized entries stay silent: nothing project-supplied runs.
+
+### Fixed
+
+- `importViaPiRegistry` no longer imports a manifest `pi.extensions` entry that resolves outside
+  the package's own install directory. A corrupt user-scope `package.json` naming `../../x.ts`
+  was resolved and imported; it is now skipped. Defence in depth behind `isBridgeablePackage`,
+  which is what actually keeps project-scope packages out.
+- `startSession` initializes its `_kiro.dev/commands/available` detach handle to a no-op instead
+  of a definite-assignment assertion, so the `finally` cleanup cannot become a TypeError that
+  masks the real startup failure.
+
 ## [0.2.0] - 2026-08-11
 
 First versioned release. `0.1.0` was never tagged or published — it was the

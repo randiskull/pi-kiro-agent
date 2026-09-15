@@ -72,6 +72,8 @@ via `/bin/sh -c "cd … && exec …"`.
 > packages for exactly this reason. Only the `gsd-workflow` key is consumed. For unreviewed repos,
 > set `PI_KIRO_WORKFLOW_MCP=off` to disable file-sourced discovery entirely (the GSD project-synthesis
 > path, rule 2, resolves every path from the filesystem and is not project-controlled).
+> When rule 1 does fire, one audit line naming the `.mcp.json` goes to stderr, so a project-supplied
+> command is never mounted silently; rule 2 stays quiet because nothing project-supplied runs.
 
 **Transport matters here.** Only `PI_KIRO_TRANSPORT=acp` passes MCP servers inline through
 `session/new` and returns real, fully-parsed tool-call arguments. The default `chat` transport

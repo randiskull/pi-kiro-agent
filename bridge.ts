@@ -23,7 +23,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { resolve as resolvePath } from "node:path";
+import { resolve as resolvePath, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -128,6 +128,25 @@ export function manifestExtensionEntries(manifest: unknown): string[] {
 }
 
 /**
+ * A manifest entry is importable only when it resolves INSIDE the package's own
+ * install directory. `manifestExtensionEntries` returns whatever strings the
+ * manifest lists, so a corrupt (or hostile) user-scope `package.json` naming
+ * `../../elsewhere.ts` would otherwise be resolved and imported from outside the
+ * install tree. Exploitation already requires a compromised package the user
+ * installed themselves, which is why this is defence in depth rather than the
+ * primary control (that is `isBridgeablePackage`).
+ *
+ * Compared against `base + sep`, never a bare prefix: `/pkgs/a-extra` starts
+ * with `/pkgs/a` but is a different directory.
+ */
+export function isContainedEntryPath(base: string, target: string): boolean {
+	const root = resolvePath(base);
+	const resolved = resolvePath(target);
+	if (resolved === root) return true;
+	return resolved.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+
+/**
  * A configured package is bridgeable only when pi installed it at USER scope.
  * Project-scope packages come from the current repo's `.pi/settings.json` — an
  * untrusted cloned repo could point at attacker-controlled entry files — so
@@ -168,8 +187,11 @@ async function importViaPiRegistry(source: string): Promise<ExtensionModule[]> {
 		if ((manifest as { name?: unknown }).name !== source) continue;
 		const modules: ExtensionModule[] = [];
 		for (const entry of manifestExtensionEntries(manifest)) {
+			const entryPath = resolvePath(pkg.installedPath, entry);
+			// Never import an entry that escaped the package's install directory.
+			if (!isContainedEntryPath(pkg.installedPath, entryPath)) continue;
 			try {
-				modules.push((await import(pathToFileURL(resolvePath(pkg.installedPath, entry)).href)) as ExtensionModule);
+				modules.push((await import(pathToFileURL(entryPath).href)) as ExtensionModule);
 			} catch {
 				// entry failed to load — skip it, keep the rest
 			}

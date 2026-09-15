@@ -9,10 +9,11 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeAgentProfile } from "./kiro-bridge.js";
 import {
 	WORKFLOW_MCP_SERVER_KEY,
+	_resetWorkflowMcpNoticesForTest,
 	createToolUseStreamParser,
 	discoverWorkflowMcpServers,
 	parseKiroToolUses,
@@ -27,6 +28,23 @@ const PROBE_OUTPUT = `Running tool gsd_milestone_status with the param (from mcp
  ⋮  }
  - Completed in 0.11s
 > M027 "AI Orchestration" is fully pending — all 3 slices have no tasks planned.`;
+
+/**
+ * discoverWorkflowMcpServers writes an audit line to stderr whenever it mounts a
+ * command sourced from a project `.mcp.json` (see announceFileSourcedEntry).
+ * Capture it file-wide: the tests that assert on it read the spy, and the many
+ * tests that merely exercise that path stay quiet. Nothing else in this module
+ * writes to console.error, so nothing real is being hidden. The notice is
+ * once-per-config-path for the life of the process, hence the reset.
+ */
+beforeEach(() => {
+	vi.spyOn(console, "error").mockImplementation(() => undefined);
+	_resetWorkflowMcpNoticesForTest();
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 describe("parseKiroToolUses", () => {
 	it("parses the live probe capture: name, server, and JSON params", () => {
@@ -175,6 +193,27 @@ describe("discoverWorkflowMcpServers", () => {
 		writeConfig({ mcpServers: { "gsd-workflow": { command: "gsd-mcp" } } });
 		process.env.PI_KIRO_WORKFLOW_MCP = "off";
 		expect(discoverWorkflowMcpServers(dir)).toBeUndefined();
+	});
+
+	it("announces a file-sourced command on stderr, once per config path", () => {
+		writeConfig({ mcpServers: { "gsd-workflow": { command: "gsd-mcp" } } });
+		expect(discoverWorkflowMcpServers(dir)).toBeDefined();
+		expect(console.error).toHaveBeenCalledTimes(1);
+		const line = vi.mocked(console.error).mock.calls[0]?.[0] as string;
+		expect(line).toContain(join(dir, ".mcp.json"));
+		expect(line).toContain("--trust-all-tools");
+		expect(line).toContain("PI_KIRO_WORKFLOW_MCP=off");
+		// Discovery runs once per turn — the audit line must not repeat every turn.
+		expect(discoverWorkflowMcpServers(dir)).toBeDefined();
+		expect(console.error).toHaveBeenCalledTimes(1);
+	});
+
+	it("announces nothing when there is no entry to mount or discovery is off", () => {
+		expect(discoverWorkflowMcpServers(dir)).toBeUndefined();
+		writeConfig({ mcpServers: { "gsd-workflow": { command: "gsd-mcp" } } });
+		process.env.PI_KIRO_WORKFLOW_MCP = "off";
+		expect(discoverWorkflowMcpServers(dir)).toBeUndefined();
+		expect(console.error).not.toHaveBeenCalled();
 	});
 
 	it(".git file (linked worktree) does not stop the .mcp.json walk", () => {
@@ -366,6 +405,11 @@ describe("synthesizeWorkflowMcpEntry", () => {
 			expect(discoverWorkflowMcpServers(projectDir, env)).toBeDefined();
 			writeFileSync(join(projectDir, ".mcp.json"), JSON.stringify({ mcpServers: { other: { command: "x" } } }));
 			expect(discoverWorkflowMcpServers(projectDir, env)).toBeDefined();
+		});
+
+		it("announces nothing for a synthesized entry (no project-supplied command)", () => {
+			expect(discoverWorkflowMcpServers(projectDir, env)).toBeDefined();
+			expect(console.error).not.toHaveBeenCalled();
 		});
 
 		it("respects PI_KIRO_WORKFLOW_MCP=off for synthesized entries too", () => {

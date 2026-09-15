@@ -17,7 +17,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const packageJson = JSON.parse(
 	readFileSync(resolve(__dirname, "package.json"), "utf8"),
-) as { dependencies?: Record<string, string> };
+) as {
+	dependencies?: Record<string, string>;
+	scripts?: Record<string, string>;
+	publishConfig?: { registry?: string; access?: string };
+};
 
 describe("package.json security constraints", () => {
 	it("@modelcontextprotocol/sdk lower bound is >=1.30.0 (clears @hono/node-server path-traversal chain)", () => {
@@ -43,5 +47,35 @@ describe("package.json security constraints", () => {
 			`@modelcontextprotocol/sdk constraint "${constraint}" allows versions below 1.30.0. ` +
 				"Must be at least ^1.30.0 to prevent @hono/node-server path-traversal chain (see README).",
 		).toBe(true);
+	});
+});
+
+describe("supply-chain constraints on the release path", () => {
+	// A contributor with write access cannot publish (releases are tag-gated), but
+	// an install-time lifecycle script would run on every consumer's machine at
+	// `npm install` time, with no review gate between merge and execution. The
+	// package deliberately has none, and this pins that.
+	it("declares no install-time lifecycle scripts", () => {
+		const forbidden = ["preinstall", "install", "postinstall", "prepare"];
+		const present = forbidden.filter((name) => packageJson.scripts?.[name] !== undefined);
+		expect(
+			present,
+			`install-time lifecycle scripts run on every consumer without review: ${present.join(", ")}`,
+		).toEqual([]);
+	});
+
+	it("pins the publish registry to npmjs.org with public access", () => {
+		expect(
+			packageJson.publishConfig?.registry,
+			"publishConfig.registry must stay pinned, or a publish follows whatever default registry the machine has (e.g. a private CodeArtifact repository)",
+		).toBe("https://registry.npmjs.org/");
+		expect(packageJson.publishConfig?.access).toBe("public");
+	});
+
+	it("gates publishes on the full verify suite", () => {
+		expect(
+			packageJson.scripts?.prepublishOnly,
+			"prepublishOnly must run verify so a publish cannot skip typecheck, tests or the secret scan",
+		).toBe("npm run verify");
 	});
 });

@@ -7,6 +7,7 @@ import {
 	type CapturedTool,
 	DEFAULT_BRIDGE_TOOLS,
 	isBridgeablePackage,
+	isContainedEntryPath,
 	manifestExtensionEntries,
 	serveBridgeHttp,
 	toJsonSchema,
@@ -64,6 +65,24 @@ describe("isBridgeablePackage", () => {
 	it("rejects packages that are not installed", () => {
 		expect(isBridgeablePackage({ scope: "user" })).toBe(false);
 		expect(isBridgeablePackage({ scope: "user", installedPath: "" })).toBe(false);
+	});
+});
+
+describe("isContainedEntryPath", () => {
+	it("accepts entries inside the install directory, including the directory itself", () => {
+		expect(isContainedEntryPath("/home/u/.pi/npm/x", "/home/u/.pi/npm/x/dist/index.js")).toBe(true);
+		expect(isContainedEntryPath("/home/u/.pi/npm/x/", "/home/u/.pi/npm/x/index.ts")).toBe(true);
+		expect(isContainedEntryPath("/home/u/.pi/npm/x", "/home/u/.pi/npm/x")).toBe(true);
+	});
+
+	it("rejects a manifest entry that traverses out of the install directory", () => {
+		expect(isContainedEntryPath("/home/u/.pi/npm/x", "/home/u/.pi/npm/x/../../../evil.ts")).toBe(false);
+		expect(isContainedEntryPath("/home/u/.pi/npm/x", "/etc/passwd")).toBe(false);
+	});
+
+	it("rejects a sibling whose name merely starts with the install path", () => {
+		// The reason for comparing against `base + sep` rather than a bare prefix.
+		expect(isContainedEntryPath("/home/u/.pi/npm/x", "/home/u/.pi/npm/x-evil/index.js")).toBe(false);
 	});
 });
 

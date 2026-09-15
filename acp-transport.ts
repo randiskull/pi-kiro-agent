@@ -405,9 +405,13 @@ async function startSession(
 	// Register _kiro.dev/commands/available listener BEFORE sending session/new to
 	// avoid a race: the server may send commands/available synchronously after the
 	// session/new response (before any await yields control back to this function).
-	// offCmd is assigned synchronously inside the Promise constructor, so it is
-	// defined by the time we reach the first await (definite assignment).
-	let offCmd!: () => void;
+	// offCmd is assigned synchronously inside the Promise constructor below, so
+	// it is the real detach function by the time we reach the first await. It is
+	// still initialized to a no-op rather than declared with `!`: the `finally`
+	// below calls it unconditionally, and a future refactor that moves the
+	// assignment off the synchronous path would otherwise turn cleanup into a
+	// TypeError that masks the original failure.
+	let offCmd: () => void = () => undefined;
 	const cmdAvailablePromise = new Promise<void>((resolve) => {
 		offCmd = onNotification(entry, "_kiro.dev/commands/available", () => {
 			// After all servers are ready, the next commands/available has the full tool list
