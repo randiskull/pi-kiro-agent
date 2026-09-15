@@ -3,8 +3,9 @@ name: Publish
 # Releases are cut by pushing a version tag: git tag v0.2.1 && git push --tags
 # Authentication is npm trusted publishing (OIDC). No publish-token secret
 # exists for this repo and none should be added. The id-token permission below is what npm exchanges
-# for a short-lived publish credential, and it is also what makes npm attach a
-# provenance attestation automatically.
+# for a short-lived publish credential. npm also attaches a provenance
+# attestation automatically, but only while this repository is public; on a
+# private repo the publish succeeds with no attestation attached.
 
 on:
   push:

@@ -3,6 +3,11 @@
 Captured: 2026-07-31 (pi-kiro repo, branch main, commit 47f49ad)
 CLI version: 2.16.0 (third drift: 2.13→2.15→2.16 in ~3 weeks)
 
+> **Raw capture fixtures (`probes/*.json`) are not committed.** They hold live
+> session IDs and absolute local paths from the machine that ran the campaign.
+> Re-generate them by running the probe scripts in this directory against your
+> own authenticated kiro-cli; every claim below is reproducible that way.
+
 ---
 
 ## Transport layer (discovered by P0 raw sniff)

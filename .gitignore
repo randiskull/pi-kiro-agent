@@ -4,3 +4,4 @@ coverage/
 scans/
 .DS_Store
 .agents/
+probes/*.json
