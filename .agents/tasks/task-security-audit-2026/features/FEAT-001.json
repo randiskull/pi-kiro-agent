@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-001",
+  "type": "docs",
+  "description": "Fix README inaccuracy: the 'The MCP bridge' section describes chat-transport-specific mechanics (writing a throwaway agent profile file to ~/.kiro/agents/, passing --agent and --require-mcp-startup flags to kiro-cli) as if they apply to all delegated turns. Under PI_KIRO_TRANSPORT=acp, NO agent profile file is written and NO --agent/--require-mcp-startup flags are used; instead, the bridge mounts inline via session/new.mcpServers. The 'How output is parsed' section similarly describes only chat-transport sentinel parsing without noting that the ACP transport uses structured NDJSON protocol events instead (and that structured parsing is already available now, not just 'when #5423 ships').",
+  "status": "completed",
+  "steps": [
+    "In README.md, locate the 'The MCP bridge' section (line ~25). The sentence 'Each delegated turn serves your Pi session's bridgeable tools over a loopback Streamable-HTTP MCP endpoint and writes a throwaway kiro agent profile (~/.kiro/agents/pi-kiro-bridge-*.json)...' describes chat-transport behavior. Qualify this paragraph with a parenthetical or opening clause that clarifies these mechanics apply to the default chat transport. Suggested edit: change 'Each delegated turn' to 'Under the default chat transport, each delegated turn' and add a follow-on sentence like: 'Under the ACP transport (PI_KIRO_TRANSPORT=acp), the bridge mounts inline via the session/new protocol request instead — no profile file is written and no --agent flag is used.'",
+    "In the same paragraph, the 'Kiro v3 note' after it says 'v3's agent config ... would allow one stable profile'. This note is already scoped to agent profiles, but should be understood as chat-transport context. Optionally add a parenthetical '(chat transport)' to the v3 note for clarity.",
+    "In README.md, locate the 'How output is parsed' section (line ~31). The sentence 'When #5423 ships, the sentinel path swaps for structured parsing' is misleading — structured parsing already exists today via PI_KIRO_TRANSPORT=acp (which uses session/update NDJSON events and _kiro.dev/metadata for credits). Update this sentence to acknowledge the ACP transport as the current structured-output path. Suggested edit: append something like ', or use PI_KIRO_TRANSPORT=acp which already uses the ACP protocol's structured events (no sentinel required).' OR replace the sentence with: 'The ACP transport (PI_KIRO_TRANSPORT=acp) already uses structured NDJSON protocol events instead of sentinel parsing. When #5423 ships in the chat transport, the sentinel path swaps for structured parsing there too.'",
+    "No code changes — only README.md. Verify all modified paragraphs are accurate against the actual code behavior in stream-adapter.ts (chat transport) and acp-transport.ts (ACP transport)."
+  ],
+  "acceptance_criteria": [
+    "README.md 'The MCP bridge' section no longer implies that agent profile file creation and --agent flags are used unconditionally for all transports",
+    "README.md clearly conveys that the agent profile + --agent mechanism is chat-transport-specific",
+    "README.md 'The MCP bridge' section mentions that under ACP transport, the bridge mounts inline via session/new (no file written)",
+    "README.md 'How output is parsed' section no longer implies structured parsing is only a future possibility — it acknowledges PI_KIRO_TRANSPORT=acp already provides structured event-based parsing",
+    "No code (.ts) files are modified in this feature"
+  ],
+  "verification": [
+    "grep -n 'Each delegated turn' README.md -- should now reference chat transport context",
+    "grep -n 'session/new\\|inline\\|ACP transport' README.md -- should have a mention in the MCP bridge section",
+    "grep -n 'When #5423 ships' README.md -- updated text should acknowledge ACP as current structured path",
+    "No .ts source files modified (git diff --name-only should show only README.md)"
+  ],
+  "blocked_reason": null,
+  "findings": "Docs-only change. Two README inaccuracies fixed: (1) 'The MCP bridge' section now qualifies agent-profile/--agent mechanics as chat-transport-specific and describes ACP inline mounting via session/new.mcpServers. (2) 'How output is parsed' now acknowledges ACP transport as the current structured-event path; #5423 note reframed as chat-transport-specific. Kiro v3 note scoped to chat transport. No .ts files modified. PR #38 opened: https://github.com/randiskull/pi-kiro/pull/38. Security audit found no vulnerabilities in spawn/injection/auth/credential areas."
+}
