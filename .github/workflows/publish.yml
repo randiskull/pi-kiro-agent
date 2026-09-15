@@ -1,0 +1,45 @@
+name: Publish
+
+# Releases are cut by pushing a version tag: git tag v0.2.1 && git push --tags
+# Authentication is npm trusted publishing (OIDC). No publish-token secret
+# exists for this repo and none should be added. The id-token permission below is what npm exchanges
+# for a short-lived publish credential, and it is also what makes npm attach a
+# provenance attestation automatically.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs npm >= 11.5.1; do not rely on the bundled npm.
+      - run: npm install -g npm@latest
+
+      - name: Tag must match the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json version $pkg" >&2
+            exit 1
+          fi
+
+      - run: npm ci
+
+      # prepublishOnly runs check + tests + secret scan before the tarball is built.
+      - run: npm publish
