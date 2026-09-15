@@ -1,5 +1,5 @@
 {
-	"name": "pi-kiro",
+	"name": "pi-kiro-agent",
 	"version": "0.2.0",
 	"description": "Kiro CLI backend for the Pi coding agent: a `kiro` provider that delegates turns to your local authenticated kiro-cli (seat/credit-billed, official client), with an MCP bridge exposing the calling Pi session's tools inside delegated runs.",
 	"keywords": [
@@ -14,14 +14,15 @@
 	"type": "module",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/randiskull/pi-kiro.git"
+		"url": "git+https://github.com/randiskull/pi-kiro-agent.git"
 	},
-	"homepage": "https://github.com/randiskull/pi-kiro#readme",
+	"homepage": "https://github.com/randiskull/pi-kiro-agent#readme",
 	"bugs": {
-		"url": "https://github.com/randiskull/pi-kiro/issues"
+		"url": "https://github.com/randiskull/pi-kiro-agent/issues"
 	},
 	"scripts": {
 		"test": "vitest run",
+		"prepublishOnly": "npm run verify",
 		"check": "tsc --noEmit",
 		"scan:secrets": "node scripts/secret-scan.mjs --all",
 		"scan:kiro": "sh scripts/scan-kiro.sh",
@@ -38,6 +39,10 @@
 		"!test-setup.ts",
 		"!vitest.config.ts"
 	],
+	"publishConfig": {
+		"registry": "https://registry.npmjs.org/",
+		"access": "public"
+	},
 	"pi": {
 		"extensions": [
 			"./index.ts"
