@@ -2,7 +2,11 @@ name: Kiro Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, ready_for_review]
+    paths-ignore:
+      - '**/*.md'
+      - '.rpiv/**'
+      - 'package-lock.json'
 
 permissions:
   contents: read
@@ -15,12 +19,16 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-latest
-    # Skip when KIRO_API_KEY is unavailable (Dependabot PRs, fork PRs).
-    if: ${{ github.actor != 'dependabot[bot]' }}
+    timeout-minutes: 10
+    # Skip Dependabot (no KIRO_API_KEY) and draft PRs (reviewed once marked ready).
+    if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.draft == false }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # The agent runs with --trust-all-tools over untrusted PR content; do not
+          # leave the write-scoped GITHUB_TOKEN sitting in .git/config for it to read.
+          persist-credentials: false
 
       - name: Check API key
         id: check-key
@@ -34,43 +42,102 @@ jobs:
             echo "available=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install Kiro CLI
+      - name: Compute PR diff
+        id: diff
         if: steps.check-key.outputs.available == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Three-dot diff from the merge-base (what GitHub shows). SHAs come from the
+          # event payload as env vars — never interpolated into the git command line —
+          # so a branch named to look like a flag can't be misparsed. package-lock.json
+          # is excluded as large/low-signal; .agents/, .kiro/ and .github/ are NOT
+          # excluded (they are prompt-injection / config surface that must be reviewed).
+          git diff --unified=3 "${BASE_SHA}...${HEAD_SHA}" -- . ':(exclude)package-lock.json' > pr.diff
+          SIZE=$(wc -c < pr.diff)
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          # Cap by byte size; skip (do NOT truncate) above the cap. Truncating a diff can
+          # slice a multibyte char (kiro-cli rejects non-UTF-8 argv) or cut mid-hunk and
+          # provoke false-positive findings.
+          if [ "$SIZE" -gt 60000 ]; then
+            echo "too_large=true" >> "$GITHUB_OUTPUT"
+          elif [ "$SIZE" -eq 0 ]; then
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Kiro CLI
+        if: steps.check-key.outputs.available == 'true' && steps.diff.outputs.too_large != 'true' && steps.diff.outputs.empty != 'true'
         run: curl -fsSL https://cli.kiro.dev/install | bash
 
       - name: Run code review
-        if: steps.check-key.outputs.available == 'true'
+        if: steps.check-key.outputs.available == 'true' && steps.diff.outputs.too_large != 'true' && steps.diff.outputs.empty != 'true'
         env:
           KIRO_API_KEY: ${{ secrets.KIRO_API_KEY }}
         run: |
-          # Capture raw output, then strip ANSI escape codes (kiro-cli emits terminal
-          # color codes even when non-interactive, which render as garbled ^[[...m
-          # sequences in the posted PR comment).
+          # The diff lives in pr.diff (written by the previous step). We hand the agent
+          # the file PATH, not the diff inline, to avoid ARGV length limits and any
+          # shell-quoting / injection risk. Capture raw output then strip ANSI escapes
+          # (kiro-cli emits terminal color codes even non-interactively, which render as
+          # garbled ^[[...m sequences in the posted comment).
           kiro-cli chat --no-interactive --trust-all-tools --agent code-reviewer \
-            "Review the changes in this PR. The base branch is ${{ github.event.pull_request.base.ref }} and the head is ${{ github.event.pull_request.head.sha }}. Use git diff to see what changed. Wrap ONLY your final review between the exact markers <REVIEW> and </REVIEW> on their own lines, with nothing after </REVIEW>." \
+            "Review this pull request. The diff is in the file pr.diff in the current directory — read it first. Review ONLY the changes in that diff and code directly reachable from the changed lines; you may grep/read specific callers or callees of changed symbols, but do NOT audit the whole codebase. Wrap ONLY your final review between the exact markers <REVIEW> and </REVIEW> on their own lines, with nothing after </REVIEW>." \
             > review-raw.txt
           sed -E $'s/\x1b\\[[0-9;?]*[a-zA-Z]//g' review-raw.txt > review-output.md
+
+      - name: Upload raw review output
+        if: steps.check-key.outputs.available == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiro-review-raw
+          path: |
+            review-raw.txt
+            pr.diff
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Post review comment
         if: steps.check-key.outputs.available == 'true' && success()
         uses: actions/github-script@v9
+        env:
+          DIFF_TOO_LARGE: ${{ steps.diff.outputs.too_large }}
+          DIFF_EMPTY: ${{ steps.diff.outputs.empty }}
+          DIFF_SIZE: ${{ steps.diff.outputs.size }}
         with:
           script: |
             const fs = require('fs');
-            const raw = fs.readFileSync('review-output.md', 'utf8');
-            // The captured output interleaves kiro-cli tool-use narration
-            // (directory reads, greps, "Completed in Xs" lines) with the final
-            // review. The prompt asks the agent to wrap its review in
-            // <REVIEW>…</REVIEW>; extract only that. If the markers are missing
-            // (model didn't comply), fall back to the full stripped output so we
-            // still post something rather than nothing.
-            const match = raw.match(/<REVIEW>\s*([\s\S]*?)\s*<\/REVIEW>/);
-            const review = (match ? match[1] : raw).trim();
-            if (review) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body: `## Kiro Code Review\n\n${review}`
-              });
+            // Hidden marker makes the comment "sticky": update the same comment on every
+            // push instead of posting a new one per synchronize event.
+            const MARKER = '<!-- kiro-review -->';
+
+            let body;
+            if (process.env.DIFF_EMPTY === 'true') {
+              // Nothing reviewable after path exclusions — say so briefly.
+              body = `${MARKER}\n## Kiro Code Review\n\nNo reviewable code changes in this diff (only excluded paths). Skipped.`;
+            } else if (process.env.DIFF_TOO_LARGE === 'true') {
+              body = `${MARKER}\n## Kiro Code Review\n\nDiff too large for automated review (${process.env.DIFF_SIZE} bytes > 60000). Skipped — please review manually or split the PR.`;
+            } else {
+              const raw = fs.readFileSync('review-output.md', 'utf8');
+              // The captured output interleaves tool-use narration with the final review.
+              // Extract only the <REVIEW>…</REVIEW> span; fall back to full stripped output
+              // if the markers are missing (model didn't comply) so we post something.
+              const match = raw.match(/<REVIEW>\s*([\s\S]*?)\s*<\/REVIEW>/);
+              const review = (match ? match[1] : raw).trim();
+              if (!review) return;
+              body = `${MARKER}\n## Kiro Code Review\n\n${review}`;
+            }
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            // Find an existing sticky comment authored by the Actions bot.
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(MARKER));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
