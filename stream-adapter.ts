@@ -110,7 +110,7 @@ export function cleanBody(raw: string): { body: string; credits: number | undefi
 	const lines = stripAnsi(raw).split("\n");
 	const kept: string[] = [];
 	for (const line of lines) {
-		const creditsMatch = line.match(/▸?\s*Credits:\s*([\d.]+)/);
+		const creditsMatch = line.match(/▸\s*Credits:\s*([\d.]+)/);
 		if (creditsMatch) {
 			credits = Number.parseFloat(creditsMatch[1]);
 			continue;
