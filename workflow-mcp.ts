@@ -110,10 +110,13 @@ export interface WorkflowMcpEntry {
  * project-scope packages because "an untrusted cloned repo could point at
  * attacker-controlled entry files." A hostile repo whose `.mcp.json` names a
  * `gsd-workflow` entry therefore executes as-is on the first prompt. The guard
- * for unreviewed repos is `PI_KIRO_WORKFLOW_MCP=off` (see `workflowMcpEnabled`).
+ * for unreviewed repos is `PI_KIRO_WORKFLOW_MCP=off` (see `workflowMcpEnabled`),
+ * and `announceFileSourcedEntry` writes a one-time stderr audit line naming the
+ * config path whenever this file-sourced path (rather than synthesis) is what
+ * gets mounted, so the user is not silently handed a project's command.
  * Only the `gsd-workflow` key is consumed; no other `.mcp.json` key is mounted.
  */
-function readWorkflowMcpEntry(cwd: string): WorkflowMcpEntry | undefined {
+function readWorkflowMcpEntry(cwd: string): { entry: WorkflowMcpEntry; configPath: string } | undefined {
 	const configPath = findMcpConfig(cwd);
 	if (!configPath) return undefined;
 	let parsed: { mcpServers?: Record<string, WorkflowMcpEntry> };
@@ -127,7 +130,34 @@ function readWorkflowMcpEntry(cwd: string): WorkflowMcpEntry | undefined {
 	}
 	const entry = parsed.mcpServers?.[WORKFLOW_MCP_CONFIG_NAME];
 	if (!entry || typeof entry.command !== "string" || entry.command.length === 0) return undefined;
-	return entry;
+	return { entry, configPath };
+}
+
+/**
+ * Config paths already announced by this process. Discovery runs once per turn,
+ * so without this the same line repeats for every turn of a session.
+ */
+const announcedMcpConfigPaths = new Set<string>();
+
+/**
+ * Audit line for the trust boundary above: a project-supplied `.mcp.json`
+ * command is about to be mounted into a kiro run launched `--trust-all-tools`,
+ * WITHOUT passing through pi's project-trust prompt. Stderr (not stdout) so it
+ * never lands in parsed model output. Synthesized entries are deliberately not
+ * announced: those resolve gsd-pi from this extension's own install, so nothing
+ * project-supplied is executed.
+ */
+function announceFileSourcedEntry(configPath: string): void {
+	if (announcedMcpConfigPaths.has(configPath)) return;
+	announcedMcpConfigPaths.add(configPath);
+	console.error(
+		`[pi-kiro] mounting gsd-workflow MCP server from ${configPath}: this runs a project-supplied command inside a --trust-all-tools kiro run (set PI_KIRO_WORKFLOW_MCP=off to disable)`,
+	);
+}
+
+/** Test hook: forget which config paths have been announced. */
+export function _resetWorkflowMcpNoticesForTest(): void {
+	announcedMcpConfigPaths.clear();
 }
 
 /**
@@ -324,9 +354,13 @@ export function discoverWorkflowMcpServers(
 ): Record<string, KiroStdioMcpServer> | undefined {
 	if (!workflowMcpEnabled(env)) return undefined;
 	try {
-		const entry = readWorkflowMcpEntry(cwd) ?? synthesizeWorkflowMcpEntry(cwd, env);
+		const fromFile = readWorkflowMcpEntry(cwd);
+		const entry = fromFile?.entry ?? synthesizeWorkflowMcpEntry(cwd, env);
 		if (!entry) return undefined;
-		return translateEntry(entry);
+		const servers = translateEntry(entry);
+		// Announce only once we know a project-supplied command is really mounted.
+		if (servers && fromFile) announceFileSourcedEntry(fromFile.configPath);
+		return servers;
 	} catch {
 		// readWorkflowMcpEntry no longer throws (malformed .mcp.json → undefined,
 		// which falls through to synthesis above). Reaching here means synthesis

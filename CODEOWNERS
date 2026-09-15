@@ -1,0 +1,19 @@
+# Release-critical paths. Any change here needs Randy's review, which is what
+# stops a contributor from altering the publish path, the package identity, or
+# the scanners that gate a release.
+#
+# This only takes effect once the main ruleset has "Require review from Code
+# Owners" enabled.
+#
+# Deliberately no catch-all `*` owner: with require_code_owner_review on, a
+# catch-all makes every PR need the owner's approval and leaves the owner's own
+# PRs unsatisfiable, since an author cannot be their own code-owner reviewer.
+# Ordinary code changes therefore need any one approval; only the release path
+# needs the owner specifically.
+
+/.github/workflows/ @randiskull
+/.github/dependabot.yml @randiskull
+/package.json @randiskull
+/package-lock.json @randiskull
+/scripts/ @randiskull
+/CODEOWNERS @randiskull
