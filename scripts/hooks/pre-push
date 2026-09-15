@@ -5,7 +5,7 @@
 # network, so offline pushes still work; `npm audit` is left to CI. Bypass a
 # push in a pinch with `git push --no-verify`.
 #
-# Opt-in: set PIKIRO_PREPUSH_KIRO_AUDIT=1 to also run the local kiro-cli release
+# Opt-in: set PI_KIRO_PREPUSH_KIRO_AUDIT=1 to also run the local kiro-cli release
 # audit (scripts/scan-kiro.sh), which blocks only on a HIGH/security verdict.
 
 set -eu
@@ -19,8 +19,8 @@ if ! npm run --silent verify; then
 	exit 1
 fi
 
-if [ "${PIKIRO_PREPUSH_KIRO_AUDIT:-0}" = "1" ]; then
-	echo "pre-push: running kiro release audit (PIKIRO_PREPUSH_KIRO_AUDIT=1)…"
+if [ "${PI_KIRO_PREPUSH_KIRO_AUDIT:-0}" = "1" ]; then
+	echo "pre-push: running kiro release audit (PI_KIRO_PREPUSH_KIRO_AUDIT=1)…"
 	if ! sh scripts/scan-kiro.sh; then
 		echo "pre-push: kiro audit returned a BLOCK verdict. Address it, or bypass with 'git push --no-verify'." >&2
 		exit 1

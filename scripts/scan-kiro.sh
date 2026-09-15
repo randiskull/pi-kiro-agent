@@ -2,19 +2,19 @@
 # Kiro-driven full release audit of the working tree. Runs the local,
 # authenticated kiro-cli (no API key, no cloud) over the repo and blocks only on
 # a HIGH/security verdict. Used on-demand (`npm run scan:kiro`) and, opt-in, by
-# the pre-push hook (PIKIRO_PREPUSH_KIRO_AUDIT=1).
+# the pre-push hook (PI_KIRO_PREPUSH_KIRO_AUDIT=1).
 #
 # Exit codes: 0 = clean/PASS or kiro unavailable (advisory, never blocks on
 # infra), 2 = BLOCK verdict emitted.
 #
 # Env:
-#   PIKIRO_SCAN_MODEL   kiro model id (default: auto)
-#   PIKIRO_SCAN_TIMEOUT seconds before giving up (default: 300)
+#   PI_KIRO_SCAN_MODEL    kiro model id (default: auto)
+#   PI_KIRO_SCAN_TIMEOUT  seconds before giving up (default: 300)
 
 set -eu
 
-MODEL="${PIKIRO_SCAN_MODEL:-auto}"
-TIMEOUT="${PIKIRO_SCAN_TIMEOUT:-300}"
+MODEL="${PI_KIRO_SCAN_MODEL:-auto}"
+TIMEOUT="${PI_KIRO_SCAN_TIMEOUT:-300}"
 
 if ! command -v kiro-cli >/dev/null 2>&1; then
 	echo "scan:kiro: kiro-cli not on PATH — skipping AI audit (advisory)." >&2
@@ -52,16 +52,19 @@ tokens verbatim (no markdown, no backticks, no emphasis):
 
 echo "scan:kiro: auditing with kiro/$MODEL (timeout ${TIMEOUT}s)…" >&2
 
-# Portable timeout: use `timeout` if present, else run directly.
-RUN="kiro-cli chat --no-interactive --trust-all-tools"
-[ "$MODEL" = "auto" ] || RUN="$RUN --model \"$MODEL\""
+# Portable timeout: use `timeout` if present, else run directly. Built in the
+# positional parameters, not a string: a string would be word-split on expansion
+# without re-parsing quotes, so a `--model "$MODEL"` baked into it reaches
+# kiro-cli with the quote characters intact and never resolves.
+set -- kiro-cli chat --no-interactive --trust-all-tools
+[ "$MODEL" = "auto" ] || set -- "$@" --model "$MODEL"
 if command -v timeout >/dev/null 2>&1; then
-	RUN="timeout ${TIMEOUT} $RUN"
+	set -- timeout "$TIMEOUT" "$@"
 fi
 
 # Capture output (tee to a gitignored report). </dev/null so the hook's stdin
 # (push refs) is never consumed by kiro.
-if ! $RUN "$PROMPT" </dev/null >"$OUT_FILE" 2>&1; then
+if ! "$@" "$PROMPT" </dev/null >"$OUT_FILE" 2>&1; then
 	echo "scan:kiro: kiro-cli run failed or timed out — skipping (advisory)." >&2
 	sed -n '1,40p' "$OUT_FILE" >&2 || true
 	exit 0

@@ -1,13 +1,17 @@
 {
 	"name": "pi-kiro-agent",
-	"version": "0.2.0",
-	"description": "Kiro CLI backend for the Pi coding agent: a `kiro` provider that delegates turns to your local authenticated kiro-cli (seat/credit-billed, official client), with an MCP bridge exposing the calling Pi session's tools inside delegated runs.",
+	"version": "0.2.1",
+	"description": "Kiro CLI provider for Pi: delegates turns to your local, authenticated kiro-cli. Seat/credit-billed through the official client, with an MCP bridge that exposes the calling Pi session's tools inside delegated runs.",
 	"keywords": [
 		"pi-package",
 		"pi-extension",
 		"kiro",
+		"kiro-cli",
 		"provider",
-		"mcp"
+		"mcp",
+		"acp",
+		"delegation",
+		"subagents"
 	],
 	"license": "MIT",
 	"author": "Randy James",
