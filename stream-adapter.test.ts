@@ -83,6 +83,13 @@ describe("output parsing", () => {
 		expect(body).not.toContain("tools are now trusted");
 	});
 
+	it("cleanBody does not strip or misparse a model line containing Credits: N without the ▸ footer marker", () => {
+		const bodyWithPricingText = "Some response text\nCredits: 2.5 per month\nMore text";
+		const { body, credits } = cleanBody(bodyWithPricingText);
+		expect(credits).toBeUndefined();
+		expect(body).toContain("Credits: 2.5 per month");
+	});
+
 	it("extracts the sentinel span and falls back to the whole body", () => {
 		expect(extractFinal(`notes ${FINAL_OPEN}answer${FINAL_CLOSE} trailing`)).toEqual({
 			working: "notes  trailing",
