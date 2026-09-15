@@ -11,6 +11,18 @@ First versioned release. `0.1.0` was never tagged or published — it was the
 initial git-installable state, so everything below is what changed for anyone
 who installed from `git:github.com/randiskull/pi-kiro` before now.
 
+### Changed
+
+- **Renamed the package to `pi-kiro-agent`** (repo `randiskull/pi-kiro-agent`) ahead of the
+  first npm publish. The name states what the extension does — it delegates turns to the Kiro
+  agent — and keeps it distinct from the several direct-API `pi-*-kiro` model providers already
+  on npm. No user-visible contract changed: the provider id is still `kiro`, the environment
+  variables are still `PI_KIRO_*`, and bridge agent profiles are still named
+  `pi-kiro-bridge-<pid>-<n>` (the orphan reaper matches that prefix, so renaming it would
+  leak profiles written by earlier versions).
+- `publishConfig` pins the publish registry to npmjs.org, so a bare `npm publish` cannot
+  accidentally target a CodeArtifact default registry.
+
 ### Added
 
 - **ACP transport** (`PI_KIRO_TRANSPORT=acp`). A persistent `kiro-cli acp` child

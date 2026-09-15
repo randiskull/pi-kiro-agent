@@ -1,5 +1,5 @@
 /**
- * pi-kiro — Pi provider for the local Kiro CLI.
+ * pi-kiro-agent — Pi provider for the local Kiro CLI.
  *
  * Registers a `kiro` provider whose streamSimple delegates each turn to the
  * user's authenticated kiro-cli (`chat --no-interactive`). Seat/credit

@@ -1,4 +1,4 @@
-# pi-kiro
+# pi-kiro-agent
 
 A [Kiro CLI](https://kiro.dev/docs/cli/) backend for the [Pi coding agent](https://github.com/earendil-works/pi): registers a `kiro` provider that delegates turns to your **local, authenticated kiro-cli** (`chat --no-interactive`). Requests originate from AWS's official client under your own seat/credit entitlement — this extension never reads or replays credentials.
 
@@ -7,7 +7,13 @@ Works with plain Pi, and with agent stacks built on it (rpiv-pi, GSD-style setup
 ## Install
 
 ```bash
-pi install git:github.com/randiskull/pi-kiro
+pi install npm:pi-kiro-agent
+```
+
+Or straight from source:
+
+```bash
+pi install git:github.com/randiskull/pi-kiro-agent
 ```
 
 Requires kiro-cli on PATH and logged in (`kiro-cli login`; IdC/enterprise seats also need `kiro-cli profile` once — a missing profile surfaces as a `profileArn is required` error with that remedy attached).
@@ -96,7 +102,7 @@ entirely.
 cannot modify it. Two DoS-class advisories currently live there: `brace-expansion` 5.0.6
 (GHSA-3jxr-9vmj-r5cp / GHSA-mh99-v99m-4gvg, via minimatch — glob patterns here are
 developer-controlled) and `protobufjs` 7.6.4 (GHSA-j3f2-48v5-ccww, via @google/genai — unused
-by this provider). Both are unreachable in pi-kiro's usage; the fix owner is upstream via a
+by this provider). Both are unreachable in pi-kiro-agent's usage; the fix owner is upstream via a
 republished shrinkwrap. Top-level instances are pinned safe via `overrides`
 (`brace-expansion@5.0.9`, `protobufjs@7.6.5`); `@modelcontextprotocol/sdk` is kept ≥1.30
 (clears the @hono/node-server path-traversal chain).

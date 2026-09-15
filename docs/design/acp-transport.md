@@ -1,4 +1,4 @@
-# pi-kiro v2 transport: ACP (Agent Client Protocol)
+# pi-kiro-agent v2 transport: ACP (Agent Client Protocol)
 
 **Status:** DRAFT — architecture spec, not yet scheduled
 **Author:** drafted 2026-07-30, from the GSD M026/M027 integration campaign
@@ -10,7 +10,7 @@
 
 The current transport spawns `kiro-cli chat --no-interactive` **per turn** and reconstructs
 everything from scraped TUI text. It works — it shipped a full GSD milestone slice — but every
-hard bug in pi-kiro's history is a symptom of driving an interactive TUI as if it were an API:
+hard bug in pi-kiro-agent's history is a symptom of driving an interactive TUI as if it were an API:
 
 | Incident (real, from the field) | Text-scrape root cause | Under ACP |
 |---|---|---|
