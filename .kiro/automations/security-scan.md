@@ -8,7 +8,7 @@ automation so the scan definition lives in version control and stays reviewable.
 ## Setup (one time)
 
 1. Open `app.kiro.dev/automations` and create a new automation.
-2. **Repository:** `randiskull/pi-kiro`.
+2. **Repository:** `randiskull/pi-kiro-agent`.
 3. **Schedule:** Weekly (or `cron(0 6 ? * MON *)` to align with the
    `security-audit.yml` dependency scan). Up to 5 schedules are allowed.
 4. **Prompt:** paste the block below verbatim.

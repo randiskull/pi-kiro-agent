@@ -8,7 +8,7 @@ automation so the definition lives in version control and stays reviewable.
 ## Setup (one time)
 
 1. Open `app.kiro.dev/automations` and create a new automation.
-2. **Repository:** `randiskull/pi-kiro`.
+2. **Repository:** `randiskull/pi-kiro-agent`.
 3. **Schedule:** Weekly (`cron(0 8 ? * MON *)` — Mondays 08:00 UTC, after the
    security audit runs at 06:00 UTC).
 4. **Prompt:** paste the block below verbatim.
