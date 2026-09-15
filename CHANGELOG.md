@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.1] - 2026-09-15
 
 ### Added
 
@@ -19,8 +19,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   project-trust prompt, so the line names the config path and the opt-out
   (`PI_KIRO_WORKFLOW_MCP=off`). Synthesized entries stay silent: nothing project-supplied runs.
 
+### Changed
+
+- The three dev-only script variables now use the `PI_KIRO_*` prefix the rest of the project uses:
+  `PIKIRO_PREPUSH_KIRO_AUDIT` -> `PI_KIRO_PREPUSH_KIRO_AUDIT`, `PIKIRO_SCAN_MODEL` ->
+  `PI_KIRO_SCAN_MODEL`, `PIKIRO_SCAN_TIMEOUT` -> `PI_KIRO_SCAN_TIMEOUT`. These are read only by
+  `scripts/hooks/pre-push` and `scripts/scan-kiro.sh`, never by the published package, so no
+  runtime behaviour changes for anyone installing it.
+- Package metadata for catalog listings: the `description` now leads with a complete clause that
+  survives truncation in the pi.dev package row (the old one cut mid-word at "delegates turns to
+  your l"), and `kiro-cli`, `acp`, `delegation` and `subagents` join the keywords.
+
 ### Fixed
 
+- `PI_KIRO_SCAN_MODEL` did nothing for any value other than `auto`. `scripts/scan-kiro.sh` built its
+  command as a string containing `--model \"$MODEL\"`, and the unquoted expansion that ran it word-splits
+  without re-parsing quotes, so kiro-cli received the literal argument `"sonnet"` (quote characters
+  included) and never resolved the model. The script is advisory and exits 0 on failure, so it failed
+  silently. The command is now built in the positional parameters.
 - `importViaPiRegistry` no longer imports a manifest `pi.extensions` entry that resolves outside
   the package's own install directory. A corrupt user-scope `package.json` naming `../../x.ts`
   was resolved and imported; it is now skipped. Defence in depth behind `isBridgeablePackage`,
