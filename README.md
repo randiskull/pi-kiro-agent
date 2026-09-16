@@ -2,7 +2,7 @@
 
 A [Kiro CLI](https://kiro.dev/docs/cli/) backend for the [Pi coding agent](https://github.com/earendil-works/pi): registers a `kiro` provider that delegates turns to your **local, authenticated kiro-cli** (`chat --no-interactive`). Requests originate from AWS's official client under your own seat/credit entitlement — this extension never reads or replays credentials.
 
-Works with plain Pi, and with agent stacks built on it (rpiv-pi, GSD-style setups): the bridge below exposes whatever bridgeable tools your Pi session actually has.
+Works with plain Pi, and with agent stacks built on it: the bridge below exposes whatever bridgeable tools your Pi session actually has. Worked setups for [rpiv](docs/integrations/rpiv.md) and [GSD](docs/integrations/gsd-workflow-mcp.md).
 
 ## Install
 
@@ -22,7 +22,7 @@ Requires kiro-cli on PATH and logged in (`kiro-cli login`; IdC/enterprise seats 
 
 - `/model kiro/<id>` — models fetched live from `kiro-cli chat --list-models` at registration (many seats expose only `auto`, Kiro's internal router).
 - `/kiro` — readiness status; re-registers after login.
-- `/kiro-subagents on [kiro/<id>] [name1,name2] | off` — route [pi-subagents](https://github.com/tintinweb/pi-subagents) agent profiles through kiro by rewriting their `model:` frontmatter. Wires every discovered agent, or just the named ones.
+- `/kiro-subagents on [kiro/<id>] [name1,name2] | off` — route [pi-subagents](https://github.com/tintinweb/pi-subagents) agent profiles through kiro by rewriting the `model:` frontmatter in `~/.pi/agent/agents/*.md`. Wires every discovered agent, or just the named ones; defaults to `kiro/auto`. `off` removes the line only where it points at `kiro/`, so agents you routed elsewhere by hand are untouched. See [docs/integrations/rpiv.md](docs/integrations/rpiv.md).
 
 Pi thinking levels forward to kiro's `--effort` (minimal/low→low, medium→medium, high→high, xhigh→xhigh).
 
@@ -30,7 +30,7 @@ Pi thinking levels forward to kiro's `--effort` (minimal/low→low, medium→med
 
 Under the **default chat transport**, each delegated turn serves your Pi session's bridgeable tools over a **loopback Streamable-HTTP MCP endpoint** and writes a throwaway kiro agent profile (`~/.kiro/agents/pi-kiro-bridge-*.json`) whose inline `{type: "http"}` server points at the tokenized URL. The spawn adds `--agent <profile> --require-mcp-startup` (exit 3 retries once); profiles are unique per turn and removed afterwards. Under the **ACP transport** (`PI_KIRO_TRANSPORT=acp`), the bridge mounts inline via the `session/new` protocol request's `mcpServers` array — no profile file is written and no `--agent` flag is used. Inside kiro the tools appear as `@pi/<tool>` in either case.
 
-Bridged when installed: pi-subagents' `Agent` / `get_subagent_result` / `steer_subagent`, and rpiv's `ask_user_question` / `todo` / `advisor`. The capture degrades gracefully — absent extensions are simply not bridged. This makes `kiro/*` usable as a primary model for tool-orchestrating agents, including cross-runtime nesting (a kiro-delegated turn dispatching subagents that run on other providers).
+Bridged when installed: pi-subagents' `Agent` / `get_subagent_result` / `steer_subagent`, and rpiv's `ask_user_question` / `todo` / `advisor`. The capture degrades gracefully — absent extensions are simply not bridged. This makes `kiro/*` usable as a primary model for tool-orchestrating agents, including cross-runtime nesting (a kiro-delegated turn dispatching subagents that run on other providers). Setup: [docs/integrations/rpiv.md](docs/integrations/rpiv.md).
 
 ## How output is parsed
 
@@ -48,40 +48,31 @@ mount GSD's `gsd-workflow` stdio MCP server **inside** the delegated kiro run. W
 unit can write files but can never call `gsd_task_complete`: the task row stays `pending`,
 the runtime unit stays `dispatched`, and the operator has to reconcile GSD's DB by hand.
 
-Discovery is zero-config. In order of precedence:
-
-1. A `gsd-workflow` entry in the project's `.mcp.json` (what `/gsd mcp init .` writes) always wins.
-2. Otherwise, if the cwd is inside a GSD project (a `.gsd/` directory at or above it, stopping
-   at the `.git` boundary), the entry is **synthesized**: the `gsd` CLI is resolved from
-   `GSD_CLI_PATH`/`GSD_BIN_PATH` or `PATH`, the workflow server from
-   `packages/mcp-server/dist/cli.js` in that install (or in-tree for a GSD checkout), and
-   GSD's live extension modules from `$GSD_CODING_AGENT_DIR` / `$GSD_HOME/agent` / `~/.gsd/agent`.
-   Every unresolved path bails out to *no server* rather than a wrong one — a plain non-GSD
-   kiro turn is never blocked by discovery. A cwd inside a `.gsd/worktrees/` milestone
-   worktree resolves to the real project root.
-
-Because kiro's agent-profile MCP schema has no `cwd` field, an entry with a `cwd` is launched
-via `/bin/sh -c "cd … && exec …"`.
+Discovery is zero-config: an explicit `gsd-workflow` entry in the project's
+`.mcp.json` always wins, and otherwise the entry is synthesized whenever the cwd
+sits inside a GSD project. Every unresolved path bails out to *no server* rather
+than a wrong one, so a plain non-GSD kiro turn is never blocked by discovery.
+Full precedence spec and a worked setup:
+[docs/integrations/gsd-workflow-mcp.md](docs/integrations/gsd-workflow-mcp.md).
 
 > **Security — a project's `.mcp.json` is trusted code.** A `gsd-workflow` entry in a project's
-> `.mcp.json` (precedence rule 1 above) is read directly and its `command`/`args`/`env` are executed
-> as-is inside the delegated kiro run, which runs `--trust-all-tools` with an `allowedTools: ["*"]`
-> profile. Discovery is zero-config and fires before the model does anything, so **merely opening an
-> untrusted cloned repo and sending one prompt is enough to run whatever that repo's `.mcp.json`
-> names.** This is a deliberately different posture from the MCP bridge, which refuses project-scope
-> packages for exactly this reason. Only the `gsd-workflow` key is consumed. For unreviewed repos,
-> set `PI_KIRO_WORKFLOW_MCP=off` to disable file-sourced discovery entirely (the GSD project-synthesis
-> path, rule 2, resolves every path from the filesystem and is not project-controlled).
-> When rule 1 does fire, one audit line naming the `.mcp.json` goes to stderr, so a project-supplied
-> command is never mounted silently; rule 2 stays quiet because nothing project-supplied runs.
+> `.mcp.json` is read directly and its `command`/`args`/`env` are executed as-is inside the
+> delegated kiro run, which runs `--trust-all-tools` with an `allowedTools: ["*"]` profile.
+> Discovery fires before the model does anything, so **merely opening an untrusted cloned repo
+> and sending one prompt is enough to run whatever that repo's `.mcp.json` names.** This is a
+> deliberately different posture from the MCP bridge, which refuses project-scope packages for
+> exactly this reason. Only the `gsd-workflow` key is consumed. For unreviewed repos, set
+> `PI_KIRO_WORKFLOW_MCP=off` to disable file-sourced discovery entirely; the synthesized path
+> resolves every path from the filesystem and is not project-controlled. When a project-supplied
+> entry does get mounted, one audit line naming the `.mcp.json` goes to stderr, so it is never
+> mounted silently; the synthesized path stays quiet because nothing project-supplied runs.
 
-**Transport matters here.** Only `PI_KIRO_TRANSPORT=acp` passes MCP servers inline through
-`session/new` and returns real, fully-parsed tool-call arguments. The default `chat` transport
-has to text-parse kiro's console output, which fabricates tool-call ids (`kiro-mcp-<n>-<name>`)
-and best-effort parses arguments from CLI log output (unparseable blocks degrade to `{}`) — enough to satisfy GSD's zero-tool-call guard, not enough to
-round-trip a real `gsd_task_complete` payload. **Run GSD on kiro with
-`PI_KIRO_TRANSPORT=acp`.** Set `PI_KIRO_WORKFLOW_MCP=off` to opt out of mounting the server
-entirely.
+**Run GSD on kiro with `PI_KIRO_TRANSPORT=acp`.** Only the ACP transport passes MCP
+servers inline and returns real, fully-parsed tool-call arguments. Under the default
+`chat` transport a unit can write files but never land a `gsd_task_complete`, and it
+fails quietly — see the transport section of the
+[integration doc](docs/integrations/gsd-workflow-mcp.md#transport-matters). Set
+`PI_KIRO_WORKFLOW_MCP=off` to opt out of mounting the server entirely.
 
 ## Environment
 

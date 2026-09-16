@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.1] - 2026-09-15
+## 0.2.1 - 2026-09-15
 
 ### Added
 
@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of a definite-assignment assertion, so the `finally` cleanup cannot become a TypeError that
   masks the real startup failure.
 
-## [0.2.0] - 2026-08-11
+## 0.2.0 - 2026-08-11
 
 First versioned release. `0.1.0` was never tagged or published — it was the
 initial git-installable state, so everything below is what changed for anyone
@@ -62,6 +62,10 @@ who installed from `git:github.com/randiskull/pi-kiro` before now.
   leak profiles written by earlier versions).
 - `publishConfig` pins the publish registry to npmjs.org, so a bare `npm publish` cannot
   accidentally target a CodeArtifact default registry.
+- Bumped `@modelcontextprotocol/sdk`, which clears the transitive `hono`
+  advisory chain; safe top-level duplicates pinned via `overrides`.
+- Dev toolchain: TypeScript 5.9 → 7.0, `@types/node` 22 → 26, Vitest 4.
+- CI matrix on Node 22 and 24; `engines.node` is `>=22`.
 
 ### Added
 
@@ -124,14 +128,7 @@ who installed from `git:github.com/randiskull/pi-kiro` before now.
   `\x00` escapes so the source stays pure text, and `$MODEL` is quoted in
   `scripts/scan-kiro.sh`.
 
-### Changed
-
-- Bumped `@modelcontextprotocol/sdk`, which clears the transitive `hono`
-  advisory chain; safe top-level duplicates pinned via `overrides`.
-- Dev toolchain: TypeScript 5.9 → 7.0, `@types/node` 22 → 26, Vitest 4.
-- CI matrix on Node 22 and 24; `engines.node` is `>=22`.
-
-## [0.1.0]
+## 0.1.0
 
 Initial state, never tagged or published to npm.
 
