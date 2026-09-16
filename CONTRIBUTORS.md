@@ -102,6 +102,14 @@ against a real `~/.pi/agent/agents` strips kiro routing from every agent at once
 with nothing to revert to. One test asserts your real agents directory came out
 unmodified.
 
+Every other test runs with `HOME` redirected into a throwaway directory under
+`$TMPDIR`, which is what keeps a test from reading or writing your real `~/.pi`
+and `~/.kiro`. Those directories are removed by the `globalSetup` teardown in
+`test/global-setup.ts`: setup makes one run-scoped parent and each file's home
+goes inside it. Do not move that cleanup into an `afterAll` or a
+`process.on("exit")` handler. Neither one fires here, for two different reasons
+that the header of that file spells out, and both failures are silent.
+
 Node 22 or newer. Open an issue before starting anything that changes the
 provider contract, the transport protocol, or the trust boundary around the MCP
 bridge, so the design discussion happens before the code.

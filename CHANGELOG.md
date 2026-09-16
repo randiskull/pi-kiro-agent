@@ -87,6 +87,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were green throughout, against fixture strings kiro had stopped producing, on a stream it had
   stopped using. `docs/design/acp-transport.md` §5b records the consequence for the transport
   roadmap, including that `kiro-cli chat --output-format stream-json` now exists.
+- **The test suite no longer leaks a temporary `$HOME` per test file.** Every file runs with `HOME`
+  redirected under `$TMPDIR`, so a test cannot read or write the real `~/.pi` and `~/.kiro`; those
+  directories were never removed and had accumulated into the hundreds. Cleanup now runs in a vitest
+  `globalSetup` teardown: setup creates one run-scoped parent (`pi-kiro-test-homes-*`), every
+  per-file home is created inside it, and teardown removes the parent. The two more obvious
+  placements both fail silently, and the header of `test/global-setup.ts` records why: an `afterAll`
+  in `setupFiles` never runs for a file whose every test is skipped, which is all five live files
+  without `PI_KIRO_LIVE=1`, and a `process.once("exit")` handler never runs at all because vitest
+  terminates its workers rather than letting them exit.
 
 ## 0.2.1 - 2026-09-15
 
