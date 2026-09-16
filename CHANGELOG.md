@@ -18,7 +18,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no Kiro seat. Every other test imports the entry module directly, which left the published package
   itself unverified: a wrong `pi.extensions` path or a module missing from `files` used to pass every
   gate and fail first at `pi install`. A real delegated turn still needs a seat and stays in
-  `test/stream-adapter-live.test.ts` behind `PI_KIRO_LIVE=1`.
+  the live suite behind `PI_KIRO_LIVE=1`.
+- **A live suite that exercises GSD's and rpiv's integration paths against the real thing**
+  (`npm run test:live`, gated on `PI_KIRO_LIVE=1`, skipped in CI). Four new files join the existing
+  chat-transport test:
+  - `acp-transport-live.test.ts` -- the ACP transport against a real kiro-cli, asserting one
+    persistent child and one *reused* ACP session id across two turns. This is the transport GSD
+    requires, since only ACP passes MCP servers through, and all 36 of its existing tests drive a
+    `spawn` mock: it had no live coverage at all.
+  - `bridge-live.test.ts` -- the MCP bridge end to end, in three parts that fail for different
+    reasons: every bridge source located through pi's own package registry at user scope with its
+    manifest entry present and inside the package (pi-kiro's own logic); capture asserted to degrade
+    to `[]` rather than throw, which is the shipped contract, since importing a sibling's TypeScript
+    entry resolves its peer imports against the ambient host's module tree and only succeeds inside a
+    real pi process; and the round trip driven by a synthetic tool -- served over authenticated
+    loopback MCP (including a 401 on an unauthenticated request), listed and called back through a
+    real MCP client, then invoked by a delegated kiro turn that lands in this process. Using a
+    synthetic tool for the round trip is deliberate: `serveBridgeHttp` does not care where a
+    `CapturedTool` came from, so the transport proof stops depending on the host constraint above.
+  - `workflow-mcp-live.test.ts` -- GSD's workflow MCP path: a `.mcp.json` entry discovered and
+    translated into a kiro agent profile, that translation launched as a real `gsd-workflow` server,
+    and a delegated `gsd_doctor` call recovered from kiro's output as a pi `ToolCall` block. Those
+    blocks are what GSD counts in `snapshotUnitActivity`, so a unit that called `gsd_*` but produced
+    none trips the zero-tool-call guard and gets salvaged.
+  - `command-coverage-live.test.ts` -- `/kiro` and `/kiro-subagents` driven through the handlers the
+    extension really registers, with nothing mocked: real readiness and model-list probes, the
+    `authMode: "externalCli"` and `local://kiro-cli` fields GSD gates flat-rate routing on, and
+    `PI_KIRO_TRANSPORT=acp` selecting the ACP transport. Makes no model call.
 - `CONTRIBUTORS.md`, and worked integration guides for rpiv and the GSD workflow MCP under
   `docs/integrations/`.
 
@@ -35,6 +61,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   included.
 - CI installs with `npm ci` rather than `npm install`, so the committed lockfile is authoritative
   and a green run cannot be a different dependency tree than the one that was reviewed.
+- `BRIDGE_SOURCES` is exported, so the live suite asserts against the real list instead of a copy.
+
+### Fixed
+
+- **Tool calls made inside a delegated kiro run were being missed, silently, on kiro-cli 2.21 and
+  later, which made GSD salvage units that had really done the work.** `synthesizeToolCallBlocks`
+  emitted no `ToolCall` blocks, and those blocks are exactly what GSD's `snapshotUnitActivity`
+  counts, so a unit that called `gsd_*` several times presented as a unit that had made no tool
+  calls at all. Two independent causes, both fixed:
+  - **The lines moved to stderr.** kiro-cli 2.21 prints tool activity on stderr and leaves stdout
+    holding only the model's answer. The adapter collected stderr solely to quote it in an error
+    message and parsed stdout alone, so no regex could have recovered a tool call. Both streams are
+    now scanned (`toolUseTranscript`), for the end-of-turn pass and for the live mid-turn progress
+    blocks. stderr is still kept out of the answer body: `extractFinal` sees stdout only.
+  - **The line format changed**, from `Running tool gsd_doctor (from mcp server: gsdworkflow)` to
+    `[tool] Running: @gsdworkflow/gsd_doctor` -- server and tool fused, order reversed, and no `⋮`
+    parameter block. Both grammars are now accepted: the legacy one is what every recorded
+    transcript in `docs/` and `probes/` contains, and users on an older kiro-cli must keep working.
+    Arguments degrade to `{}` for the compact form, which the downstream code already tolerated.
+    Note that built-in kiro tools are not recoverable from text in the new format at all: they
+    render as prose (`[tool] Reading note.txt:1`) with no tool name.
+
+  Found by the live suite, and only by the live suite. All 36 existing `workflow-mcp.test.ts` cases
+  were green throughout, against fixture strings kiro had stopped producing, on a stream it had
+  stopped using. `docs/design/acp-transport.md` §5b records the consequence for the transport
+  roadmap, including that `kiro-cli chat --output-format stream-json` now exists.
 
 ## 0.2.1 - 2026-09-15
 

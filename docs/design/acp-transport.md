@@ -129,6 +129,59 @@ if not → keep `PI_KIRO_CREDIT_USD` with credits unavailable (0), and note it i
 | Concurrent turns (GSD parallel units, same cwd) | one ACP session per pi conversation already isolates; child multiplexes sessions — verify in P3, else per-conversation children |
 | ACP mode gaps vs chat mode (feature lag) | parity suite is the gate; `chat` fallback retained |
 
+## 5b. Field evidence, 2026-09-15: the scrape risk fired
+
+The "text-scrape is brittle" argument in section 1 stopped being theoretical. kiro-cli 2.21.4
+broke the scrape in two independent ways at once, and a GSD unit that really called `gsd_*`
+several times presented to the host as a unit with zero tool calls.
+
+**First: the lines are on stderr now.** stdout holds only the model's answer. Verified by running
+the binary with the streams separated, same prompt, same mounted MCP server:
+
+```
+$ kiro-cli chat --no-interactive --trust-all-tools --agent <profile> "Run gsd_doctor, then say DONE."
+   stdout:  DONE
+   stderr:  [tool] Running: @gsdworkflow/gsd_doctor
+            [tool] status: Completed
+```
+
+No regex over stdout could have recovered that. Worth recording how this was initially
+mis-diagnosed: an early probe piped `2>&1`, which made the lines look like stdout and pointed the
+whole investigation at the regex.
+
+**Second: the format changed.** From
+
+```
+Running tool gsd_doctor (from mcp server: gsdworkflow)
+ ⋮  { ... }
+```
+
+to
+
+```
+[tool] Running: @gsdworkflow/gsd_doctor
+[tool] status: Completed
+```
+
+Server and tool are fused, the order is reversed, and there is no `⋮` parameter block.
+
+Nothing caught either one: all 36 `workflow-mcp.test.ts` cases were green throughout, against
+fixture strings kiro had stopped producing, on a stream it had stopped using. Only a live turn
+found it. Both streams are scanned now and both grammars are accepted, which restores the
+behaviour but does not remove the class of defect.
+
+Two further findings bear on this design:
+
+- **Built-in kiro tools are not recoverable from text at all** in the new format. They render as
+  prose (`[tool] Reading note.txt:1`) with no tool name. Only the `@server/tool` shape is
+  machine-readable, so the scrape can never be complete, only adequate.
+- **`kiro-cli chat --output-format stream-json` now exists**: "the run's ACP events as JSON Lines
+  on stdout, one self-describing event per event; implies `--no-interactive`". That is
+  structurally the same event stream this document proposes reaching over ACP, delivered by the
+  transport that already works. It would delete the scraping layer outright rather than hardening
+  it, and it narrows the gap this document exists to close, so **the ACP-vs-stream-json choice is
+  now an open decision, not a settled plan.** Deliberately not acted on here.
+
 ## 6. Non-goals
 
 - No change to the trust/billing model (kiro-cli owns auth; seat-billed).

@@ -30,6 +30,21 @@ const PROBE_OUTPUT = `Running tool gsd_milestone_status with the param (from mcp
 > M027 "AI Orchestration" is fully pending — all 3 slices have no tasks planned.`;
 
 /**
+ * Captured (ANSI-stripped) from kiro-cli 2.21.4 running the SAME tool. The
+ * grammar changed: server and tool are fused as `@server/tool`, the order is
+ * reversed relative to the legacy line, and no ⋮ param block follows — the next
+ * line is a status line, so arguments degrade to {}. The two `[tool] Reading`
+ * / `[tool] Searching` lines are built-in tools, which the new format renders
+ * as prose with NO tool name: they are unparseable by design and must not
+ * produce phantom uses.
+ */
+const COMPACT_OUTPUT = `I'll run the GSD health check.
+[tool] Reading note.txt:1
+[tool] Running: @gsdworkflow/gsd_doctor
+[tool] status: Completed
+DONE`;
+
+/**
  * discoverWorkflowMcpServers writes an audit line to stderr whenever it mounts a
  * command sourced from a project `.mcp.json` (see announceFileSourcedEntry).
  * Capture it file-wide: the tests that assert on it read the spy, and the many
@@ -81,6 +96,29 @@ describe("parseKiroToolUses", () => {
 
 	it("returns [] for tool-free output", () => {
 		expect(parseKiroToolUses("just a plain answer\nacross lines")).toEqual([]);
+	});
+
+	it("parses the compact kiro-cli 2.21 grammar, un-fusing server and tool", () => {
+		const uses = parseKiroToolUses(COMPACT_OUTPUT);
+		expect(uses).toEqual([{ name: "gsd_doctor", server: "gsdworkflow", arguments: {} }]);
+	});
+
+	it("does not invent uses for built-in tools, which the compact format renders without a name", () => {
+		const body = ["[tool] Reading note.txt:1", "[tool] Searching for 'gsd'", "[tool] status: Completed"].join("\n");
+		expect(parseKiroToolUses(body)).toEqual([]);
+	});
+
+	it("accepts both grammars in one body — an older kiro-cli must keep working", () => {
+		const body = [
+			"Running tool gsd_query (from mcp server: gsdworkflow)",
+			" - Completed in 0.02s",
+			"[tool] Running: @gsdworkflow/gsd_doctor",
+			"[tool] status: Completed",
+		].join("\n");
+		expect(parseKiroToolUses(body).map((u) => `${u.server}/${u.name}`)).toEqual([
+			"gsdworkflow/gsd_query",
+			"gsdworkflow/gsd_doctor",
+		]);
 	});
 });
 
@@ -463,5 +501,13 @@ describe("createToolUseStreamParser (live progress)", () => {
 	it("ignores non-tool lines and incomplete trailing lines", () => {
 		const parser = createToolUseStreamParser();
 		expect(parser.feed("just text\npartial Running tool nope")).toEqual([]);
+	});
+
+	it("detects the compact grammar mid-stream and ignores its status/built-in lines", () => {
+		const parser = createToolUseStreamParser();
+		expect(parser.feed("I'll check.\n[tool] Reading note.txt:1\n[tool] Running: @gsdwo")).toEqual([]);
+		expect(parser.feed("rkflow/gsd_doctor\n[tool] status: Completed\n")).toEqual([
+			{ name: "gsd_doctor", server: "gsdworkflow" },
+		]);
 	});
 });

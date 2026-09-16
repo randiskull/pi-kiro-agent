@@ -11,6 +11,7 @@ import {
 	makeStreamViaKiro,
 	mapEffort,
 	stripAnsi,
+	toolUseTranscript,
 } from "../src/stream-adapter.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
@@ -88,6 +89,24 @@ describe("output parsing", () => {
 		const { body, credits } = cleanBody(bodyWithPricingText);
 		expect(credits).toBeUndefined();
 		expect(body).toContain("Credits: 2.5 per month");
+	});
+
+	it("scans stderr for tool activity without letting it into the answer body", () => {
+		// kiro-cli 2.21 prints tool lines on stderr and the answer on stdout, so
+		// parsing stdout alone reports zero tool calls for a turn that made them.
+		const body = "DONE";
+		const stderr = "\u001b[2m\n[tool] Running: @gsdworkflow/gsd_doctor\n[tool] status: Completed\u001b[0m\n";
+		const transcript = toolUseTranscript(body, stderr);
+		expect(transcript).toContain("[tool] Running: @gsdworkflow/gsd_doctor");
+		expect(transcript.startsWith(body)).toBe(true);
+		// extractFinal still sees only stdout: stderr must never become the answer.
+		expect(extractFinal(body).final).toBe("DONE");
+	});
+
+	it("toolUseTranscript is a no-op when stderr carries nothing", () => {
+		expect(toolUseTranscript("answer", "")).toBe("answer");
+		expect(toolUseTranscript("answer", "   \n\n  ")).toBe("answer");
+		expect(toolUseTranscript("", "[tool] Running: @pi/todo")).toBe("[tool] Running: @pi/todo");
 	});
 
 	it("extracts the sentinel span and falls back to the whole body", () => {

@@ -32,8 +32,10 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 
 export const BRIDGE_SERVER_NAME = "pi";
 
-/** Sibling extension entry points whose tools are bridgeable. */
-const BRIDGE_SOURCES = [
+/** Sibling extension entry points whose tools are bridgeable. Exported so the
+ * live suite can assert every one of them is still locatable through pi's own
+ * package registry rather than hard-coding a second copy of the list. */
+export const BRIDGE_SOURCES = [
 	"@juicesharp/rpiv-ask-user-question",
 	"@juicesharp/rpiv-todo",
 	"@juicesharp/rpiv-advisor",

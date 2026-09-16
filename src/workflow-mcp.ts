@@ -21,8 +21,10 @@
  *    zero-config projects still get real `gsd_*` tools. kiro has no `cwd`
  *    field, so a `cwd` is honored by wrapping in `/bin/sh -c "cd … && exec …"`.
  *  - parseKiroToolUses(body): extract MCP tool invocations from kiro's
- *    non-interactive output ("Running tool X with the param (from mcp
- *    server: Y)" followed by ⋮-prefixed JSON param lines).
+ *    non-interactive output. Two grammars are accepted because kiro-cli
+ *    changed format in 2.21: the legacy "Running tool X with the param (from
+ *    mcp server: Y)" followed by ⋮-prefixed JSON param lines, and the compact
+ *    "[tool] Running: @Y/X" with no param block (arguments degrade to {}).
  *  - synthesizeToolCallBlocks(body): map those uses onto pi `ToolCall`
  *    content blocks. Surfaced on the final AssistantMessage (with
  *    stopReason "stop", so the host renders/counts but never redispatches —
@@ -374,6 +376,27 @@ export function discoverWorkflowMcpServers(
 const TOOL_USE_LINE = /^\s*Running tool (\S+)(?: with the param)? \(from mcp server: ([^)]+)\)\s*$/;
 // Param continuation lines: " ⋮  { …json… }"
 const PARAM_LINE = /^\s*⋮\s?(.*)$/;
+// "[tool] Running: @gsdworkflow/gsd_doctor" — the compact form kiro-cli emits as
+// of 2.21. Server and tool are FUSED and in the opposite order to the line
+// above, and no ⋮ param block follows (the next line is "[tool] status: ..."),
+// so arguments degrade to {}. Both grammars are accepted because the legacy one
+// is what every recorded probe transcript in docs/ and probes/ contains, and a
+// user on an older kiro-cli must keep working. Built-in tools are NOT parseable
+// in this form at all: they print a prose description ("[tool] Reading note.txt:1")
+// with no tool name, which is why only the @server/tool shape is matched here.
+const MCP_TOOL_LINE = /^\s*\[tool\]\s+Running:\s+@([^/\s]+)\/(\S+)\s*$/;
+
+/**
+ * Match either tool-use grammar kiro has emitted. Returning a normalized
+ * {name, server} keeps the two capture-group orders from leaking into callers.
+ */
+function matchToolUseLine(line: string): { name: string; server: string } | undefined {
+	const legacy = line.match(TOOL_USE_LINE);
+	if (legacy) return { name: legacy[1] ?? "", server: legacy[2] ?? "" };
+	const compact = line.match(MCP_TOOL_LINE);
+	if (compact) return { name: compact[2] ?? "", server: compact[1] ?? "" };
+	return undefined;
+}
 
 /**
  * Parse MCP tool invocations out of kiro's cleaned non-interactive output.
@@ -384,8 +407,8 @@ export function parseKiroToolUses(body: string): KiroToolUse[] {
 	const uses: KiroToolUse[] = [];
 	const lines = body.split("\n");
 	for (let i = 0; i < lines.length; i++) {
-		const match = lines[i]?.match(TOOL_USE_LINE);
-		if (!match) continue;
+		const use = matchToolUseLine(lines[i] ?? "");
+		if (!use) continue;
 		const paramPieces: string[] = [];
 		let j = i + 1;
 		for (; j < lines.length; j++) {
@@ -405,7 +428,7 @@ export function parseKiroToolUses(body: string): KiroToolUse[] {
 				// keep {} — the invocation still counts
 			}
 		}
-		uses.push({ name: match[1] ?? "", server: match[2] ?? "", arguments: args });
+		uses.push({ ...use, arguments: args });
 	}
 	return uses;
 }
@@ -429,8 +452,8 @@ export function createToolUseStreamParser(): { feed(text: string): Array<Pick<Ki
 			pending = lines.pop() ?? "";
 			const uses: Array<Pick<KiroToolUse, "name" | "server">> = [];
 			for (const line of lines) {
-				const match = line.match(TOOL_USE_LINE);
-				if (match) uses.push({ name: match[1] ?? "", server: match[2] ?? "" });
+				const use = matchToolUseLine(line);
+				if (use) uses.push(use);
 			}
 			return uses;
 		},

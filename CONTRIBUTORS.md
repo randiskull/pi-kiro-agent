@@ -50,16 +50,57 @@ npm run test:e2e   # packs the tarball and loads it in a real pi host
 ```
 
 `npm run verify` is offline and needs no Kiro seat, including the end-to-end
-load test. One test does need a seat and is skipped everywhere until you ask
-for it:
+load test. The live suite does need one, and is skipped everywhere -- CI
+included -- until you ask for it:
 
 ```bash
-PI_KIRO_LIVE=1 npx vitest run stream-adapter-live.test.ts
+PI_KIRO_LIVE=1 npm run test:live
 ```
 
-That one spawns your authenticated kiro-cli, bills two real turns to your seat,
-and writes real session history under your home directory. Run it before a
-release; it is the only check that a delegated turn actually completes.
+That spawns your authenticated kiro-cli against the real thing:
+
+| File | Covers | Model turns |
+| --- | --- | --- |
+| `command-coverage-live.test.ts` | `/kiro` and `/kiro-subagents` through the registered handlers, against a real readiness and model-list probe | 0 |
+| `acp-transport-live.test.ts` | the ACP transport: one persistent child, one reused ACP session across turns | 2 |
+| `bridge-live.test.ts` | the MCP bridge: your installed rpiv/pi-subagents packages found through pi's registry, authenticated loopback MCP listed and called by a real MCP client, and a delegated turn calling a bridged tool back into the process | 1 |
+| `workflow-mcp-live.test.ts` | GSD's workflow MCP: `.mcp.json` discovery, a real `gsd-workflow` server, and its calls recovered as pi `ToolCall` blocks | 1 |
+| `stream-adapter-live.test.ts` | the default chat transport: session resume across turns | 2 |
+
+Six real turns, billed to your seat, with real session history written under your
+home directory. Two of them assert that the model *chose* to call a tool, so an
+occasional flake there is model behaviour, not a broken bridge; the plumbing
+assertions in the same files are deterministic and should never flake.
+
+Run the live suite before a release. It is the only thing that checks a delegated
+turn completes at all, and until it existed the ACP transport -- the one GSD
+requires, because only it passes MCP servers through -- was covered exclusively
+by a `spawn` mock.
+
+The bridge and workflow tests need `@juicesharp/rpiv-*`, `@tintinweb/pi-subagents`
+and `@opengsd/gsd-pi` installed; they skip themselves when those are absent.
+
+One asymmetry in `bridge-live.test.ts` is worth knowing before you "fix" it.
+`captureBridgeTools` imports each sibling's TypeScript entry, and those entries
+import `@earendil-works/pi-tui` and friends as bare specifiers resolved against
+the *ambient* host's module tree. Inside a running pi process that tree is there;
+under vitest it is not, so capture degrades to `[]` -- which is the shipped
+contract ("sibling failed to initialize -- bridge without it"). The test asserts
+that degradation rather than asserting tools appear, and drives the round trip
+with a synthetic `CapturedTool` instead. `serveBridgeHttp` does not care where a
+tool came from, so this is stronger proof, not weaker: it exercises the whole
+mount-invoke-return path without a fake host in it.
+`--pool=forks` is not optional (one test changes the working directory) and
+neither is `--no-file-parallelism` (concurrent kiro children collide).
+
+The live suite runs against your REAL `$HOME`, unlike every other test here: a
+kiro-cli child resolves its own helper binary under it, and the bridge imports
+the packages pi installed there. `/kiro-subagents` is the exception and is
+pinned to a throwaway home on purpose -- its `off` is global and deletes the
+`model:` frontmatter line rather than restoring what preceded it, so running it
+against a real `~/.pi/agent/agents` strips kiro routing from every agent at once
+with nothing to revert to. One test asserts your real agents directory came out
+unmodified.
 
 Node 22 or newer. Open an issue before starting anything that changes the
 provider contract, the transport protocol, or the trust boundary around the MCP

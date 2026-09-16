@@ -10,6 +10,9 @@
  * - stdout is ANSI-stripped and streamed into a thinking block live; when
  *   the process exits, the sentinel span becomes the text block (fallback:
  *   the whole cleaned body).
+ * - stderr is scanned for tool activity, NOT folded into the answer. As of
+ *   kiro-cli 2.21 that is where tool-use lines are printed, so a turn's tool
+ *   calls are invisible on stdout alone (see toolUseTranscript).
  * - The dim footer line ` ▸ Credits: N.NN • Time: Ns` is parsed for cost:
  *   credits land in usage.cost.total scaled by PI_KIRO_CREDIT_USD
  *   (default 0 — seat-billed). Token counts are not reported by the CLI.
@@ -119,6 +122,26 @@ export function cleanBody(raw: string): { body: string; credits: number | undefi
 		kept.push(line.replace(/^>\s?/, ""));
 	}
 	return { body: kept.join("\n").trim(), credits };
+}
+
+/**
+ * The text to scan for tool-use lines, which is NOT the same as the answer body.
+ *
+ * kiro-cli 2.21 prints tool activity on STDERR, not stdout: a turn that calls
+ * @gsdworkflow/gsd_doctor leaves stdout holding only the model's answer while
+ * stderr holds "[tool] Running: @gsdworkflow/gsd_doctor". Parsing stdout alone
+ * therefore finds zero tool calls no matter how the line is formatted, GSD's
+ * snapshotUnitActivity counts zero, and a unit that did the work gets salvaged.
+ * Older kiro-cli put those lines on stdout, so both streams are scanned; a given
+ * line only ever appears on one of them, so nothing is double counted.
+ *
+ * Kept separate from `body` on purpose: `body` feeds extractFinal and becomes the
+ * user-visible answer, and stderr must never leak into it.
+ */
+export function toolUseTranscript(body: string, rawStderr: string): string {
+	const stderrClean = stripAnsi(rawStderr).trim();
+	if (!stderrClean) return body;
+	return body ? `${body}\n${stderrClean}` : stderrClean;
 }
 
 /** Split the cleaned body into (working, final) via the sentinel protocol. */
@@ -435,8 +458,23 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 							pushThinking(`\n⚙ ${use.name}\n`);
 						}
 					});
+					// Tool-use lines arrive HERE on kiro-cli 2.21+ (see toolUseTranscript),
+					// so stderr gets its own parser instance: one line only ever lands on
+					// one stream, and a shared instance would splice the two streams'
+					// partial trailing lines into each other.
+					const liveStderrParser = createToolUseStreamParser();
 					child.stderr.on("data", (chunk: Buffer) => {
-						stderrText += chunk.toString("utf8");
+						const text = chunk.toString("utf8");
+						stderrText += text;
+						for (const use of liveStderrParser.feed(stripAnsi(text))) {
+							output.content.push({
+								type: "toolCall",
+								id: `kiro-live-${liveCount++}-${use.name}`,
+								name: use.name,
+								arguments: {},
+							});
+							pushThinking(`\n⚙ ${use.name}\n`);
+						}
 					});
 
 					exitCode = await new Promise((resolve, reject) => {
@@ -506,7 +544,8 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				// TODO(acp-dod): delete salvage heuristic (salvageToolUses, hasFinal, pushThinking salvage)
 				// after ACP field gate — under ACP, turn completion = protocol event; exit salvage unnecessary.
 				// See docs/design/acp-transport.md §7.
-				const salvageToolUses = exitCode !== 0 ? parseKiroToolUses(body) : [];
+				const toolTranscript = toolUseTranscript(body, stderrText);
+				const salvageToolUses = exitCode !== 0 ? parseKiroToolUses(toolTranscript) : [];
 				if (exitCode !== 0) {
 					const hasFinal = body.includes(FINAL_OPEN);
 					if (!hasFinal && salvageToolUses.length === 0) {
@@ -525,7 +564,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				);
 				// Surface MCP tool invocations that ran inside kiro as toolCall
 				// blocks (stopReason stays "stop": counted, not redispatched).
-				for (const block of synthesizeToolCallBlocks(body)) {
+				for (const block of synthesizeToolCallBlocks(toolTranscript)) {
 					output.content.push(block);
 				}
 				output.content.push({ type: "text", text: "" });
