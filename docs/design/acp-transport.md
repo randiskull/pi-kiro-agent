@@ -179,8 +179,85 @@ Two further findings bear on this design:
   on stdout, one self-describing event per event; implies `--no-interactive`". That is
   structurally the same event stream this document proposes reaching over ACP, delivered by the
   transport that already works. It would delete the scraping layer outright rather than hardening
-  it, and it narrows the gap this document exists to close, so **the ACP-vs-stream-json choice is
-  now an open decision, not a settled plan.** Deliberately not acted on here.
+  it, and it narrows the gap this document exists to close. That choice is now **settled in favour
+  of stream-json**; see section 5c for the probe evidence and what it means for this document.
+
+## 5c. Decision, 2026-09-15: `--output-format stream-json` first, ACP demoted to optional
+
+**Decision: adopt `chat --output-format stream-json` as the structured-event source. ACP stops
+being the plan of record and becomes the answer to one specific future need (bidirectionality).**
+
+Decided on evidence, not on the help text. Two real turns were probed with the streams separated,
+one calling an MCP tool through an `--agent` profile and one calling a kiro built-in.
+
+Both emitted clean JSON Lines, 55 and 19 lines, zero unparseable, exit 0. The envelope is
+self-versioning:
+
+```json
+{"type":"runStarted","data":{"payloadSchema":"acp","acpProtocolVersion":1,"engine":"v2"}}
+```
+
+Event types observed: `runStarted`, `sessionUpdate` (subtypes `agent_thought_chunk`,
+`agent_message_chunk`, `tool_call`, `tool_call_update`), `metadata`, `runFinished`.
+
+What the events carry that the scrape does not, and cannot:
+
+| | text scrape today | `stream-json` |
+|---|---|---|
+| Tool call id | `kiro-mcp-<sha256(body)[:16]>-<i>-<name>`, synthesized | `toolu_bdrk_01QAnUm...`, the model's own id |
+| Tool name | parsed out of prose | `_meta.kiro.toolName` + `_meta.kiro.mcpServerName` |
+| Arguments | `{}` for the 2.21 compact form | `rawInput`, complete |
+| Tool result | not available at all | `rawOutput` |
+| Status | inferred | `status: "completed"`, explicit transition |
+| **Built-in tools** | **unrecoverable** (see 5b) | `tool_call` with `_meta.kiro.toolName: "read"`, `kind: "read"`, `locations[]` |
+| Final answer | `extractFinal` heuristics over stdout | `runFinished.data.finalText` (+ `finalTextTruncated`) |
+| Thinking vs answer | fused in one stream | separate subtypes |
+| Credits | parsed footer | `metadata.data.meteringUsage[]` |
+| Session id | not exposed | `metadata.data.sessionId` |
+| Context pressure | not exposed | `contextUsagePercentage` |
+| Stop reason | exit code | `stopReason: "end_turn"` |
+
+The built-in row is the one that settles it. Section 5b concluded the scrape "can never be
+complete, only adequate", because `[tool] Reading note.txt:1` carries no tool name. Under
+stream-json that same call arrives with `_meta.kiro.toolName: "read"` and the path in
+`locations[]`; the prose line turns out to be the `title` field of a fully structured event. The
+gap this document was written to close is closed by a flag on the transport already in production.
+
+Two more reasons it wins on cost rather than on capability:
+
+- **Every flag the chat transport already passes coexists with it**: `--agent`,
+  `--require-mcp-startup`, `--model`, `--effort`, `--resume-id`, `--no-interactive` are all still
+  on `chat`. This is a change of parser, not a change of process model, so none of section 5's open
+  risks apply: no persistent child, no idle reaper, no keepalive/unref problem, no server-side
+  session growth, no concurrency question.
+- **The next break is detectable instead of silent.** That is the real lesson of 5b. The 2.21 break
+  was invisible because prose has no version and no schema; 36 green tests proved only that the
+  fixtures still matched themselves. `payloadSchema` + `acpProtocolVersion` + `engine` can be
+  asserted, so the same class of change fails loudly.
+
+**What ACP still buys, and why it is not needed yet.** ACP is bidirectional; stream-json is
+one-shot. That matters only for requests the client must *answer* mid-turn, i.e. permission and
+trust prompts, which `--trust-all-tools` already removes from the picture, and for `session/cancel`
+as a protocol operation rather than a signal. Session reuse is already covered by `--resume-id`.
+So ACP's remaining value is a contingency, not a milestone: keep `acp-transport.ts` and its
+`PI_KIRO_TRANSPORT=acp` flag, keep this document, and revisit if kiro starts requiring a mid-turn
+response we cannot pre-authorize.
+
+**Not yet verified, and to be probed before implementation:**
+
+- `--output-format stream-json` together with `--resume-id`. The session id is in the output so it
+  is plausible, but plausible is what 5b punished.
+- The `finalTextTruncated` boundary for a long answer, and whether reassembling
+  `agent_message_chunk` is required rather than optional.
+- Whether a tool *rejection* or a mid-turn error produces a distinguishable event. The probe's
+  `gsd_doctor` call did fail (project-root guard) and surfaced as `status: "completed"` with
+  `rawOutput.items[0].Json.isError: true`, so an error is inside the payload rather than in the
+  status. Any implementation must read `isError`, not just `status`.
+
+**Consequence for section 4.** Steps 1-5 stay valid as an ACP plan but are no longer the roadmap.
+The roadmap is: probe the three unknowns above, add a stream-json reader beside the text parser
+behind an env flag, run the live suite against both, then make stream-json the default and keep the
+text parser only for kiro-cli versions that lack the flag.
 
 ## 6. Non-goals
 
