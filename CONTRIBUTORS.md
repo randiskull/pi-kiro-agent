@@ -46,7 +46,20 @@ Pull requests are welcome. The short version:
 npm ci
 npm run verify     # tsc --noEmit, vitest, secret scan
 npm run scan       # the above plus npm audit --omit=dev
+npm run test:e2e   # packs the tarball and loads it in a real pi host
 ```
+
+`npm run verify` is offline and needs no Kiro seat, including the end-to-end
+load test. One test does need a seat and is skipped everywhere until you ask
+for it:
+
+```bash
+PI_KIRO_LIVE=1 npx vitest run stream-adapter-live.test.ts
+```
+
+That one spawns your authenticated kiro-cli, bills two real turns to your seat,
+and writes real session history under your home directory. Run it before a
+release; it is the only check that a delegated turn actually completes.
 
 Node 22 or newer. Open an issue before starting anything that changes the
 provider contract, the transport protocol, or the trust boundary around the MCP
