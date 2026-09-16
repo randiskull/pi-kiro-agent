@@ -14,7 +14,7 @@
  *
  * Commands:
  *   /kiro            — readiness status; (re)registers the provider
- *   /kiro-subagents  — on [model] [names,...] | off: route pi-subagents
+ *   /kiro-subagents  — on [model] [names,...] | off [names,...]: route pi-subagents
  *                      agent profiles through kiro
  */
 
@@ -150,17 +150,26 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 	});
 
 	pi.registerCommand("kiro-subagents", {
-		description: "Route pi-subagents agents through kiro: on [provider/model] [names,...] | off",
+		description:
+			"Route pi-subagents agents through kiro: on [provider/model] [names,...] | off [names,...]",
 		getArgumentCompletions: (prefix) =>
 			["on", `on ${DEFAULT_SUBAGENT_MODEL}`, "off"]
 				.filter((item) => item.startsWith(prefix))
 				.map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
 			const trimmed = args.trim();
-			if (trimmed === "off") {
-				const result = wireSubagents(undefined);
+			if (trimmed === "off" || trimmed.startsWith("off ")) {
+				const names = trimmed === "off" ? "" : trimmed.slice(4).trim();
+				const only =
+					names.length > 0
+						? names
+								.split(",")
+								.map((name) => name.trim())
+								.filter((name) => name.length > 0)
+						: undefined;
+				const result = wireSubagents(undefined, only);
 				ctx.ui.notify(
-					`Removed kiro routing from ${result.changed.length} agent(s) (${result.skipped.length} untouched).`,
+					`Unrouted ${result.changed.length} ${only ? "named" : "of all"} agent(s) from kiro (${result.skipped.length} untouched).`,
 					"info",
 				);
 				return;
@@ -168,7 +177,12 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 			if (trimmed === "on" || trimmed.startsWith("on ")) {
 				const rest = trimmed === "on" ? [] : trimmed.slice(3).trim().split(/\s+/);
 				const model = rest[0]?.includes("/") ? rest.shift() : DEFAULT_SUBAGENT_MODEL;
-				const only = rest.length > 0 ? rest.join(" ").split(",").map((name) => name.trim()) : undefined;
+				const names = rest
+					.join(" ")
+					.split(",")
+					.map((name) => name.trim())
+					.filter((name) => name.length > 0);
+				const only = names.length > 0 ? names : undefined;
 				if (!model || !model.startsWith(`${KIRO_PROVIDER}/`)) {
 					ctx.ui.notify(`Model must be ${KIRO_PROVIDER}/<id> (got "${model}").`, "error");
 					return;
@@ -181,7 +195,10 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 				);
 				return;
 			}
-			ctx.ui.notify("Usage: /kiro-subagents on [provider/model] [names,...] | off", "error");
+			ctx.ui.notify(
+				"Usage: /kiro-subagents on [provider/model] [names,...] | off [names,...]",
+				"error",
+			);
 		},
 	});
 

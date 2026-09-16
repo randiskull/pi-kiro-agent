@@ -61,9 +61,23 @@ Reverse it with:
 /kiro-subagents off
 ```
 
-`off` is conservative by design: it removes the `model:` line only when that line
+`off` takes the same optional name list, so you can unroute one agent and leave
+the rest on kiro:
+
+```
+/kiro-subagents off planner
+```
+
+`off` is conservative by design: it acts on the `model:` line only when that line
 points at `kiro/`. An agent you routed to some other provider by hand is left
 alone, so running `off` never silently reassigns work you did not route here.
+
+Round-tripping is lossless. When `on` displaces an existing non-kiro model it
+records the old value in a `pi-kiro-prev-model:` field beside the new one, and
+`off` puts that value back and drops the stash. Cycling through several kiro
+models does not overwrite the stash, so `off` always returns to the value you
+started from. Only when there was no `model:` line at all does `off` remove the
+line, which is what restores that agent to its own default.
 
 The command writes to your home directory, not the project. Agents already set to
 the requested model, and files with no YAML frontmatter, are reported as skipped
