@@ -18,13 +18,13 @@
  * this machine: 15 agents on kiro/claude-sonnet-5). The last test in this file
  * asserts the real agents dir was not touched.
  */
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import piKiro from "../src/index.js";
-import { LIVE, withRealHome } from "./live-support.js";
+import { LIVE, liveTempDir, withRealHome } from "./live-support.js";
 
 interface Notice {
 	message: string;
@@ -140,7 +140,7 @@ describe.skipIf(!LIVE)("live /kiro-subagents command", () => {
 
 	beforeAll(() => {
 		realBefore = snapshotReal();
-		tempHome = mkdtempSync(join(tmpdir(), "pi-kiro-cmdhome-"));
+		tempHome = liveTempDir("pi-kiro-cmdhome-");
 		agentsPath = join(tempHome, ".pi", "agent", "agents");
 		mkdirSync(agentsPath, { recursive: true });
 		targetSeed = AGENT("");

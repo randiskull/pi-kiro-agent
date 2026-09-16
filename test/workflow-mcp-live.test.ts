@@ -27,8 +27,7 @@
  * Read-only tool under test: gsd_doctor. Never a gsd_plan_* / gsd_*_save, which
  * would mutate the fixture project's workflow state.
  */
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -42,7 +41,16 @@ import {
 	WORKFLOW_MCP_CONFIG_NAME,
 	WORKFLOW_MCP_SERVER_KEY,
 } from "../src/workflow-mcp.js";
-import { ctx, drainTurn, LIVE, LIVE_MODEL, LIVE_TIMEOUT_MS, user, withRealHome } from "./live-support.js";
+import {
+	ctx,
+	drainTurn,
+	LIVE,
+	LIVE_MODEL,
+	LIVE_TIMEOUT_MS,
+	liveTempDir,
+	user,
+	withRealHome,
+} from "./live-support.js";
 
 const GSD_ROOT = "/opt/homebrew/lib/node_modules/@opengsd/gsd-pi";
 const GSD_MCP_CLI = join(GSD_ROOT, "packages", "mcp-server", "dist", "cli.js");
@@ -53,7 +61,7 @@ let fixtureDir = "";
 
 /** A .mcp.json whose gsd-workflow entry runs the released server on a throwaway root. */
 function writeFixture(): string {
-	const dir = mkdtempSync(join(tmpdir(), "pi-kiro-gsdfix-"));
+	const dir = liveTempDir("pi-kiro-gsdfix-");
 	const config = {
 		mcpServers: {
 			[WORKFLOW_MCP_CONFIG_NAME]: {
