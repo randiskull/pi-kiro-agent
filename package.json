@@ -26,6 +26,7 @@
 	},
 	"scripts": {
 		"test": "vitest run",
+		"test:e2e": "vitest run test/extension-load.e2e.test.ts",
 		"prepublishOnly": "npm run verify",
 		"check": "tsc --noEmit",
 		"scan:secrets": "node scripts/secret-scan.mjs --all",

@@ -5,6 +5,37 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **End-to-end load test against the real pi host** (`test/extension-load.e2e.test.ts`). It packs
+  the tarball `npm publish` would upload, gives it only the runtime dependencies its own manifest
+  declares, and hands the result to pi's own extension loader. It asserts that the declared entry
+  point is actually published, that pi loads *that* entry rather than a convention-discovered
+  namesake, and that activation registers the `kiro` provider plus both slash commands. A stub
+  `kiro-cli` on `PATH` answers the readiness and model-list probes, so the test is offline and needs
+  no Kiro seat. Every other test imports the entry module directly, which left the published package
+  itself unverified: a wrong `pi.extensions` path or a module missing from `files` used to pass every
+  gate and fail first at `pi install`. A real delegated turn still needs a seat and stays in
+  `test/stream-adapter-live.test.ts` behind `PI_KIRO_LIVE=1`.
+- `CONTRIBUTORS.md`, and worked integration guides for rpiv and the GSD workflow MCP under
+  `docs/integrations/`.
+
+### Changed
+
+- **Source and tests are split into `src/` and `test/`, so the published entry point moves from
+  `./index.ts` to `./src/index.ts`.** `pi install` reads that path out of the manifest, so nothing
+  changes for users; anyone referencing the file directly needs to update it.
+- **`files` is now a pure allowlist** (`src/`, `docs/`, and the four root documents) instead of a
+  wildcard with negations. The old form published any new root `*.ts` by default and needed one `!`
+  exception per test file, so a new module was published by omission rather than by decision.
+  `docs/` now ships with the package. Three constraint tests pin the invariants: every
+  `pi.extensions` entry resolves on disk, `files` carries no negated patterns, and `docs/` stays
+  included.
+- CI installs with `npm ci` rather than `npm install`, so the committed lockfile is authoritative
+  and a green run cannot be a different dependency tree than the one that was reviewed.
+
 ## 0.2.1 - 2026-09-15
 
 ### Added
