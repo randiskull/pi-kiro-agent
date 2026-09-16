@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **`/kiro-subagents on` no longer destroys an agent's existing model routing.** It used to overwrite
+  a pre-existing `model:` value with no record of it, so a later `off` had nothing to restore and
+  deleted the line outright -- silently discarding routing the user had set by hand. `on` now stashes
+  a displaced non-kiro value in a `pi-kiro-prev-model:` frontmatter field and `off` restores it. A
+  second `on` does not overwrite the stash, so cycling through kiro models still returns to the
+  original. Where there genuinely was no `model:` line, `off` removes the line as before, which is
+  the correct restore in that case.
+- **`/kiro-subagents off` accepts a name list.** The handler exact-matched `off`, so
+  `/kiro-subagents off locator` fell through to the usage error even though the underlying
+  `wireSubagents` had always supported restricting to named agents. `off [name1,name2]` now mirrors
+  `on`.
+
 ### Added
 
 - **End-to-end load test against the real pi host** (`test/extension-load.e2e.test.ts`). It packs

@@ -22,7 +22,7 @@ Requires kiro-cli on PATH and logged in (`kiro-cli login`; IdC/enterprise seats 
 
 - `/model kiro/<id>` — models fetched live from `kiro-cli chat --list-models` at registration (many seats expose only `auto`, Kiro's internal router).
 - `/kiro` — readiness status; re-registers after login.
-- `/kiro-subagents on [kiro/<id>] [name1,name2] | off` — route [pi-subagents](https://github.com/tintinweb/pi-subagents) agent profiles through kiro by rewriting the `model:` frontmatter in `~/.pi/agent/agents/*.md`. Wires every discovered agent, or just the named ones; defaults to `kiro/auto`. `off` removes the line only where it points at `kiro/`, so agents you routed elsewhere by hand are untouched. See [docs/integrations/rpiv.md](docs/integrations/rpiv.md).
+- `/kiro-subagents on [kiro/<id>] [name1,name2] | off` — route [pi-subagents](https://github.com/tintinweb/pi-subagents) agent profiles through kiro by rewriting the `model:` frontmatter in `~/.pi/agent/agents/*.md`. Wires every discovered agent, or just the named ones; defaults to `kiro/auto`. `off [name1,name2]` reverses it, acting only where the line points at `kiro/`, so agents you routed elsewhere by hand are untouched. If `on` displaced a non-kiro model, that value is stashed in a `pi-kiro-prev-model:` field and `off` puts it back; where there was no `model:` line to begin with, `off` removes the line again. See [docs/integrations/rpiv.md](docs/integrations/rpiv.md).
 
 Pi thinking levels forward to kiro's `--effort` (minimal/low→low, medium→medium, high→high, xhigh→xhigh).
 
