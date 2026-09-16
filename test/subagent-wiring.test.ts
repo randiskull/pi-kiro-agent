@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
-import { agentsDir, wireSubagents } from "./subagent-wiring.js";
+import { agentsDir, wireSubagents } from "../src/subagent-wiring.js";
 
 const AGENT_BODY = (front: string) => `---\nname: agent\n${front}---\n\nBody.\n`;
 

@@ -8,7 +8,7 @@
  * This test fails if the constraint is reverted to ^1.29.0 or any range
  * that allows versions below 1.30.0.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -16,11 +16,13 @@ import { describe, expect, it } from "vitest";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const packageJson = JSON.parse(
-	readFileSync(resolve(__dirname, "package.json"), "utf8"),
+	readFileSync(resolve(__dirname, "..", "package.json"), "utf8"),
 ) as {
 	dependencies?: Record<string, string>;
 	scripts?: Record<string, string>;
 	publishConfig?: { registry?: string; access?: string };
+	files?: string[];
+	pi?: { extensions?: string[] };
 };
 
 describe("package.json security constraints", () => {
@@ -77,5 +79,41 @@ describe("supply-chain constraints on the release path", () => {
 			packageJson.scripts?.prepublishOnly,
 			"prepublishOnly must run verify so a publish cannot skip typecheck, tests or the secret scan",
 		).toBe("npm run verify");
+	});
+});
+
+describe("published surface", () => {
+	// The entry point is only exercised for real by installing the package: no
+	// unit test imports it through the manifest. A typo here passes every gate
+	// and only fails at `pi install` time, so it is pinned to a file on disk.
+	it("pi.extensions points at files that exist", () => {
+		const entries = packageJson.pi?.extensions;
+		expect(entries, "pi.extensions must be declared or the extension never loads").toBeDefined();
+		expect(entries?.length).toBeGreaterThan(0);
+		for (const entry of entries ?? []) {
+			expect(
+				existsSync(resolve(__dirname, "..", entry)),
+				`pi.extensions entry "${entry}" does not exist on disk`,
+			).toBe(true);
+		}
+	});
+
+	// `files` used to be a denylist ("*.ts" plus negations for the test files),
+	// where any new root-level .ts shipped unless someone remembered to exclude
+	// it. Keeping it negation-free means the published surface is opt-in.
+	it("files is an allowlist, with no negated patterns", () => {
+		const files = packageJson.files;
+		expect(files, "files must be declared, or npm packs everything not gitignored").toBeDefined();
+		const negations = (files ?? []).filter((pattern) => pattern.startsWith("!"));
+		expect(
+			negations,
+			`a negated files pattern means the published surface is a denylist: ${negations.join(", ")}`,
+		).toEqual([]);
+	});
+
+	// The README links to docs/integrations/*.md with relative paths. If docs/
+	// stops shipping, those links break for anyone reading the installed copy.
+	it("ships the docs the README links to", () => {
+		expect(packageJson.files).toContain("docs/");
 	});
 });

@@ -4,8 +4,10 @@
 
 ## Maintainer
 
-**Randy James** ([@randiskull](https://github.com/randiskull)) — author, and
-reviewer of record for every change that reached `main`.
+**Randy James** — author, and reviewer of record for every change that reached
+`main`. Commits appear under two GitHub accounts,
+[@randiskull](https://github.com/randiskull) and
+[@rndjams](https://github.com/rndjams); both are the same person.
 
 ## Automated contributors
 

@@ -9,7 +9,7 @@ import {
 	planTurn,
 	recordFreshSession,
 	snapshotSessions,
-} from "./session-manager.js";
+} from "../src/session-manager.js";
 
 const CWD = "/work/proj";
 

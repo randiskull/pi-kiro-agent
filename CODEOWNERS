@@ -15,5 +15,8 @@
 /.github/dependabot.yml @randiskull
 /package.json @randiskull
 /package-lock.json @randiskull
+# Pins the published surface: the entry point resolves, and `files` stays
+# an allowlist rather than a denylist with hand-maintained negations.
+/test/package-constraints.test.ts @randiskull
 /scripts/ @randiskull
 /CODEOWNERS @randiskull

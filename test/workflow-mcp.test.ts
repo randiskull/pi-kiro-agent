@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeAgentProfile } from "./kiro-bridge.js";
+import { writeAgentProfile } from "../src/kiro-bridge.js";
 import {
 	WORKFLOW_MCP_SERVER_KEY,
 	_resetWorkflowMcpNoticesForTest,
@@ -19,7 +19,7 @@ import {
 	parseKiroToolUses,
 	synthesizeToolCallBlocks,
 	synthesizeWorkflowMcpEntry,
-} from "./workflow-mcp.js";
+} from "../src/workflow-mcp.js";
 
 // Captured (ANSI-stripped) from the live probe: one real gsd tool round-trip.
 const PROBE_OUTPUT = `Running tool gsd_milestone_status with the param (from mcp server: gsdworkflow)

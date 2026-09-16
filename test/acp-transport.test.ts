@@ -15,8 +15,8 @@ import { PassThrough } from "node:stream";
 import { Writable } from "node:stream";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { _resetAcpSessions } from "./acp-session.js";
-import { _getAcpChildRegistry, _resetAcpChildren, makeStreamViaAcp } from "./acp-transport.js";
+import { _resetAcpSessions } from "../src/acp-session.js";
+import { _getAcpChildRegistry, _resetAcpChildren, makeStreamViaAcp } from "../src/acp-transport.js";
 
 // ─── Spawn mock ───────────────────────────────────────────────────────────────
 
@@ -1460,21 +1460,21 @@ describe("makeStreamViaAcp", () => {
 			// Static: check the import graph
 			// acp-transport.ts should not contain FINAL_OPEN or FINAL_CLOSE usage
 			const fs = await import("node:fs");
-			const src = fs.readFileSync(new URL("./acp-transport.ts", import.meta.url).pathname, "utf8");
+			const src = fs.readFileSync(new URL("../src/acp-transport.ts", import.meta.url).pathname, "utf8");
 			expect(src).not.toContain("FINAL_OPEN");
 			expect(src).not.toContain("FINAL_CLOSE");
 		});
 
 		it("does not call parseKiroToolUses or synthesizeToolCallBlocks", async () => {
 			const fs = await import("node:fs");
-			const src = fs.readFileSync(new URL("./acp-transport.ts", import.meta.url).pathname, "utf8");
+			const src = fs.readFileSync(new URL("../src/acp-transport.ts", import.meta.url).pathname, "utf8");
 			expect(src).not.toContain("parseKiroToolUses");
 			expect(src).not.toContain("synthesizeToolCallBlocks");
 		});
 
 		it("does not call snapshotSessions, recordFreshSession, or makeListSessions", async () => {
 			const fs = await import("node:fs");
-			const src = fs.readFileSync(new URL("./acp-transport.ts", import.meta.url).pathname, "utf8");
+			const src = fs.readFileSync(new URL("../src/acp-transport.ts", import.meta.url).pathname, "utf8");
 			expect(src).not.toContain("snapshotSessions");
 			expect(src).not.toContain("recordFreshSession");
 			expect(src).not.toContain("makeListSessions");
@@ -1482,7 +1482,7 @@ describe("makeStreamViaAcp", () => {
 
 		it("does not use cleanBody or extractFinal", async () => {
 			const fs = await import("node:fs");
-			const src = fs.readFileSync(new URL("./acp-transport.ts", import.meta.url).pathname, "utf8");
+			const src = fs.readFileSync(new URL("../src/acp-transport.ts", import.meta.url).pathname, "utf8");
 			expect(src).not.toContain("cleanBody");
 			expect(src).not.toContain("extractFinal");
 		});

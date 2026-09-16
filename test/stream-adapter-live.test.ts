@@ -6,8 +6,8 @@
  */
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { _resetSessions } from "./session-manager.js";
-import { makeStreamViaKiro } from "./stream-adapter.js";
+import { _resetSessions } from "../src/session-manager.js";
+import { makeStreamViaKiro } from "../src/stream-adapter.js";
 
 const LIVE = process.env.PI_KIRO_LIVE === "1";
 

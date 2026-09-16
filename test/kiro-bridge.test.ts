@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import type { HttpBridgeHandle } from "./bridge.js";
+import type { HttpBridgeHandle } from "../src/bridge.js";
 import { describe, expect, it } from "vitest";
-import { agentProfilesDir, bridgeEnabled, writeAgentProfile } from "./kiro-bridge.js";
+import { agentProfilesDir, bridgeEnabled, writeAgentProfile } from "../src/kiro-bridge.js";
 
 const HANDLE: HttpBridgeHandle = {
 	url: "http://127.0.0.1:5555/mcp",

@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { _resetSessions } from "./session-manager.js";
-import { FINAL_CLOSE, FINAL_OPEN, makeStreamViaKiro } from "./stream-adapter.js";
+import { _resetSessions } from "../src/session-manager.js";
+import { FINAL_CLOSE, FINAL_OPEN, makeStreamViaKiro } from "../src/stream-adapter.js";
 
 // Shared mutable state for the spawn + execFile fakes.
 const H = vi.hoisted(() => ({

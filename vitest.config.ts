@@ -2,8 +2,8 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
 	test: {
-		include: ["*.test.ts"],
-		setupFiles: ["./test-setup.ts"],
+		include: ["test/**/*.test.ts"],
+		setupFiles: ["./test/test-setup.ts"],
 		unstubGlobals: true,
 		clearMocks: true,
 		restoreMocks: true,

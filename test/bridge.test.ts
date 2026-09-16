@@ -11,7 +11,7 @@ import {
 	manifestExtensionEntries,
 	serveBridgeHttp,
 	toJsonSchema,
-} from "./bridge.js";
+} from "../src/bridge.js";
 
 const FAKE_CTX = { cwd: "/tmp" } as unknown as ExtensionContext;
 

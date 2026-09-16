@@ -11,7 +11,7 @@ import {
 	makeStreamViaKiro,
 	mapEffort,
 	stripAnsi,
-} from "./stream-adapter.js";
+} from "../src/stream-adapter.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));

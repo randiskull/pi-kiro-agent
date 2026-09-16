@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { checkKiroReadiness, clearKiroReadinessCache, parseWhoami } from "./readiness.js";
+import { checkKiroReadiness, clearKiroReadinessCache, parseWhoami } from "../src/readiness.js";
 
 type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
 // `error`: true = generic non-zero exit, "timeout" = killed by timeout (SIGTERM),

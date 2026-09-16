@@ -17,7 +17,7 @@ import {
 	registerChildForCleanup,
 	selectOrphans,
 	unregisterChildForCleanup,
-} from "./orphan-reaper.js";
+} from "../src/orphan-reaper.js";
 
 const DEAD_PARENT = 11111;
 const LIVE_PARENT = 22222;

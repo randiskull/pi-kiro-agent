@@ -9,7 +9,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("./readiness.js", () => ({
+vi.mock("../src/readiness.js", () => ({
 	checkKiroReadiness: vi.fn(async () => ({
 		ready: true,
 		binaryPath: "kiro-cli",
@@ -19,25 +19,25 @@ vi.mock("./readiness.js", () => ({
 	})),
 	clearKiroReadinessCache: vi.fn(),
 }));
-vi.mock("./models.js", () => ({
+vi.mock("../src/models.js", () => ({
 	KIRO_PROVIDER: "kiro",
 	DEFAULT_SUBAGENT_MODEL: "kiro/auto",
 	FALLBACK_MODELS: [{ id: "auto" }],
 	fetchKiroModels: vi.fn(async () => [{ id: "auto" }]),
 }));
-vi.mock("./stream-adapter.js", () => ({
+vi.mock("../src/stream-adapter.js", () => ({
 	makeStreamViaKiro: vi.fn(() => vi.fn()),
 }));
-vi.mock("./bridge.js", () => ({
+vi.mock("../src/bridge.js", () => ({
 	captureBridgeTools: vi.fn(async () => []),
 	serveBridgeHttp: vi.fn(),
 }));
-vi.mock("./kiro-bridge.js", () => ({ bridgeEnabled: () => false }));
-vi.mock("./subagent-wiring.js", () => ({
+vi.mock("../src/kiro-bridge.js", () => ({ bridgeEnabled: () => false }));
+vi.mock("../src/subagent-wiring.js", () => ({
 	wireSubagents: vi.fn(() => ({ changed: [], skipped: [] })),
 }));
 // Mocked so activation tests never scan (or reap on) the real process table.
-vi.mock("./orphan-reaper.js", () => ({
+vi.mock("../src/orphan-reaper.js", () => ({
 	reapOrphanedKiroChildren: vi.fn(() => ({ scanned: 0, reaped: 0 })),
 	registerChildForCleanup: vi.fn(),
 	unregisterChildForCleanup: vi.fn(),
@@ -75,7 +75,7 @@ function makeFakePi() {
 
 async function loadExtension() {
 	vi.resetModules();
-	const mod = await import("./index.js");
+	const mod = await import("../src/index.js");
 	return mod.default as (pi: unknown) => Promise<void>;
 }
 
@@ -96,7 +96,7 @@ describe("provider registration lifecycle", () => {
 		// Load first: loadExtension resets modules, so the mock instance must be
 		// grabbed from the same registry generation index.js imports from.
 		const piKiro = await loadExtension();
-		const { reapOrphanedKiroChildren } = await import("./orphan-reaper.js");
+		const { reapOrphanedKiroChildren } = await import("../src/orphan-reaper.js");
 		const reapMock = vi.mocked(reapOrphanedKiroChildren);
 		reapMock.mockImplementationOnce(() => {
 			throw new Error("ps exploded");

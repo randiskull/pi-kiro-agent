@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { Message } from "@earendil-works/pi-ai";
-import { hashMessages } from "./message-hash.js";
+import { hashMessages } from "../src/message-hash.js";
 
 const user = (text: string): Message => ({ role: "user", content: text, timestamp: 0 }) as unknown as Message;
 

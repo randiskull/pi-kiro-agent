@@ -35,13 +35,12 @@
 		"hooks:install": "git config core.hooksPath scripts/hooks && echo 'pre-push hook installed (core.hooksPath=scripts/hooks)'"
 	},
 	"files": [
-		"*.ts",
+		"src/",
+		"docs/",
 		"README.md",
 		"CHANGELOG.md",
-		"LICENSE",
-		"!*.test.ts",
-		"!test-setup.ts",
-		"!vitest.config.ts"
+		"CONTRIBUTORS.md",
+		"LICENSE"
 	],
 	"publishConfig": {
 		"registry": "https://registry.npmjs.org/",
@@ -49,7 +48,7 @@
 	},
 	"pi": {
 		"extensions": [
-			"./index.ts"
+			"./src/index.ts"
 		]
 	},
 	"dependencies": {
