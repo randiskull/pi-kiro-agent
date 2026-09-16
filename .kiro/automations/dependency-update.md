@@ -16,7 +16,7 @@ automation so the definition lives in version control and stays reviewable.
 
 ## Prompt
 
-> You are performing a scheduled dependency update for the pi-kiro repository —
+> You are performing a scheduled dependency update for the pi-kiro-agent repository —
 > a Pi coding-agent extension (TypeScript, Node >=22, ESM).
 >
 > Steps:
@@ -26,7 +26,7 @@ automation so the definition lives in version control and stays reviewable.
 >    - Check the changelog or release notes for breaking changes.
 >    - If the update is a patch or minor with no breaking changes, update it.
 >    - If the update is a major version, evaluate whether the breaking changes
->      affect pi-kiro. Only update if the migration is straightforward.
+>      affect pi-kiro-agent. Only update if the migration is straightforward.
 > 3. After updating `package.json`, run `npm install` to regenerate the lockfile.
 > 4. Run `npm run check` (TypeScript) and `npm test` (Vitest) to verify nothing
 >    breaks.

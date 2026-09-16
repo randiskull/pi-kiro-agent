@@ -69,7 +69,7 @@ export const FINAL_OPEN = "<pi_final>";
 export const FINAL_CLOSE = "</pi_final>";
 // TODO(acp-dod): delete FINAL_OPEN, FINAL_CLOSE, extractFinal, and the sentinel instruction
 // in buildScaffolding after the ACP field gate passes (PI_KIRO_TRANSPORT=acp, zero salvages,
-// zero synthesized tool calls). See .rpiv/artifacts/designs/2026-07-31_17-59-51_acp-transport.md §7.
+// zero synthesized tool calls). See docs/design/acp-transport.md §7.
 
 /** Map Pi thinking levels onto kiro-cli --effort values. */
 export function mapEffort(level: ThinkingLevel | undefined): string | undefined {
@@ -333,7 +333,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				// TODO(acp-dod): delete snapshotSessions, makeListSessions, preSnapshot, and
 				// recordFreshSession (lines below) after ACP field gate — ACP gives sessionId
 				// directly from session/new; snapshot-diff capture is unnecessary.
-				// See .rpiv/artifacts/designs/2026-07-31_17-59-51_acp-transport.md §7.
+				// See docs/design/acp-transport.md §7.
 				let preSnapshot = useResume ? new Set<string>() : await snapshotSessions(cwd, listSessions);
 
 				let raw = "";
@@ -505,7 +505,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				// sentinel and NO tool activity is still a hard failure.
 				// TODO(acp-dod): delete salvage heuristic (salvageToolUses, hasFinal, pushThinking salvage)
 				// after ACP field gate — under ACP, turn completion = protocol event; exit salvage unnecessary.
-				// See .rpiv/artifacts/designs/2026-07-31_17-59-51_acp-transport.md §7.
+				// See docs/design/acp-transport.md §7.
 				const salvageToolUses = exitCode !== 0 ? parseKiroToolUses(body) : [];
 				if (exitCode !== 0) {
 					const hasFinal = body.includes(FINAL_OPEN);

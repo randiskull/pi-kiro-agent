@@ -549,7 +549,7 @@ async function spawnAcpChild(
 	const negotiated = (initResp.result as { protocolVersion?: number })?.protocolVersion;
 	if (negotiated !== undefined && negotiated !== ACP_PROTOCOL_VERSION) {
 		console.error(
-			`[pi-kiro] ACP protocolVersion mismatch: client=${ACP_PROTOCOL_VERSION}, server=${negotiated}. Proceeding; update pi-kiro if the transport misbehaves.`,
+			`[pi-kiro] ACP protocolVersion mismatch: client=${ACP_PROTOCOL_VERSION}, server=${negotiated}. Proceeding; update pi-kiro-agent if the transport misbehaves.`,
 		);
 	}
 	if (turnSignal.aborted) {

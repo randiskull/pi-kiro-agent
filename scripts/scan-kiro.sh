@@ -29,7 +29,7 @@ mkdir -p "$OUT_DIR"
 STAMP="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
 OUT_FILE="$OUT_DIR/scan-$STAMP.md"
 
-PROMPT='You are auditing the pi-kiro repository for release readiness — a Pi
+PROMPT='You are auditing the pi-kiro-agent repository for release readiness — a Pi
 coding-agent extension registering a `kiro` provider that delegates turns to a
 local kiro-cli, plus a loopback MCP bridge exposing the calling session'"'"'s tools
 to delegated runs.

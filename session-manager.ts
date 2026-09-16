@@ -1,7 +1,7 @@
 /**
  * Incremental-context session manager for the kiro provider.
  *
- * pi-kiro re-serialized the ENTIRE Pi conversation into one prompt and spawned a
+ * pi-kiro-agent re-serialized the ENTIRE Pi conversation into one prompt and spawned a
  * fresh, stateless `kiro-cli chat` every turn. kiro-cli has no prompt caching, so
  * long GSD sessions (~1M tokens) reprocess everything from scratch and hang.
  *

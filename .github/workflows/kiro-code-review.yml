@@ -5,7 +5,6 @@ on:
     types: [opened, synchronize, ready_for_review]
     paths-ignore:
       - '**/*.md'
-      - '.rpiv/**'
       - 'package-lock.json'
 
 permissions:

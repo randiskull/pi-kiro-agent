@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Secret scanner for pi-kiro. Greps tracked text files for high-confidence
+ * Secret scanner for pi-kiro-agent. Greps tracked text files for high-confidence
  * credential patterns (provider key prefixes, private-key PEM headers). Exits
  * non-zero when any match is found so CI can gate on it.
  *

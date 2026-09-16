@@ -50,7 +50,7 @@ export function writeAgentProfile(
 		// kiro silently fall back to the default agent (no bridge, no error).
 		name,
 		description:
-			"Throwaway pi-kiro delegation profile (auto-generated per turn; safe to delete). Exposes the calling Pi session's tools over a loopback MCP bridge and/or the project's gsd-workflow MCP server.",
+			"Throwaway pi-kiro-agent delegation profile (auto-generated per turn; safe to delete). Exposes the calling Pi session's tools over a loopback MCP bridge and/or the project's gsd-workflow MCP server.",
 		mcpServers: {
 			...(extraMcpServers ?? {}),
 			...(handle ? { pi: { type: "http", url: handle.urlWithToken } } : {}),

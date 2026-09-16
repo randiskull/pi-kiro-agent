@@ -1,5 +1,5 @@
 #!/bin/sh
-# pre-push gate for pi-kiro. Install with: npm run hooks:install
+# pre-push gate for pi-kiro-agent. Install with: npm run hooks:install
 #
 # Default: the fast deterministic bar (typecheck + tests + secret scan). No
 # network, so offline pushes still work; `npm audit` is left to CI. Bypass a

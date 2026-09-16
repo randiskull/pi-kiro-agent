@@ -1,4 +1,4 @@
-# Kiro Automation: pi-kiro security & release audit
+# Kiro Automation: pi-kiro-agent security & release audit
 
 Kiro Automations are configured in the web UI (`app.kiro.dev/automations`), not
 from a repo file — they run in a cloud sandbox on a schedule and open a pull
@@ -17,7 +17,7 @@ automation so the scan definition lives in version control and stays reviewable.
 ## Prompt
 
 > You are performing a scheduled security and release-readiness audit of the
-> pi-kiro repository — a Pi coding-agent extension that registers a `kiro`
+> pi-kiro-agent repository — a Pi coding-agent extension that registers a `kiro`
 > provider delegating turns to a local kiro-cli, plus a loopback MCP bridge that
 > exposes the calling session's tools to delegated runs.
 >
