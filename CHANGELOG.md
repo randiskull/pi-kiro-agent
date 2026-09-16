@@ -96,6 +96,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `setupFiles` never runs for a file whose every test is skipped, which is all five live files
   without `PI_KIRO_LIVE=1`, and a `process.once("exit")` handler never runs at all because vitest
   terminates its workers rather than letting them exit.
+- **The live command-coverage test no longer re-registers your Kiro device on every run.**
+  `/kiro-subagents` coverage seeds a throwaway `$HOME` so its global `off` cannot reach the real
+  agents directory. Registering the extension also probes the model list, which spawns a real
+  `kiro-cli` that inherits that `$HOME`, and kiro-cli keeps its seat in two stores that both hang
+  off `$HOME`: the login keychain's `kirocli:odic:*` items and
+  `Library/Application Support/kiro-cli/data.sqlite3`. It therefore saw itself as logged out on
+  every run, minted a fresh Identity Center device registration, failed to persist it (a fake
+  `$HOME` leaves `/usr/bin/security` no login keychain to open, which is the "Keychain Not Found"
+  dialog), and opened a browser to authenticate the new one. Both stores are symlinked into the
+  seeded home now; only `.pi/agent/agents` ever needed isolating, never the seat. Every assertion
+  passed throughout, so the only evidence was browser windows and a `SecurityAgent` prompt that
+  nobody had connected to a test; the cause was found by walking the pid ancestry of the live
+  `security` call. A new test reads the device registration's keychain creation date before and
+  after and fails if it changed, so a regression is an assertion rather than a popup. Note for
+  anyone auditing this: kiro-cli hands that registration, `client_secret` included, to
+  `/usr/bin/security` as a command-line argument, where any process on the machine can read it via
+  `ps`. That is an upstream defect this package cannot fix.
 
 ## 0.2.1 - 2026-09-15
 

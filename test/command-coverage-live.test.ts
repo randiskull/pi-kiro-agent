@@ -17,8 +17,30 @@
  * strips kiro routing from every agent at once with nothing to revert to (on
  * this machine: 15 agents on kiro/claude-sonnet-5). The last test in this file
  * asserts the real agents dir was not touched.
+ *
+ * That throwaway HOME is also where a real kiro-cli gets spawned, because
+ * registering the extension probes the model list (src/models.ts). kiro-cli keeps
+ * its seat under $HOME in two stores -- the login keychain's kirocli:odic:* items
+ * and Library/Application Support/kiro-cli/data.sqlite3 -- so an unseeded fake
+ * HOME made it mint a NEW Identity Center device registration on every live run,
+ * fail to persist it (a fake HOME has no login keychain for /usr/bin/security to
+ * open), and open a browser to authenticate the new one. Every assertion in this
+ * file passed anyway, which is why it went unnoticed until pid ancestry caught it
+ * on 2026-09-15. Both stores are symlinked in now: only .pi/agent/agents ever
+ * needed isolating here, never the seat. The last test asserts the registration
+ * was not recreated, so this cannot go quiet again.
  */
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
@@ -125,7 +147,50 @@ describe.skipIf(!LIVE)("live /kiro-subagents command", () => {
 	let tempHome = "";
 	let agentsPath = "";
 	let targetSeed = "";
+	let registrationBefore = "";
 	const redirected = { home: process.env.HOME, userProfile: process.env.USERPROFILE };
+
+	/**
+	 * kiro-cli's seat lives under $HOME, and the model probe spawns a real kiro-cli
+	 * that inherits the seeded HOME. Without these two symlinks it sees itself as
+	 * logged out and re-registers the device with Identity Center. The globalSetup
+	 * teardown's rmSync unlinks symlinks rather than deleting through them
+	 * (verified against a sacrificial directory), so the real stores are safe.
+	 */
+	function seedSeat(home: string): void {
+		const real = userInfo().homedir;
+		const support = join(real, "Library", "Application Support", "kiro-cli");
+		if (existsSync(support)) {
+			mkdirSync(join(home, "Library", "Application Support"), { recursive: true });
+			symlinkSync(support, join(home, "Library", "Application Support", "kiro-cli"));
+		}
+		const keychains = join(real, "Library", "Keychains");
+		if (existsSync(keychains)) {
+			mkdirSync(join(home, "Library"), { recursive: true });
+			symlinkSync(keychains, join(home, "Library", "Keychains"));
+		}
+	}
+
+	/**
+	 * Creation date of the kiro device-registration keychain item. Read without -w
+	 * and without -g so no secret is ever fetched, and with the real HOME pinned:
+	 * test-setup.ts has already redirected $HOME by the time this runs, which would
+	 * hide the login keychain from /usr/bin/security and turn every read into a
+	 * false "absent".
+	 */
+	function registrationCdat(): string {
+		if (process.platform !== "darwin") return "";
+		try {
+			const out = execFileSync("/usr/bin/security", ["find-generic-password", "-s", "kirocli:odic:device-registration"], {
+				encoding: "utf8",
+				env: { ...process.env, HOME: userInfo().homedir },
+				stdio: ["ignore", "pipe", "ignore"],
+			});
+			return /"cdat"<timedate>=\S+\s+"([^"]+)"/.exec(out)?.[1] ?? "";
+		} catch {
+			return "";
+		}
+	}
 
 	function snapshotReal(): string[] {
 		if (!existsSync(realAgents)) return [];
@@ -140,9 +205,11 @@ describe.skipIf(!LIVE)("live /kiro-subagents command", () => {
 
 	beforeAll(() => {
 		realBefore = snapshotReal();
+		registrationBefore = registrationCdat();
 		tempHome = liveTempDir("pi-kiro-cmdhome-");
 		agentsPath = join(tempHome, ".pi", "agent", "agents");
 		mkdirSync(agentsPath, { recursive: true });
+		seedSeat(tempHome);
 		targetSeed = AGENT("");
 		writeFileSync(join(agentsPath, "live-target.md"), targetSeed, "utf8");
 		writeFileSync(join(agentsPath, "live-bystander.md"), AGENT("model: other/model\n"), "utf8");
@@ -186,6 +253,17 @@ describe.skipIf(!LIVE)("live /kiro-subagents command", () => {
 		await command.handler("on openai/gpt-4o", host.ctx);
 		expect(host.notices.at(-1)?.level).toBe("error");
 	}, 120_000);
+
+	it("did not mint a new kiro device registration", () => {
+		// An unseeded fake HOME makes kiro-cli register a new device with Identity
+		// Center and hand the fresh client_secret to /usr/bin/security on the command
+		// line, where any process can read it. No other assertion in this file fails
+		// when that happens, so this is the only guard on it.
+		expect(registrationBefore.length, "no device registration to compare against; guard is vacuous").toBeGreaterThan(0);
+		expect(registrationCdat(), "kiro re-registered under the seeded HOME: the seat symlinks are not working").toBe(
+			registrationBefore,
+		);
+	});
 
 	it("never touched the developer's real agents dir", () => {
 		expect(snapshotReal()).toEqual(realBefore);

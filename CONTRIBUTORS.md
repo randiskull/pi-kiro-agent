@@ -102,6 +102,15 @@ against a real `~/.pi/agent/agents` strips kiro routing from every agent at once
 with nothing to revert to. One test asserts your real agents directory came out
 unmodified.
 
+That throwaway home has the kiro-cli credential stores symlinked into it
+(`Library/Keychains` and `Library/Application Support/kiro-cli`). Leave them
+there. Without them, a real kiro-cli spawned under that home sees no seat,
+registers a new device with Identity Center, and opens a browser mid-test, while
+every assertion still passes. One test compares the device registration's
+keychain creation date across the run so that cannot go quiet again. The
+teardown's `rmSync` unlinks symlinks rather than deleting through them, so your
+real stores are not at risk.
+
 Every other test runs with `HOME` redirected into a throwaway directory under
 `$TMPDIR`, which is what keeps a test from reading or writing your real `~/.pi`
 and `~/.kiro`. Those directories are removed by the `globalSetup` teardown in
