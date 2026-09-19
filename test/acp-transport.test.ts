@@ -1551,6 +1551,35 @@ describe("makeStreamViaAcp", () => {
 			}
 		});
 
+		it("reclaims a dead (torn-down) entry instead of counting it toward the cap", async () => {
+			// Regression: the idle/turn-timeout path calls killChild (alive=false)
+			// but the entry can linger in the registry until its key is deleted. A
+			// dead zombie must NOT count toward maxChildren — ensureChildCapacity
+			// reclaims it, so a new conversation still gets its own child rather than
+			// being wrongly rejected/evicted at the cap.
+			const prev = process.env.PI_KIRO_MAX_CHILDREN;
+			process.env.PI_KIRO_MAX_CHILDREN = "1";
+			try {
+				const reg = _getAcpChildRegistry();
+				// Seed a dead entry occupying the cap-of-1 slot (as a timeout teardown
+				// would leave it: alive=false, no pending requests).
+				const deadKey = _acpRegistryKey(process.cwd(), "DEAD");
+				reg.set(deadKey, { alive: false, pending: new Map() } as unknown as ReturnType<typeof reg.get> & object);
+				expect(reg.size).toBe(1);
+
+				// A new conversation at the cap: the dead entry is reclaimed (not a
+				// spurious "all children busy" throw), and the live child is created.
+				await driveConversation({ systemPrompt: "LIVE", messages: [user("hi")] } as Context, { sessionId: "sess-reclaim" });
+
+				expect(reg.has(deadKey)).toBe(false); // zombie reclaimed
+				expect(reg.has(_acpRegistryKey(process.cwd(), "LIVE"))).toBe(true);
+				expect(reg.size).toBe(1); // cap honored — the dead one did not inflate it
+			} finally {
+				if (prev === undefined) delete process.env.PI_KIRO_MAX_CHILDREN;
+				else process.env.PI_KIRO_MAX_CHILDREN = prev;
+			}
+		});
+
 		it("rejects a new conversation when at the cap and every child is busy", async () => {
 			const prev = process.env.PI_KIRO_MAX_CHILDREN;
 			process.env.PI_KIRO_MAX_CHILDREN = "1";
