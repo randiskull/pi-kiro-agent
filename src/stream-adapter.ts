@@ -301,6 +301,195 @@ export function buildDeltaPrompt(deltaMessages: Message[], bridgedTools?: string
 	return parts.join("\n\n");
 }
 
+/**
+ * One spawn+drain of the kiro-cli child for a single attempt of the retry
+ * loop in streamViaKiro below. Wires abort/ceiling kill timers and LIVE
+ * tool-use detection on stdout/stderr -- mutating `output.content` with
+ * placeholder toolCall blocks and feeding `pushThinking` as they arrive --
+ * then resolves once the child exits. The retry POLICY (whether to retry,
+ * drop a resume session, etc.) stays in the caller: this only runs one
+ * attempt and reports what happened [L1-01].
+ */
+async function runAttempt(
+	args: string[],
+	binaryPath: string | undefined,
+	output: AssistantMessage,
+	pushThinking: (delta: string) => void,
+	abortSignal: AbortSignal | undefined,
+): Promise<{ exitCode: number; raw: string; stderrText: string; timedOut: boolean }> {
+	let turnTimedOut = false;
+	// detached: own process group, so aborts can kill kiro's helper
+	// children too (a lone SIGTERM to the parent leaves grandchildren
+	// holding the stdio pipes and delays teardown).
+	const detached = process.platform !== "win32";
+	const child = spawn(binaryPath ?? "kiro-cli", args, {
+		cwd: process.cwd(),
+		env: process.env,
+		stdio: ["ignore", "pipe", "pipe"],
+		detached,
+	});
+	// Detached children outlive an uncleanly-dying parent -- tether them
+	// to the parent's exit hook (see orphan-reaper.ts).
+	registerChildForCleanup(child, detached);
+
+	const killTree = (signal: NodeJS.Signals) => {
+		try {
+			if (detached && child.pid) process.kill(-child.pid, signal);
+			else child.kill(signal);
+		} catch {
+			// already gone
+		}
+	};
+	let killTimer: ReturnType<typeof setTimeout> | undefined;
+	const onAbort = () => {
+		killTree("SIGTERM");
+		// kiro-cli's graceful shutdown can be slow -- escalate.
+		killTimer = setTimeout(() => killTree("SIGKILL"), 1_500);
+		killTimer.unref?.();
+	};
+	abortSignal?.addEventListener("abort", onAbort, { once: true });
+	// Hard turn ceiling: a wedged child even with a live, patient parent
+	// must not run forever. Env read at spawn time; unref'd so the timer
+	// never keeps the host alive.
+	const ceilingMs = chatTimeoutMs();
+	const ceilingTimer = setTimeout(() => {
+		turnTimedOut = true;
+		killTree("SIGTERM");
+		killTimer = setTimeout(() => killTree("SIGKILL"), 1_500);
+		killTimer.unref?.();
+	}, ceilingMs);
+	ceilingTimer.unref?.();
+
+	let raw = "";
+	let stderrText = "";
+	// LIVE progress: detect tool-use lines as they stream and surface
+	// them immediately -- a placeholder toolCall block on the partial
+	// message (dashboards/ledgers see tool-by-tool activity mid-turn)
+	// plus a clean marker in the thinking feed. Reconciled at end of
+	// turn by the authoritative synthesizeToolCallBlocks pass.
+	// Per-attempt: a retried attempt drops its predecessor's live blocks.
+	output.content = stripLivePlaceholders(output.content);
+	const liveParser = createToolUseStreamParser();
+	let liveCount = 0;
+	child.stdout.on("data", (chunk: Buffer) => {
+		const text = chunk.toString("utf8");
+		raw += text;
+		pushThinking(stripAnsi(text));
+		for (const use of liveParser.feed(stripAnsi(text))) {
+			output.content.push({
+				type: "toolCall",
+				id: `${LIVE_TOOL_ID_PREFIX}${liveCount++}-${use.name}`,
+				name: use.name,
+				arguments: {},
+			});
+			pushThinking(`\n⚙ ${use.name}\n`);
+		}
+	});
+	// Tool-use lines arrive HERE on kiro-cli 2.21+ (see toolUseTranscript),
+	// so stderr gets its own parser instance: one line only ever lands on
+	// one stream, and a shared instance would splice the two streams'
+	// partial trailing lines into each other.
+	const liveStderrParser = createToolUseStreamParser();
+	child.stderr.on("data", (chunk: Buffer) => {
+		const text = chunk.toString("utf8");
+		stderrText += text;
+		for (const use of liveStderrParser.feed(stripAnsi(text))) {
+			output.content.push({
+				type: "toolCall",
+				id: `${LIVE_TOOL_ID_PREFIX}${liveCount++}-${use.name}`,
+				name: use.name,
+				arguments: {},
+			});
+			pushThinking(`\n⚙ ${use.name}\n`);
+		}
+	});
+
+	const exitCode: number = await new Promise((resolve, reject) => {
+		child.on("error", reject);
+		// "close" waits for the stdio pipes of the whole process tree to
+		// drain; "exit" fires at process exit. Settle on "exit" so an
+		// aborted run doesn't hang on a grandchild holding the pipes.
+		child.on("exit", (code) => resolve(code ?? -1));
+	});
+	abortSignal?.removeEventListener("abort", onAbort);
+	clearTimeout(ceilingTimer);
+	if (killTimer) clearTimeout(killTimer);
+	unregisterChildForCleanup(child);
+
+	return { exitCode, raw, stderrText, timedOut: turnTimedOut };
+}
+
+/**
+ * Decide whether a nonzero exit still represents a completed turn: kiro-cli
+ * sometimes dies AFTER the final answer / after MCP tool calls have already
+ * landed server-side (observed on kiro-cli 2.15.2: exit 1 following a
+ * successful gsd_task_complete). Failing the whole turn would discard
+ * finished work and pause GSD auto-mode; instead, degrade to success and let
+ * the caller's own verification (artifact/DB checks) be the arbiter. A
+ * nonzero exit with NO final sentinel and NO tool activity is still a hard
+ * failure. Named as part of the streamViaKiro post-loop tail [L1-01].
+ *
+ * TODO(stream-json): demote to fallback once stream-json is default (turn
+ * completion becomes a protocol event there, making this exit-code salvage
+ * heuristic unnecessary); delete only once support for kiro-cli versions
+ * lacking the flag is dropped. See docs/design/acp-transport.md §5c.
+ */
+function salvageOrThrow(exitCode: number, body: string, stderrText: string, toolTranscript: string, pushThinking: (delta: string) => void): void {
+	if (exitCode === 0) return;
+	const salvageToolUses = parseKiroToolUses(toolTranscript);
+	const hasFinal = body.includes(FINAL_OPEN);
+	if (!hasFinal && salvageToolUses.length === 0) {
+		const stderrClean = stripAnsi(stderrText).trim();
+		const detail = [body.slice(-400), stderrClean.slice(-200)].filter(Boolean).join(" ⏐ stderr: ") || `exit code ${exitCode}`;
+		throw new Error(`kiro-cli failed (exit ${exitCode}): ${detail.slice(0, 600)}`);
+	}
+	pushThinking(`\n[kiro-cli exited ${exitCode} after completing work (${salvageToolUses.length} tool call(s)${hasFinal ? ", final answer present" : ""}) -- salvaging turn]\n`);
+}
+
+/**
+ * Replace live placeholder toolCall blocks (pushed mid-turn by runAttempt)
+ * with the authoritative end-of-turn parse of kiro's tool-use transcript:
+ * full arguments, stable ids, no duplicates. Surfaced with stopReason
+ * "stop" -- the host counts/renders these but never redispatches them,
+ * since execution already happened inside kiro via MCP. Named as part of
+ * the streamViaKiro post-loop tail [L1-01].
+ */
+function reconcileToolCalls(output: AssistantMessage, toolTranscript: string): void {
+	output.content = stripLivePlaceholders(output.content);
+	for (const block of synthesizeToolCallBlocks(toolTranscript)) {
+		output.content.push(block);
+	}
+}
+
+/**
+ * Record/advance the kiro session bookkeeping BEFORE the caller emits
+ * `done`, so a sequential next turn sees it (else it would create a
+ * duplicate session). Advance (resume path) is sync; capture (fresh path)
+ * does one list-sessions call -- paid once per session, not per turn.
+ * Best-effort: never fail a good turn over session bookkeeping. Named as
+ * part of the streamViaKiro post-loop tail [L1-01].
+ */
+async function recordSession(
+	useResume: boolean,
+	resumeId: string | undefined,
+	cwd: string,
+	messages: Message[],
+	preSnapshot: Set<string>,
+	listSessions: ListSessionsFn,
+): Promise<void> {
+	if (!resumeEnabled()) return;
+	try {
+		if (useResume && resumeId) {
+			advanceSession(resumeId, messages);
+		} else {
+			await recordFreshSession(cwd, messages, preSnapshot, listSessions);
+		}
+	} catch {
+		// session bookkeeping is opportunistic -- a failure just means the
+		// next turn re-sends full context.
+	}
+}
+
 interface StreamDeps {
 	binaryPath: string | undefined;
 	/**
@@ -375,103 +564,11 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 							: buildPromptFromContext(context, bridge?.toolNames, !!workflowServers),
 					);
 
-					// detached: own process group, so aborts can kill kiro's helper
-					// children too (a lone SIGTERM to the parent leaves grandchildren
-					// holding the stdio pipes and delays teardown).
-					const detached = process.platform !== "win32";
-					const child = spawn(deps.binaryPath ?? "kiro-cli", args, {
-						cwd: process.cwd(),
-						env: process.env,
-						stdio: ["ignore", "pipe", "pipe"],
-						detached,
-					});
-					// Detached children outlive an uncleanly-dying parent — tether them
-					// to the parent's exit hook (see orphan-reaper.ts).
-					registerChildForCleanup(child, detached);
-
-					const killTree = (signal: NodeJS.Signals) => {
-						try {
-							if (detached && child.pid) process.kill(-child.pid, signal);
-							else child.kill(signal);
-						} catch {
-							// already gone
-						}
-					};
-					let killTimer: ReturnType<typeof setTimeout> | undefined;
-					const onAbort = () => {
-						killTree("SIGTERM");
-						// kiro-cli's graceful shutdown can be slow — escalate.
-						killTimer = setTimeout(() => killTree("SIGKILL"), 1_500);
-						killTimer.unref?.();
-					};
-					options?.signal?.addEventListener("abort", onAbort, { once: true });
-					// Hard turn ceiling: a wedged child even with a live, patient parent
-					// must not run forever. Env read at spawn time; unref'd so the timer
-					// never keeps the host alive.
-					const ceilingMs = chatTimeoutMs();
-					const ceilingTimer = setTimeout(() => {
-						turnTimedOut = true;
-						killTree("SIGTERM");
-						killTimer = setTimeout(() => killTree("SIGKILL"), 1_500);
-						killTimer.unref?.();
-					}, ceilingMs);
-					ceilingTimer.unref?.();
-
-					raw = "";
-					stderrText = "";
-					// LIVE progress: detect tool-use lines as they stream and surface
-					// them immediately — a placeholder toolCall block on the partial
-					// message (dashboards/ledgers see tool-by-tool activity mid-turn)
-					// plus a clean ⚙ marker in the thinking feed. Reconciled at end of
-					// turn by the authoritative synthesizeToolCallBlocks pass.
-					// Per-attempt: a retried attempt drops its predecessor's live blocks.
-					output.content = stripLivePlaceholders(output.content);
-					const liveParser = createToolUseStreamParser();
-					let liveCount = 0;
-					child.stdout.on("data", (chunk: Buffer) => {
-						const text = chunk.toString("utf8");
-						raw += text;
-						pushThinking(stripAnsi(text));
-						for (const use of liveParser.feed(stripAnsi(text))) {
-							output.content.push({
-								type: "toolCall",
-								id: `${LIVE_TOOL_ID_PREFIX}${liveCount++}-${use.name}`,
-								name: use.name,
-								arguments: {},
-							});
-							pushThinking(`\n⚙ ${use.name}\n`);
-						}
-					});
-					// Tool-use lines arrive HERE on kiro-cli 2.21+ (see toolUseTranscript),
-					// so stderr gets its own parser instance: one line only ever lands on
-					// one stream, and a shared instance would splice the two streams'
-					// partial trailing lines into each other.
-					const liveStderrParser = createToolUseStreamParser();
-					child.stderr.on("data", (chunk: Buffer) => {
-						const text = chunk.toString("utf8");
-						stderrText += text;
-						for (const use of liveStderrParser.feed(stripAnsi(text))) {
-							output.content.push({
-								type: "toolCall",
-								id: `${LIVE_TOOL_ID_PREFIX}${liveCount++}-${use.name}`,
-								name: use.name,
-								arguments: {},
-							});
-							pushThinking(`\n⚙ ${use.name}\n`);
-						}
-					});
-
-					exitCode = await new Promise((resolve, reject) => {
-						child.on("error", reject);
-						// "close" waits for the stdio pipes of the whole process tree to
-						// drain; "exit" fires at process exit. Settle on "exit" so an
-						// aborted run doesn't hang on a grandchild holding the pipes.
-						child.on("exit", (code) => resolve(code ?? -1));
-					});
-					options?.signal?.removeEventListener("abort", onAbort);
-					clearTimeout(ceilingTimer);
-					if (killTimer) clearTimeout(killTimer);
-					unregisterChildForCleanup(child);
+					const attemptResult = await runAttempt(args, deps.binaryPath, output, pushThinking, options?.signal);
+					raw = attemptResult.raw;
+					stderrText = attemptResult.stderrText;
+					exitCode = attemptResult.exitCode;
+					turnTimedOut = attemptResult.timedOut;
 
 					// A ceiling kill is terminal for this turn: never retried (a fresh
 					// attempt would just burn another 45 min) and never exit-salvaged.
@@ -484,7 +581,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						attempt + 1 < MAX_ATTEMPTS &&
 						!options?.signal?.aborted
 					) {
-						pushThinking("\n[bridge MCP failed to connect — retrying]\n");
+						pushThinking("\n[bridge MCP failed to connect -- retrying]\n");
 						continue;
 					}
 					// Resume fallback: a --resume-id spawn failed (stale/unusable
@@ -494,7 +591,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						if (plan.resumeId) dropSession(plan.resumeId);
 						useResume = false;
 						preSnapshot = await snapshotSessions(cwd, listSessions);
-						pushThinking("\n[kiro resume failed — retrying with full context]\n");
+						pushThinking("\n[kiro resume failed -- retrying with full context]\n");
 						continue;
 					}
 					break;
@@ -508,41 +605,13 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						`kiro-cli chat turn exceeded PI_KIRO_CHAT_TIMEOUT_MS (${chatTimeoutMs()} ms) — child killed. Raise PI_KIRO_CHAT_TIMEOUT_MS for longer turns.`,
 					);
 				}
+
 				const { body, credits } = cleanBody(raw);
-				// Salvage a nonzero exit when the run demonstrably completed real
-				// work: kiro-cli sometimes dies AFTER the final answer / after MCP
-				// tool calls have already landed server-side (observed on kiro-cli
-				// 2.15.2: exit 1 following a successful gsd_task_complete). Failing
-				// the whole turn would discard finished work and pause GSD auto-mode;
-				// instead, degrade to success and let the caller's own verification
-				// (artifact/DB checks) be the arbiter. A nonzero exit with NO final
-				// sentinel and NO tool activity is still a hard failure.
-				// TODO(stream-json): demote to fallback once stream-json is default (turn
-				// completion becomes a protocol event there, making this exit-code salvage
-				// heuristic unnecessary — salvageToolUses, hasFinal, pushThinking salvage);
-				// delete only once support for kiro-cli versions lacking the flag is
-				// dropped. See docs/design/acp-transport.md §5c.
 				const toolTranscript = toolUseTranscript(body, stderrText);
-				const salvageToolUses = exitCode !== 0 ? parseKiroToolUses(toolTranscript) : [];
-				if (exitCode !== 0) {
-					const hasFinal = body.includes(FINAL_OPEN);
-					if (!hasFinal && salvageToolUses.length === 0) {
-						const stderrClean = stripAnsi(stderrText).trim();
-						const detail = [body.slice(-400), stderrClean.slice(-200)].filter(Boolean).join(" ⏐ stderr: ") || `exit code ${exitCode}`;
-						throw new Error(`kiro-cli failed (exit ${exitCode}): ${detail.slice(0, 600)}`);
-					}
-					pushThinking(`\n[kiro-cli exited ${exitCode} after completing work (${salvageToolUses.length} tool call(s)${hasFinal ? ", final answer present" : ""}) — salvaging turn]\n`);
-				}
+				salvageOrThrow(exitCode, body, stderrText, toolTranscript, pushThinking);
 
 				const { final } = extractFinal(body);
-				// Reconcile: replace live placeholder blocks with the authoritative
-				// end-of-turn parse (full arguments; stable ids; no duplicates).
-				output.content = stripLivePlaceholders(output.content);
-				// Surface MCP tool invocations that ran inside kiro as toolCall
-				// blocks (stopReason stays "stop": counted, not redispatched).
-				for (const block of synthesizeToolCallBlocks(toolTranscript)) {
-					output.content.push(block);
-				}
+				reconcileToolCalls(output, toolTranscript);
 				output.content.push({ type: "text", text: "" });
 				const textIndex = output.content.length - 1;
 				stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
@@ -556,22 +625,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					output.usage.cost.total = Number.isFinite(usdPerCredit) ? credits * usdPerCredit : 0;
 				}
 
-				// Record/advance the kiro session BEFORE emitting `done`, so a sequential
-				// next turn sees it (else it would create a duplicate session). Advance
-				// (resume path) is sync; capture (fresh path) does one list-sessions —
-				// paid once per session, not per turn. Best-effort: never fail a good turn.
-				if (resumeEnabled()) {
-					try {
-						if (useResume && plan.resumeId) {
-							advanceSession(plan.resumeId, context.messages);
-						} else {
-							await recordFreshSession(cwd, context.messages, preSnapshot, listSessions);
-						}
-					} catch {
-						// session bookkeeping is opportunistic — a failure just means the
-						// next turn re-sends full context.
-					}
-				}
+				await recordSession(useResume, plan.resumeId, cwd, context.messages, preSnapshot, listSessions);
 
 				output.stopReason = "stop";
 				stream.push({ type: "done", reason: "stop", message: output });
