@@ -11,6 +11,12 @@
  * a cwd. The ACP transport passes the acpSessionId as the sessionKey (it is
  * already unique, so no collision is possible). The parameter was formerly
  * named `agentName`, which was misleading — it is not a literal agent name.
+ *
+ * Note: the child PROCESS registry (acp-transport.ts) is separately keyed per
+ * (cwd, conversationKey) so the parent conversation and each subagent get their
+ * own kiro child. This session map is unaffected by that keying — acpSessionIds
+ * are globally unique, so the shared `sessions` array never collides across
+ * children.
  */
 
 import type { Message } from "@earendil-works/pi-ai";
@@ -117,4 +123,9 @@ export function dropAcpSession(acpSessionId: string): void {
 /** Test hook: clear all tracked ACP sessions. */
 export function _resetAcpSessions(): void {
 	sessions.length = 0;
+}
+
+/** Test hook: number of ACP sessions currently tracked (drop-on-death checks). */
+export function _acpSessionCount(): number {
+	return sessions.length;
 }

@@ -15,8 +15,8 @@ import { PassThrough } from "node:stream";
 import { Writable } from "node:stream";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { _resetAcpSessions } from "../src/acp-session.js";
-import { _getAcpChildRegistry, _resetAcpChildren, makeStreamViaAcp } from "../src/acp-transport.js";
+import { _resetAcpSessions, _acpSessionCount } from "../src/acp-session.js";
+import { _getAcpChildRegistry, _resetAcpChildren, _acpRegistryKey, makeStreamViaAcp } from "../src/acp-transport.js";
 
 // ─── Spawn mock ───────────────────────────────────────────────────────────────
 
@@ -638,9 +638,8 @@ describe("makeStreamViaAcp", () => {
 			//    registry (exit handler marks alive=false but does not call registry.delete).
 			//    _resetAcpChildren() (called in beforeEach) will remove it, so we must
 			//    inspect before the next beforeEach runs — which we are, right now.
-			const cwd = process.cwd();
 			const registry = _getAcpChildRegistry();
-			const entry = registry.get(cwd);
+			const entry = registry.get(_acpRegistryKey(process.cwd(), undefined));
 			// The entry exists (child exited but registry.delete was not called by the exit handler).
 			// If it does exist, the _kiro.dev/commands/available Set must be empty (size 0):
 			// offCmd() deleted the handler before throwing. A size >= 1 means offCmd() was skipped.
@@ -703,7 +702,7 @@ describe("makeStreamViaAcp", () => {
 				expect(events.at(-1)?.type).not.toBe("done");
 
 				// M1: both listener Sets must be empty (the finally removed them).
-				const entry = _getAcpChildRegistry().get(process.cwd());
+				const entry = _getAcpChildRegistry().get(_acpRegistryKey(process.cwd(), undefined));
 				if (entry !== undefined) {
 					const initSet = entry.listeners.get("_kiro.dev/mcp/server_initialized");
 					const cmdSet = entry.listeners.get("_kiro.dev/commands/available");
@@ -824,7 +823,7 @@ describe("makeStreamViaAcp", () => {
 			// keeping it would make the next turn plan against a session nothing
 			// tracks — the exact condition that routes control into the divergence
 			// branch instead of the clean new-session branch.
-			const entry = _getAcpChildRegistry().get(process.cwd());
+			const entry = _getAcpChildRegistry().get(_acpRegistryKey(process.cwd(), undefined));
 			expect(entry?.ready).toBe(false);
 			expect(entry?.acpSessionId).toBeUndefined();
 
@@ -1186,9 +1185,10 @@ describe("makeStreamViaAcp", () => {
 			//   2. The registry is clean (no zombie) after the turn — proven by successful re-spawn
 			//
 			// Spy-order note: childRegistry.set() is called BEFORE the initialize await in
-			// spawnAcpChild. The abort handler in makeStreamViaAcp uses childRegistry.get(cwd)
-			// to find and kill the child. If the entry were added AFTER await, the abort handler
-			// would not find the child and the pending initialize request would hang. The fact
+			// spawnAcpChild. The abort handler in makeStreamViaAcp uses childRegistry.get(key)
+			// (the composite (cwd, conversationKey) key) to find and kill the child. If the entry
+			// were added AFTER await, the abort handler would not find the child and the pending
+			// initialize request would hang. The fact
 			// that the turn resolves with "aborted" (not a timeout) proves the entry existed
 			// pre-await and the abort handler fired killChild, which resolves the pending request.
 
@@ -1452,6 +1452,190 @@ describe("makeStreamViaAcp", () => {
 			expect(events2.find((e) => e.type === "done")).toBeDefined();
 			// The idle kill forced a respawn: two children total.
 			expect(spawnMock).toHaveBeenCalledTimes(2);
+		});
+	});
+
+	describe("per-conversation children (subagent isolation) + maxChildren cap", () => {
+		/** Drive a child through the handshake to a PENDING session/prompt; resolves
+		 *  with the prompt request id (the turn is left in flight, unanswered). */
+		async function driveToPendingPrompt(child: AcpScriptChild, sessionId: string): Promise<number> {
+			const initReq = (await child.awaitLine()) as { id: number };
+			child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
+			const sessionReq = (await child.awaitLine()) as { id: number };
+			child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+			child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
+			const promptReq = (await child.awaitLine()) as { id: number };
+			return promptReq.id;
+		}
+
+		it("gives conversations with different system prompts their own child", async () => {
+			// Parent and subagent differ only in system prompt; each must resolve to
+			// its own kiro child, keyed by (cwd, conversationKey).
+			await driveConversation({ systemPrompt: "You are the PARENT.", messages: [user("hi")] } as Context, { sessionId: "sess-convA" });
+			await driveConversation({ systemPrompt: "You are a SUBAGENT.", messages: [user("hi")] } as Context, { sessionId: "sess-convB" });
+
+			expect(spawnMock).toHaveBeenCalledTimes(2);
+			const reg = _getAcpChildRegistry();
+			expect(reg.size).toBe(2);
+			expect(reg.has(_acpRegistryKey(process.cwd(), "You are the PARENT."))).toBe(true);
+			expect(reg.has(_acpRegistryKey(process.cwd(), "You are a SUBAGENT."))).toBe(true);
+		});
+
+		it("a subagent turn's abort does not terminate the parent's in-flight turn", async () => {
+			// The bug this whole change fixes: parent + subagent shared one cwd-keyed
+			// child, so aborting the subagent's turn rejected the parent's pending
+			// request with `acp child terminated: aborted`. With per-conversation
+			// children the parent's turn must survive the subagent's abort untouched.
+			const parent = new AcpScriptChild();
+			const sub = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => parent).mockImplementationOnce(() => sub);
+
+			// Park the parent at a pending prompt (turn in flight, unanswered).
+			let parentPromptId = -1;
+			const parentDriver = (async () => {
+				parentPromptId = await driveToPendingPrompt(parent, "sess-parent");
+			})();
+			const parentEventsP = collect({ systemPrompt: "PARENT", messages: [user("parent turn")] } as Context);
+			await parentDriver;
+
+			// Now run the subagent turn to a pending prompt, then abort it.
+			const subAbort = new AbortController();
+			const subDriver = (async () => {
+				await driveToPendingPrompt(sub, "sess-sub"); // never answered
+				subAbort.abort();
+			})();
+			const subEvents = await collect(
+				{ systemPrompt: "SUBAGENT", messages: [user("subagent turn")] } as Context,
+				{ signal: subAbort.signal },
+			);
+			await subDriver;
+
+			// Subagent turn aborted…
+			const subErr = subEvents.find((e) => e.type === "error");
+			expect(subErr?.type === "error" && subErr.error.stopReason).toBe("aborted");
+			// …and it spawned a SECOND child (distinct key), not reused the parent's.
+			expect(spawnMock).toHaveBeenCalledTimes(2);
+			// The parent's child is still registered and was not killed.
+			expect(_getAcpChildRegistry().has(_acpRegistryKey(process.cwd(), "PARENT"))).toBe(true);
+
+			// Complete the parent turn: it must succeed, proving its pending request
+			// was never rejected by the subagent's abort.
+			await deliverTurn(parent, "sess-parent", "parent done");
+			parent.sendLine({ jsonrpc: "2.0", id: parentPromptId, result: { stopReason: "end_turn" }});
+			parent.end();
+			const parentEvents = await parentEventsP;
+			expect(doneText(parentEvents)).toContain("parent done");
+			expect(parentEvents.find((e) => e.type === "error")).toBeUndefined();
+		});
+
+		it("evicts the LRU idle child when PI_KIRO_MAX_CHILDREN is reached", async () => {
+			const prev = process.env.PI_KIRO_MAX_CHILDREN;
+			process.env.PI_KIRO_MAX_CHILDREN = "2";
+			try {
+				// Two idle children fill the cap (A created before B → A is LRU).
+				await driveConversation({ systemPrompt: "A", messages: [user("a")] } as Context, { sessionId: "sess-cap-a" });
+				await driveConversation({ systemPrompt: "B", messages: [user("b")] } as Context, { sessionId: "sess-cap-b" });
+				// A third conversation forces eviction of the LRU idle child (A).
+				await driveConversation({ systemPrompt: "C", messages: [user("c")] } as Context, { sessionId: "sess-cap-c" });
+
+				expect(spawnMock).toHaveBeenCalledTimes(3);
+				const reg = _getAcpChildRegistry();
+				// Cap honored (env=2, not the default 32) AND the oldest idle child evicted.
+				expect(reg.size).toBe(2);
+				expect(reg.has(_acpRegistryKey(process.cwd(), "A"))).toBe(false);
+				expect(reg.has(_acpRegistryKey(process.cwd(), "B"))).toBe(true);
+				expect(reg.has(_acpRegistryKey(process.cwd(), "C"))).toBe(true);
+			} finally {
+				if (prev === undefined) delete process.env.PI_KIRO_MAX_CHILDREN;
+				else process.env.PI_KIRO_MAX_CHILDREN = prev;
+			}
+		});
+
+		it("rejects a new conversation when at the cap and every child is busy", async () => {
+			const prev = process.env.PI_KIRO_MAX_CHILDREN;
+			process.env.PI_KIRO_MAX_CHILDREN = "1";
+			try {
+				// One busy child fills the cap-of-1 (turn left pending → not evictable).
+				const a = new AcpScriptChild();
+				spawnMock.mockImplementationOnce(() => a);
+				let aPromptId = -1;
+				const aDriver = (async () => { aPromptId = await driveToPendingPrompt(a, "sess-busy-a"); })();
+				const aEventsP = collect({ systemPrompt: "A", messages: [user("a")] } as Context);
+				await aDriver;
+
+				// A second conversation hits the cap with the only child busy → clean
+				// throw, and no second child is spawned.
+				const bEvents = await collect({ systemPrompt: "B", messages: [user("b")] } as Context);
+				const bErr = bEvents.find((e) => e.type === "error");
+				expect(bErr?.type === "error" && bErr.error.errorMessage).toContain("all children busy");
+				expect(spawnMock).toHaveBeenCalledTimes(1);
+				expect(_getAcpChildRegistry().has(_acpRegistryKey(process.cwd(), "A"))).toBe(true);
+
+				// Drain A so nothing dangles into the next test.
+				await deliverTurn(a, "sess-busy-a", "a done");
+				a.sendLine({ jsonrpc: "2.0", id: aPromptId, result: { stopReason: "end_turn" }});
+				a.end();
+				await aEventsP;
+			} finally {
+				if (prev === undefined) delete process.env.PI_KIRO_MAX_CHILDREN;
+				else process.env.PI_KIRO_MAX_CHILDREN = prev;
+			}
+		});
+	});
+
+	describe("child death drops its ACP session (L1-06 drop-on-death)", () => {
+		it("forgets the session when the child dies, so no dead session lingers", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
+				const sessionReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-drop1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-drop1", commands: [] }});
+				const promptReq = (await child.awaitLine()) as { id: number };
+				await deliverTurn(child, "sess-drop1", "ok");
+				child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+				// Deliberately NOT ending the child: keep it alive so we can prove the
+				// session is tracked first, THEN kill it and prove drop-on-death.
+			})();
+
+			await collect({ messages: [user("hi")] });
+			expect(_acpSessionCount()).toBe(1); // recorded while the child is alive
+
+			child.emit("exit", 1); // child dies on its own → teardownChild
+			await settle();
+			expect(_acpSessionCount()).toBe(0); // drop-on-death forgot the dead session
+		});
+	});
+
+	describe("escape hatch: PI_KIRO_CHILD_KEY=cwd", () => {
+		it("forces cwd-only keying so conversations collapse onto one child", () => {
+			const prev = process.env.PI_KIRO_CHILD_KEY;
+			process.env.PI_KIRO_CHILD_KEY = "cwd";
+			try {
+				const cwd = process.cwd();
+				const kParent = _acpRegistryKey(cwd, "PARENT");
+				const kSub = _acpRegistryKey(cwd, "SUBAGENT");
+				// Both collapse to the bare cwd — the pre-per-conversation key.
+				expect(kParent).toBe(cwd);
+				expect(kSub).toBe(cwd);
+				expect(kParent).toBe(kSub);
+			} finally {
+				if (prev === undefined) delete process.env.PI_KIRO_CHILD_KEY;
+				else process.env.PI_KIRO_CHILD_KEY = prev;
+			}
+		});
+
+		it("default (unset) keeps different system prompts on separate children", () => {
+			const prev = process.env.PI_KIRO_CHILD_KEY;
+			delete process.env.PI_KIRO_CHILD_KEY; // guard against leak from another test
+			try {
+				const cwd = process.cwd();
+				expect(_acpRegistryKey(cwd, "PARENT")).not.toBe(_acpRegistryKey(cwd, "SUBAGENT"));
+			} finally {
+				if (prev !== undefined) process.env.PI_KIRO_CHILD_KEY = prev;
+			}
 		});
 	});
 

@@ -3,8 +3,15 @@
  *
  * Key design decisions:
  *
- * 1. Persistent child: one `kiro-cli acp` per (cwd) pair, kept alive across turns,
- *    idle-timeout after 10 min. Session identity via ACP sessionId (not --list-sessions).
+ * 1. Persistent child: one `kiro-cli acp` per (cwd, conversationKey) pair, kept
+ *    alive across turns, idle-timeout after 10 min. conversationKey is a hash of
+ *    the system prompt, so the parent conversation and each subagent (which carry
+ *    different system prompts) get their OWN child even in one cwd. Keying on cwd
+ *    alone collapsed them onto a shared child, where a subagent turn's abort
+ *    rejected the parent's in-flight turn (`acp child terminated: aborted`). The
+ *    registry is bounded by PI_KIRO_MAX_CHILDREN (default 32) with LRU eviction of
+ *    idle children. Set PI_KIRO_CHILD_KEY=cwd to force the old cwd-only keying
+ *    (rollback lever). Session identity via ACP sessionId (not --list-sessions).
  *
  * 2. Option B tool mounting (gate: probes/p3-gate-findings.md — PASSED):
  *    - Both bridge (HTTP) and gsd-workflow (stdio) injected directly in session/new.mcpServers
@@ -39,8 +46,8 @@
  * login; this module never touches credentials.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { execSync, spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import type {
 	AssistantMessage,
@@ -149,6 +156,8 @@ interface MetadataParams {
 interface AcpChild {
 	child: ChildProcess;
 	cwd: string;
+	/** Composite registry key: `${cwd}\x00${conversationKey}`. */
+	registryKey: string;
 	/** Active ACP session ID (undefined between session/new calls). */
 	acpSessionId: string | undefined;
 	/** Per-session loopback bridge (Option B: lives for the ACP session duration). */
@@ -174,11 +183,49 @@ interface AcpChild {
 	idleTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Epoch ms when pending went 0 → 1; undefined while nothing is in flight. */
 	oldestPendingSince: number | undefined;
+	/** Epoch ms of the last RPC on this child — LRU anchor for maxChildren eviction. */
+	lastUsed: number;
 	nextId: number;
 }
 
-// One child per cwd (Option B: no per-agentName keying since there's no profile).
+// One child per (cwd, conversationKey) — see registryKey. Bounded by maxChildren().
 const childRegistry = new Map<string, AcpChild>();
+
+/**
+ * conversationKey distinguishes conversations that share a cwd: the parent and
+ * each subagent carry different system prompts, so a hash of the system prompt
+ * separates their kiro children. Hashed directly (not via message-hash.ts's
+ * hashMessages) because Context.systemPrompt is a plain string and the Message
+ * union has no "system" variant to wrap it in.
+ */
+function conversationKey(systemPrompt: string | undefined): string {
+	return createHash("sha256").update(systemPrompt ?? "").digest("hex").slice(0, 16);
+}
+
+/**
+ * Registry key: one child per (cwd, conversationKey). NUL-joined — NUL cannot
+ * occur in a hex hash or a filesystem path, so the two fields cannot bleed
+ * together into a colliding key.
+ *
+ * Escape hatch: PI_KIRO_CHILD_KEY=cwd reverts to keying on cwd alone (the
+ * pre-per-conversation behavior). That re-collapses the parent and its
+ * subagents onto one shared child — reintroducing the subagent-abort collision
+ * this keying fixes — so it exists only as a rollback lever if per-conversation
+ * keying ever misbehaves in the field.
+ */
+function registryKey(cwd: string, systemPrompt: string | undefined): string {
+	if (process.env.PI_KIRO_CHILD_KEY === "cwd") return cwd;
+	return cwd + "\x00" + conversationKey(systemPrompt);
+}
+
+/**
+ * Max concurrent kiro children before LRU-idle eviction (§5.5). Default 32 =
+ * half of acp-session.ts's MAX_SESSIONS (64). Override: PI_KIRO_MAX_CHILDREN.
+ */
+function maxChildren(): number {
+	const raw = Number.parseInt(process.env.PI_KIRO_MAX_CHILDREN ?? "", 10);
+	return Number.isFinite(raw) && raw > 0 ? raw : 32;
+}
 
 /** Test hook: clear the child registry and kill all cached children. */
 export function _resetAcpChildren(): void {
@@ -206,9 +253,29 @@ export function _getAcpChildRegistry(): Map<string, AcpChildProbe> {
 	return childRegistry as unknown as Map<string, AcpChildProbe>;
 }
 
+/**
+ * Test hook: compute the exact composite registry key for a (cwd, systemPrompt)
+ * pair, so tests can look up / assert on the per-conversation child directly
+ * instead of guessing the key (a bare-cwd `.get()` returns undefined now).
+ */
+export function _acpRegistryKey(cwd: string, systemPrompt: string | undefined): string {
+	return registryKey(cwd, systemPrompt);
+}
+
 // ─── Child lifecycle ──────────────────────────────────────────────────────────
 
-function killChild(entry: AcpChild, reason: string): void {
+/**
+ * Idempotent child teardown, shared by killChild (we initiate the kill via
+ * SIGTERM) and the child `exit` handler (the process died on its own). The
+ * `!alive` guard makes the second entry a no-op: killChild SIGTERMs the child,
+ * whose `exit` then re-enters here — teardown must run exactly once.
+ *
+ * Drop-on-death: a dead child's ACP session is unusable, so forget it here.
+ * Otherwise acp-session.ts retains dead sessions until its MAX_SESSIONS FIFO
+ * evicts them — harmless (a fresh child takes the new-session path and never
+ * resumes a dead sessionId) but leaky. Dropping keeps the session map honest.
+ */
+function teardownChild(entry: AcpChild, reason: string, options: { kill: boolean }): void {
 	if (!entry.alive) return;
 	entry.alive = false;
 	entry.ready = false;
@@ -217,17 +284,84 @@ function killChild(entry: AcpChild, reason: string): void {
 	// Close the per-session bridge
 	void entry.bridge?.close().catch(() => undefined);
 	entry.bridge = undefined;
-	try {
-		const { pid } = entry.child;
-		if (pid && process.platform !== "win32") process.kill(-pid, "SIGTERM");
-		else entry.child.kill("SIGTERM");
-	} catch { /* already gone */ }
+	if (entry.acpSessionId) {
+		dropAcpSession(entry.acpSessionId);
+		entry.acpSessionId = undefined;
+	}
+	if (options.kill) {
+		try {
+			const { pid } = entry.child;
+			if (pid && process.platform !== "win32") process.kill(-pid, "SIGTERM");
+			else entry.child.kill("SIGTERM");
+		} catch { /* already gone */ }
+	}
 	unregisterChildForCleanup(entry.child);
 	setChildKeepalive(entry, false);
 	for (const [, resolve] of entry.pending) {
 		resolve({ jsonrpc: "2.0", error: { code: -1, message: `acp child terminated: ${reason}` } });
 	}
 	entry.pending.clear();
+}
+
+/** Kill a live child (SIGTERM) and tear it down. Idempotent via teardownChild. */
+function killChild(entry: AcpChild, reason: string): void {
+	teardownChild(entry, reason, { kill: true });
+}
+
+// FDs the PARENT (pi) process holds per live child: 3 stdio pipes + the
+// per-session bridge listen socket. The child's own ~124 internal FDs count
+// against the CHILD's rlimit, not the parent's — each child is a separate
+// process, so they never sum into one FD table. Approximate; advisory only.
+const PARENT_FDS_PER_CHILD = 4;
+
+let ulimitChecked = false;
+/**
+ * One-shot advisory (warn, never block): if the parent's soft FD limit is below
+ * the estimate for maxChildren() children, a wide fan-out may hit EMFILE. Fires
+ * once, lazily, on the first spawn — so a session that never uses the ACP
+ * transport pays no subprocess cost. `ulimit` is a POSIX sh builtin, so the
+ * default `/bin/sh -c` reads the parent's inherited soft limit portably.
+ */
+function warnIfUlimitTooLow(): void {
+	if (ulimitChecked || process.platform === "win32") return;
+	ulimitChecked = true;
+	try {
+		const soft = Number.parseInt(execSync("ulimit -n", { encoding: "utf8" }).trim(), 10);
+		const need = maxChildren() * PARENT_FDS_PER_CHILD;
+		if (Number.isFinite(soft) && soft < need) { // "unlimited" → NaN → skipped
+			console.error(
+				`[pi-kiro] soft FD limit (ulimit -n = ${soft}) is below the parent-side estimate for ` +
+				`PI_KIRO_MAX_CHILDREN=${maxChildren()} (${maxChildren()} × ${PARENT_FDS_PER_CHILD} = ${need} FDs). ` +
+				`A wide fan-out may hit EMFILE in pi. Raise it, e.g. \`ulimit -n ${Math.ceil(need / 1024) * 1024}\`.`,
+			);
+		}
+	} catch { /* ulimit unavailable — skip advisory */ }
+}
+
+/**
+ * Enforce the maxChildren() ceiling before creating a new child. Evicts the
+ * least-recently-used IDLE child; never evicts one mid-turn — killing a child
+ * with a pending request would reject it with "acp child terminated", the exact
+ * collision this per-conversation keying exists to remove. If every child is
+ * busy, throws a clear error rather than overshooting the FD budget (a clean
+ * failure beats a confusing EMFILE mid-fan-out).
+ */
+function ensureChildCapacity(): void {
+	if (childRegistry.size < maxChildren()) return;
+	let victimKey: string | undefined;
+	let victim: AcpChild | undefined;
+	for (const [key, e] of childRegistry) {
+		if (e.pending.size > 0) continue; // busy — never evict mid-turn
+		if (!victim || e.lastUsed < victim.lastUsed) { victim = e; victimKey = key; }
+	}
+	if (!victim || victimKey === undefined) {
+		throw new Error(
+			`pi-kiro: PI_KIRO_MAX_CHILDREN (${maxChildren()}) reached and all children busy — ` +
+			`raise PI_KIRO_MAX_CHILDREN and ulimit -n, or reduce concurrent fan-out width`,
+		);
+	}
+	killChild(victim, "evicted (max children)");
+	childRegistry.delete(victimKey);
 }
 
 function resetIdleTimer(entry: AcpChild): void {
@@ -295,6 +429,7 @@ function sendRaw(entry: AcpChild, msg: object): void {
 }
 
 function request(entry: AcpChild, method: string, params: object): Promise<AcpMessage> {
+	entry.lastUsed = Date.now();
 	return new Promise((resolve) => {
 		const id = entry.nextId++;
 		if (entry.pending.size === 0) {
@@ -470,9 +605,11 @@ async function startSession(
 async function spawnAcpChild(
 	binaryPath: string | undefined,
 	cwd: string,
+	key: string,
 	registry: Map<string, AcpChild>,
 	turnSignal: AbortSignal,
 ): Promise<AcpChild> {
+	warnIfUlimitTooLow();
 	const args = ["acp", "--trust-all-tools", "--agent-engine", "v2"];
 	const detached = process.platform !== "win32";
 	const child = spawn(binaryPath ?? "kiro-cli", args, {
@@ -488,6 +625,7 @@ async function spawnAcpChild(
 	const entry: AcpChild = {
 		child,
 		cwd,
+		registryKey: key,
 		acpSessionId: undefined,
 		bridge: undefined,
 		pending: new Map(),
@@ -497,6 +635,7 @@ async function spawnAcpChild(
 		ready: false,
 		idleTimer: undefined,
 		oldestPendingSince: undefined,
+		lastUsed: Date.now(),
 		nextId: 1,
 	};
 
@@ -513,24 +652,15 @@ async function spawnAcpChild(
 		} catch { /* malformed line */ }
 	});
 	child.stderr?.on("data", () => { /* consumed */ });
+	// Child died on its own (crash, or the SIGTERM killChild sent). teardownChild
+	// is idempotent, so the killChild → SIGTERM → exit path re-enters it harmlessly.
 	child.on("exit", () => {
-		unregisterChildForCleanup(child);
-		setChildKeepalive(entry, false);
-		entry.alive = false;
-		entry.ready = false;
-		if (entry.idleTimer) clearTimeout(entry.idleTimer);
-		entry.sessionAbort.abort();
-		void entry.bridge?.close().catch(() => undefined);
-		entry.bridge = undefined;
-		for (const [, resolve] of entry.pending) {
-			resolve({ jsonrpc: "2.0", error: { code: -1, message: "acp child exited unexpectedly" } });
-		}
-		entry.pending.clear();
+		teardownChild(entry, "exited unexpectedly", { kill: false });
 	});
 
 	// Register entry in registry BEFORE the initialize handshake so the abort
 	// handler in makeStreamViaAcp can find and kill it even mid-spawn.
-	registry.set(cwd, entry);
+	registry.set(key, entry);
 
 	// Handshake: initialize
 	const initResp = await request(entry, "initialize", {
@@ -539,7 +669,7 @@ async function spawnAcpChild(
 		clientInfo: { name: "pi-kiro", version: "0.1.0" },
 	});
 	if (initResp.error) {
-		registry.delete(cwd);
+		registry.delete(key);
 		killChild(entry, "initialize failed");
 		throw new Error(`kiro-cli acp initialize failed: ${initResp.error.message}`);
 	}
@@ -553,7 +683,7 @@ async function spawnAcpChild(
 		);
 	}
 	if (turnSignal.aborted) {
-		registry.delete(cwd);
+		registry.delete(key);
 		killChild(entry, "aborted");
 		throw new Error("kiro-cli acp run aborted");
 	}
@@ -572,9 +702,10 @@ async function spawnAcpChild(
 async function getOrCreateChild(
 	deps: AcpDeps,
 	cwd: string,
+	key: string,
 	turnSignal: AbortSignal,
 ): Promise<AcpChild> {
-	let entry = childRegistry.get(cwd);
+	const entry = childRegistry.get(key);
 	if (entry?.alive) {
 		// Return the alive child regardless of session state — the caller decides
 		// whether to reuse the session, start a new one, or divergence-reset.
@@ -582,9 +713,13 @@ async function getOrCreateChild(
 	}
 	// Stale or missing — kill old and create fresh
 	if (entry) killChild(entry, "stale");
-	childRegistry.delete(cwd);
+	childRegistry.delete(key);
 
-	return spawnAcpChild(deps.binaryPath, cwd, childRegistry, turnSignal);
+	// The stale same-key delete above runs first, so the cap only evicts a
+	// DIFFERENT conversation's idle child when we are genuinely growing the map.
+	ensureChildCapacity();
+
+	return spawnAcpChild(deps.binaryPath, cwd, key, childRegistry, turnSignal);
 }
 
 // ─── emptyAssistantMessage ────────────────────────────────────────────────────
@@ -643,23 +778,30 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				await options?.onPayload?.({ provider: "kiro", model: model.id }, model);
 
 				const cwd = process.cwd();
+				// One child per (cwd, conversationKey): the parent and each subagent
+				// carry different system prompts, so they resolve to different children
+				// and a subagent's abort can no longer reject the parent's pending turn.
+				const key = registryKey(cwd, context.systemPrompt);
 				const workflowServers = discoverWorkflowMcpServers(cwd);
 				const turnSignal = options?.signal ?? new AbortController().signal;
 
-				// Abort handler: kill child on abort
+				// Abort handler: kill this conversation's child on abort. Live lookup by
+				// composite key (not a captured entry) so an abort landing mid-spawn —
+				// before getOrCreateChild resolves — still finds and kills the child that
+				// spawnAcpChild registered under `key` ahead of its initialize handshake.
 				abortSignal = options?.signal;
 				onAbort = () => {
-					const entry = childRegistry.get(cwd);
+					const entry = childRegistry.get(key);
 					if (entry) {
 						killChild(entry, "aborted");
-						childRegistry.delete(cwd);
+						childRegistry.delete(key);
 					}
 				};
 				options?.signal?.addEventListener("abort", onAbort, { once: true });
 
 				let acpEntry: AcpChild;
 				try {
-					acpEntry = await getOrCreateChild(deps, cwd, turnSignal);
+					acpEntry = await getOrCreateChild(deps, cwd, key, turnSignal);
 				} catch (err) {
 					if (options?.signal?.aborted) throw new Error("kiro-cli acp run aborted");
 					throw err;
