@@ -28,6 +28,37 @@ import { makeStreamViaAcp } from "./acp-transport.js";
 import { makeStreamViaKiro } from "./stream-adapter.js";
 import { wireSubagents } from "./subagent-wiring.js";
 
+/** Comma-separated name list → trimmed, non-empty names. Shared by both /kiro-subagents branches. */
+export function parseNameList(csv: string): string[] {
+	return csv
+		.split(",")
+		.map((name) => name.trim())
+		.filter((name) => name.length > 0);
+}
+
+interface SubagentsArgs {
+	mode: "on" | "off" | "invalid";
+	model?: string;
+	only?: string[];
+}
+
+/** Pure parse of /kiro-subagents's argument string — no runtime deps, unit-testable standalone. */
+export function parseSubagentsArgs(args: string): SubagentsArgs {
+	const trimmed = args.trim();
+	if (trimmed === "off" || trimmed.startsWith("off ")) {
+		const names = trimmed === "off" ? "" : trimmed.slice(4).trim();
+		const only = names.length > 0 ? parseNameList(names) : undefined;
+		return { mode: "off", only };
+	}
+	if (trimmed === "on" || trimmed.startsWith("on ")) {
+		const rest = trimmed === "on" ? [] : trimmed.slice(3).trim().split(/\s+/);
+		const model = rest[0]?.includes("/") ? rest.shift() : DEFAULT_SUBAGENT_MODEL;
+		const only = parseNameList(rest.join(" "));
+		return { mode: "on", model, only: only.length > 0 ? only : undefined };
+	}
+	return { mode: "invalid" };
+}
+
 // Latest ExtensionContext, captured per turn for bridged tool execution.
 // Last-writer-wins under parallel turns in concurrent sessions.
 let latestCtx: ExtensionContext | undefined;
@@ -157,47 +188,31 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 				.filter((item) => item.startsWith(prefix))
 				.map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
-			const trimmed = args.trim();
-			if (trimmed === "off" || trimmed.startsWith("off ")) {
-				const names = trimmed === "off" ? "" : trimmed.slice(4).trim();
-				const only =
-					names.length > 0
-						? names
-								.split(",")
-								.map((name) => name.trim())
-								.filter((name) => name.length > 0)
-						: undefined;
-				const result = wireSubagents(undefined, only);
+			const parsed = parseSubagentsArgs(args);
+			if (parsed.mode === "invalid") {
 				ctx.ui.notify(
-					`Unrouted ${result.changed.length} ${only ? "named" : "of all"} agent(s) from kiro (${result.skipped.length} untouched).`,
+					"Usage: /kiro-subagents on [provider/model] [names,...] | off [names,...]",
+					"error",
+				);
+				return;
+			}
+			if (parsed.mode === "off") {
+				const result = wireSubagents(undefined, parsed.only);
+				ctx.ui.notify(
+					`Unrouted ${result.changed.length} ${parsed.only ? "named" : "of all"} agent(s) from kiro (${result.skipped.length} untouched).`,
 					"info",
 				);
 				return;
 			}
-			if (trimmed === "on" || trimmed.startsWith("on ")) {
-				const rest = trimmed === "on" ? [] : trimmed.slice(3).trim().split(/\s+/);
-				const model = rest[0]?.includes("/") ? rest.shift() : DEFAULT_SUBAGENT_MODEL;
-				const names = rest
-					.join(" ")
-					.split(",")
-					.map((name) => name.trim())
-					.filter((name) => name.length > 0);
-				const only = names.length > 0 ? names : undefined;
-				if (!model || !model.startsWith(`${KIRO_PROVIDER}/`)) {
-					ctx.ui.notify(`Model must be ${KIRO_PROVIDER}/<id> (got "${model}").`, "error");
-					return;
-				}
-				const registration = await ensureRegistered(pi);
-				const result = wireSubagents(model, only);
-				ctx.ui.notify(
-					`${result.changed.length} agent(s) now use ${model}; ${result.skipped.length} already set or missing. ${registration}`,
-					"info",
-				);
+			if (!parsed.model || !parsed.model.startsWith(`${KIRO_PROVIDER}/`)) {
+				ctx.ui.notify(`Model must be ${KIRO_PROVIDER}/<id> (got "${parsed.model}").`, "error");
 				return;
 			}
+			const registration = await ensureRegistered(pi);
+			const result = wireSubagents(parsed.model, parsed.only);
 			ctx.ui.notify(
-				"Usage: /kiro-subagents on [provider/model] [names,...] | off [names,...]",
-				"error",
+				`${result.changed.length} agent(s) now use ${parsed.model}; ${result.skipped.length} already set or missing. ${registration}`,
+				"info",
 			);
 		},
 	});
