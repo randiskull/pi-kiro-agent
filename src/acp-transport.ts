@@ -46,8 +46,9 @@
  * login; this module never touches credentials.
  */
 
-import { execSync, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type {
 	AssistantMessage,
@@ -319,23 +320,29 @@ let ulimitChecked = false;
  * One-shot advisory (warn, never block): if the parent's soft FD limit is below
  * the estimate for maxChildren() children, a wide fan-out may hit EMFILE. Fires
  * once, lazily, on the first spawn — so a session that never uses the ACP
- * transport pays no subprocess cost. `ulimit` is a POSIX sh builtin, so the
- * default `/bin/sh -c` reads the parent's inherited soft limit portably.
+ * transport pays no subprocess cost. Reads /proc/self/limits directly (Linux —
+ * the CI and deployment target) rather than forking a `ulimit -n` shell, so it
+ * never blocks the event loop from inside the async spawn path. Non-Linux
+ * platforms have no /proc; the advisory is simply skipped there.
  */
 function warnIfUlimitTooLow(): void {
-	if (ulimitChecked || process.platform === "win32") return;
+	if (ulimitChecked || process.platform !== "linux") return;
 	ulimitChecked = true;
 	try {
-		const soft = Number.parseInt(execSync("ulimit -n", { encoding: "utf8" }).trim(), 10);
+		const limits = readFileSync("/proc/self/limits", "utf8");
+		// Column layout: "Max open files  <soft>  <hard>  files". "unlimited" → NaN → skipped.
+		const match = /^Max open files\s+(\d+|unlimited)/im.exec(limits);
+		const soft = match ? Number.parseInt(match[1], 10) : Number.NaN;
 		const need = maxChildren() * PARENT_FDS_PER_CHILD;
-		if (Number.isFinite(soft) && soft < need) { // "unlimited" → NaN → skipped
+		if (Number.isFinite(soft) && soft < need) {
 			console.error(
-				`[pi-kiro] soft FD limit (ulimit -n = ${soft}) is below the parent-side estimate for ` +
-				`PI_KIRO_MAX_CHILDREN=${maxChildren()} (${maxChildren()} × ${PARENT_FDS_PER_CHILD} = ${need} FDs). ` +
+				`[pi-kiro] soft FD limit (/proc/self/limits Max open files = ${soft}) is below the ` +
+				`parent-side estimate for PI_KIRO_MAX_CHILDREN=${maxChildren()} ` +
+				`(${maxChildren()} × ${PARENT_FDS_PER_CHILD} = ${need} FDs). ` +
 				`A wide fan-out may hit EMFILE in pi. Raise it, e.g. \`ulimit -n ${Math.ceil(need / 1024) * 1024}\`.`,
 			);
 		}
-	} catch { /* ulimit unavailable — skip advisory */ }
+	} catch { /* /proc unavailable — skip advisory */ }
 }
 
 /**
@@ -378,9 +385,15 @@ function resetIdleTimer(entry: AcpChild): void {
 				return;
 			}
 			killChild(entry, `turn timeout (pending ${Math.round(pendingForMs / 1000)}s, silent ${Math.round(idleTimeoutMs() / 1000)}s)`);
+			childRegistry.delete(entry.registryKey);
 			return;
 		}
 		killChild(entry, "idle timeout");
+		// Drop the dead entry from the registry: killChild flips alive=false but
+		// leaves the entry in the map, and ensureChildCapacity counts map size,
+		// so a lingering zombie would inflate the maxChildren cap. Delete by the
+		// entry's own composite key (no outer-scope capture needed).
+		childRegistry.delete(entry.registryKey);
 	}, idleTimeoutMs());
 	entry.idleTimer.unref?.();
 }
