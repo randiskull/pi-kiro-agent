@@ -91,12 +91,18 @@ function maybeSelfHeal(pi: ExtensionAPI): void {
 		});
 }
 
-async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string> {
+/** ensureRegistered's per-call outcome — read this, never the lingering module-global `registered` flag [L0-03]. */
+interface RegistrationResult {
+	ok: boolean;
+	detail: string;
+}
+
+async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<RegistrationResult> {
 	if (force) clearKiroReadinessCache();
 	const readiness = await checkKiroReadiness(force);
 	deps.binaryPath = readiness.binaryPath;
 	if (!readiness.ready) {
-		return `kiro provider NOT registered: ${readiness.detail}`;
+		return { ok: false, detail: `kiro provider NOT registered: ${readiness.detail}` };
 	}
 	// ALWAYS register when ready — never gate on the local `registered` flag.
 	// The host's registerProvider is an upsert (validate → apply → upsert), and
@@ -104,7 +110,8 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string
 	// reload) while this module (and its flag) survive. Gating on the flag made
 	// ensureRegistered, /kiro, and the lazy self-heal all no-ops after /new,
 	// wedging the provider until a full process relaunch. The flag remains only
-	// as a status/throttle hint for maybeSelfHeal and /kiro's notify level.
+	// as maybeSelfHeal's throttle hint ("have we ever registered") — /kiro reads
+	// this call's own {ok, detail} for its notify level, not the flag [L0-03].
 	{
 		const models = readiness.binaryPath
 			? await fetchKiroModels(readiness.binaryPath)
@@ -136,7 +143,10 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string
 		pi.registerProvider(KIRO_PROVIDER, config);
 		registered = true;
 	}
-	return `kiro provider registered (${readiness.detail}). Select with /model ${KIRO_PROVIDER}/<id>.`;
+	return {
+		ok: true,
+		detail: `kiro provider registered (${readiness.detail}). Select with /model ${KIRO_PROVIDER}/<id>.`,
+	};
 }
 
 export default async function piKiro(pi: ExtensionAPI): Promise<void> {
@@ -175,8 +185,8 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 	pi.registerCommand("kiro", {
 		description: "Show Kiro delegation status and (re)register the provider",
 		handler: async (_args, ctx) => {
-			const summary = await ensureRegistered(pi, true);
-			ctx.ui.notify(summary, registered ? "info" : "error");
+			const result = await ensureRegistered(pi, true);
+			ctx.ui.notify(result.detail, result.ok ? "info" : "error");
 		},
 	});
 
@@ -211,7 +221,7 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 			const registration = await ensureRegistered(pi);
 			const result = wireSubagents(parsed.model, parsed.only);
 			ctx.ui.notify(
-				`${result.changed.length} agent(s) now use ${parsed.model}; ${result.skipped.length} already set or missing. ${registration}`,
+				`${result.changed.length} agent(s) now use ${parsed.model}; ${result.skipped.length} already set or missing. ${registration.detail}`,
 				"info",
 			);
 		},

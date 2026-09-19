@@ -131,4 +131,29 @@ describe("provider registration lifecycle", () => {
 		await fake.runCommand("kiro");
 		expect(fake.registerProvider).toHaveBeenCalledTimes(2);
 	});
+
+	it("/kiro notify level reflects THIS call's outcome, not the lingering `registered` flag [L0-03]", async () => {
+		const piKiro = await loadExtension();
+		const { checkKiroReadiness } = await import("../src/readiness.js");
+		const readinessMock = vi.mocked(checkKiroReadiness);
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		// First /kiro: ready, registers, notify level "info".
+		let ctx = await fake.runCommand("kiro");
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("registered"), "info");
+		// Bug scenario: the module-global `registered` flag is still true from
+		// the successful call above (its set-points are untouched by design —
+		// it's an "ever registered" throttle hint, not a per-call result). A
+		// later probe that comes back NOT ready must still notify "error", not
+		// read the stale flag and render "info".
+		readinessMock.mockResolvedValueOnce({
+			ready: false,
+			binaryPath: undefined,
+			version: undefined,
+			authed: false,
+			detail: "kiro-cli not found on PATH",
+		});
+		ctx = await fake.runCommand("kiro");
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("NOT registered"), "error");
+	});
 });
