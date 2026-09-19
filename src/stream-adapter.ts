@@ -23,6 +23,7 @@
 
 import { spawn } from "node:child_process";
 import type {
+	AssistantMessage,
 	AssistantMessageEventStream,
 	Context,
 	Message,
@@ -52,6 +53,18 @@ const MCP_STARTUP_EXIT_CODE = 3;
 // Up to 3: one turn plus room for an MCP-startup retry and a resume→full fallback.
 const MAX_ATTEMPTS = 3;
 
+/** Id prefix for live-progress toolCall placeholders — shared by the producer
+ * (id construction, both stream handlers) and the two strip sites, so they
+ * cannot drift apart [L1-03]. */
+const LIVE_TOOL_ID_PREFIX = "kiro-live-";
+
+/** Drop live-progress placeholder toolCall blocks (matched by LIVE_TOOL_ID_PREFIX). */
+function stripLivePlaceholders(content: AssistantMessage["content"]): AssistantMessage["content"] {
+	return content.filter(
+		(block) => !(block.type === "toolCall" && String(block.id).startsWith(LIVE_TOOL_ID_PREFIX)),
+	);
+}
+
 /**
  * Hard ceiling for one chat-transport turn (default 45 min). Unlike the ACP
  * transport there is no protocol heartbeat to distinguish "working" from
@@ -65,9 +78,12 @@ function chatTimeoutMs(): number {
 
 export const FINAL_OPEN = "<pi_final>";
 export const FINAL_CLOSE = "</pi_final>";
-// TODO(acp-dod): delete FINAL_OPEN, FINAL_CLOSE, extractFinal, and the sentinel instruction
-// in buildScaffolding after the ACP field gate passes (PI_KIRO_TRANSPORT=acp, zero salvages,
-// zero synthesized tool calls). See docs/design/acp-transport.md §7.
+// TODO(stream-json): demote to fallback once `chat --output-format stream-json`
+// is default (it exposes structured output directly, making FINAL_OPEN,
+// FINAL_CLOSE, extractFinal, and the sentinel instruction unnecessary); delete
+// only once support for kiro-cli versions lacking the flag is dropped. The
+// ACP field gate this used to cite is stale (ACP was demoted to an optional
+// contingency) — see docs/design/acp-transport.md §5c.
 
 /** Map Pi thinking levels onto kiro-cli --effort values. */
 export function mapEffort(level: ThinkingLevel | undefined): string | undefined {
@@ -329,10 +345,13 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				let useResume = plan.mode === "resume";
 				// Snapshot existing sessions before a fresh spawn so we can identify the
 				// one kiro creates (exactly-one-new-in-cwd; ambiguity ⇒ fallback).
-				// TODO(acp-dod): delete snapshotSessions, makeListSessions, preSnapshot, and
-				// recordFreshSession (lines below) after ACP field gate — ACP gives sessionId
-				// directly from session/new; snapshot-diff capture is unnecessary.
-				// See docs/design/acp-transport.md §7.
+				// TODO(stream-json): the snapshot-diff capture here (snapshotSessions,
+				// makeListSessions, preSnapshot, recordFreshSession below) can die once
+				// stream-json is default — metadata.data.sessionId is in the output
+				// directly, no diffing needed. The --resume-id/prefix-hash resume logic
+				// (planTurn et al) STAYS regardless of stream-json. Demote to fallback
+				// when stream-json ships; delete only when old-version support is
+				// dropped. See docs/design/acp-transport.md §5c.
 				let preSnapshot = useResume ? new Set<string>() : await snapshotSessions(cwd, listSessions);
 
 				let raw = "";
@@ -405,9 +424,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					// plus a clean ⚙ marker in the thinking feed. Reconciled at end of
 					// turn by the authoritative synthesizeToolCallBlocks pass.
 					// Per-attempt: a retried attempt drops its predecessor's live blocks.
-					output.content = output.content.filter(
-						(block) => !(block.type === "toolCall" && String(block.id).startsWith("kiro-live-")),
-					);
+					output.content = stripLivePlaceholders(output.content);
 					const liveParser = createToolUseStreamParser();
 					let liveCount = 0;
 					child.stdout.on("data", (chunk: Buffer) => {
@@ -417,7 +434,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						for (const use of liveParser.feed(stripAnsi(text))) {
 							output.content.push({
 								type: "toolCall",
-								id: `kiro-live-${liveCount++}-${use.name}`,
+								id: `${LIVE_TOOL_ID_PREFIX}${liveCount++}-${use.name}`,
 								name: use.name,
 								arguments: {},
 							});
@@ -435,7 +452,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						for (const use of liveStderrParser.feed(stripAnsi(text))) {
 							output.content.push({
 								type: "toolCall",
-								id: `kiro-live-${liveCount++}-${use.name}`,
+								id: `${LIVE_TOOL_ID_PREFIX}${liveCount++}-${use.name}`,
 								name: use.name,
 								arguments: {},
 							});
@@ -499,9 +516,11 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				// instead, degrade to success and let the caller's own verification
 				// (artifact/DB checks) be the arbiter. A nonzero exit with NO final
 				// sentinel and NO tool activity is still a hard failure.
-				// TODO(acp-dod): delete salvage heuristic (salvageToolUses, hasFinal, pushThinking salvage)
-				// after ACP field gate — under ACP, turn completion = protocol event; exit salvage unnecessary.
-				// See docs/design/acp-transport.md §7.
+				// TODO(stream-json): demote to fallback once stream-json is default (turn
+				// completion becomes a protocol event there, making this exit-code salvage
+				// heuristic unnecessary — salvageToolUses, hasFinal, pushThinking salvage);
+				// delete only once support for kiro-cli versions lacking the flag is
+				// dropped. See docs/design/acp-transport.md §5c.
 				const toolTranscript = toolUseTranscript(body, stderrText);
 				const salvageToolUses = exitCode !== 0 ? parseKiroToolUses(toolTranscript) : [];
 				if (exitCode !== 0) {
@@ -517,9 +536,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				const { final } = extractFinal(body);
 				// Reconcile: replace live placeholder blocks with the authoritative
 				// end-of-turn parse (full arguments; stable ids; no duplicates).
-				output.content = output.content.filter(
-					(block) => !(block.type === "toolCall" && String(block.id).startsWith("kiro-live-")),
-				);
+				output.content = stripLivePlaceholders(output.content);
 				// Surface MCP tool invocations that ran inside kiro as toolCall
 				// blocks (stopReason stays "stop": counted, not redispatched).
 				for (const block of synthesizeToolCallBlocks(toolTranscript)) {

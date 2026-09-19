@@ -55,14 +55,23 @@ export interface AcpTurnPlan {
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
-function upsert(session: AcpSession): void {
-	const existing = sessions.findIndex((s) => s.sessionId === session.sessionId);
-	if (existing >= 0) {
-		sessions[existing] = session;
-	} else {
+/** Move a tracked session to the touched (most-recently-used) end of `sessions`. */
+function touch(sessionId: string): void {
+	const index = sessions.findIndex((s) => s.sessionId === sessionId);
+	if (index >= 0 && index !== sessions.length - 1) {
+		const [session] = sessions.splice(index, 1);
 		sessions.push(session);
-		if (sessions.length > MAX_SESSIONS) sessions.shift();
 	}
+}
+
+function upsert(session: AcpSession): void {
+	// LRU, not FIFO [L1-09 polish]: an existing entry is removed then re-pushed
+	// to the touched end, so eviction below always drops the least-recently-
+	// touched session, not merely the oldest-inserted one.
+	const existing = sessions.findIndex((s) => s.sessionId === session.sessionId);
+	if (existing >= 0) sessions.splice(existing, 1);
+	sessions.push(session);
+	if (sessions.length > MAX_SESSIONS) sessions.shift();
 }
 
 // ─── Public surface ───────────────────────────────────────────────────────────
@@ -82,6 +91,7 @@ export function planAcpTurn(cwd: string, sessionKey: string, messages: Message[]
 		if (hashMessages(messages.slice(0, session.sentMessageCount)) !== session.prefixHash) continue; // prefix changed
 		const delta = messages.slice(session.sentMessageCount);
 		if (!delta.some((m) => m.role !== "assistant")) return { mode: "fresh", deltaStart: 0 };
+		touch(session.sessionId); // LRU: resuming counts as use [L1-09 polish]
 		return { mode: "resume", acpSessionId: session.sessionId, deltaStart: session.sentMessageCount };
 	}
 	return { mode: "fresh", deltaStart: 0 };
@@ -112,6 +122,7 @@ export function advanceAcpSession(acpSessionId: string, messages: Message[]): vo
 	if (!session) return;
 	session.sentMessageCount = messages.length;
 	session.prefixHash = hashMessages(messages);
+	touch(acpSessionId); // LRU: advancing counts as use [L1-09 polish]
 }
 
 /** Forget a session (e.g. child crashed — session is unusable). */
