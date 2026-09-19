@@ -202,7 +202,19 @@ function serializeMessage(message: Message): string | undefined {
 		return `<user_message>\n${contentToText(message.content)}\n</user_message>`;
 	}
 	if (message.role === "assistant") {
-		const text = contentToText(message.content.filter((block) => block.type !== "thinking") as Message["content"]);
+		// toolCall blocks are dropped, not rendered. contentToText would turn them
+		// into `[called tool name({...})]` text, and this history is replayed to
+		// kiro on every full resend alongside a <tool_context> block that tells it
+		// those same tools ARE callable as @pi/<name>. kiro read that as work to
+		// do and re-issued the calls: a user was asked the same
+		// @pi/ask_user_question twice, and each turn re-fired the PRIOR turn's
+		// @pi/steer_subagent / @pi/get_subagent_result at already-reaped agent ids
+		// lifted verbatim out of the replayed text. The paired <tool_result>
+		// already carries what ran and what came back, so nothing is lost by
+		// omitting the call itself -- only the invitation to run it again.
+		const text = contentToText(
+			message.content.filter((block) => block.type !== "thinking" && block.type !== "toolCall") as Message["content"],
+		);
 		return text.length > 0 ? `<assistant_message>\n${text}\n</assistant_message>` : undefined;
 	}
 	if (message.role === "toolResult") {
