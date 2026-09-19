@@ -15,7 +15,7 @@ import { PassThrough } from "node:stream";
 import { Writable } from "node:stream";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { _resetAcpSessions } from "../src/acp-session.js";
+import { _resetAcpSessions, _acpSessionCount } from "../src/acp-session.js";
 import { _getAcpChildRegistry, _resetAcpChildren, _acpRegistryKey, makeStreamViaAcp } from "../src/acp-transport.js";
 
 // ─── Spawn mock ───────────────────────────────────────────────────────────────
@@ -1579,6 +1579,62 @@ describe("makeStreamViaAcp", () => {
 			} finally {
 				if (prev === undefined) delete process.env.PI_KIRO_MAX_CHILDREN;
 				else process.env.PI_KIRO_MAX_CHILDREN = prev;
+			}
+		});
+	});
+
+	describe("child death drops its ACP session (L1-06 drop-on-death)", () => {
+		it("forgets the session when the child dies, so no dead session lingers", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
+				const sessionReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-drop1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-drop1", commands: [] }});
+				const promptReq = (await child.awaitLine()) as { id: number };
+				await deliverTurn(child, "sess-drop1", "ok");
+				child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+				// Deliberately NOT ending the child: keep it alive so we can prove the
+				// session is tracked first, THEN kill it and prove drop-on-death.
+			})();
+
+			await collect({ messages: [user("hi")] });
+			expect(_acpSessionCount()).toBe(1); // recorded while the child is alive
+
+			child.emit("exit", 1); // child dies on its own → teardownChild
+			await settle();
+			expect(_acpSessionCount()).toBe(0); // drop-on-death forgot the dead session
+		});
+	});
+
+	describe("escape hatch: PI_KIRO_CHILD_KEY=cwd", () => {
+		it("forces cwd-only keying so conversations collapse onto one child", () => {
+			const prev = process.env.PI_KIRO_CHILD_KEY;
+			process.env.PI_KIRO_CHILD_KEY = "cwd";
+			try {
+				const cwd = process.cwd();
+				const kParent = _acpRegistryKey(cwd, "PARENT");
+				const kSub = _acpRegistryKey(cwd, "SUBAGENT");
+				// Both collapse to the bare cwd — the pre-per-conversation key.
+				expect(kParent).toBe(cwd);
+				expect(kSub).toBe(cwd);
+				expect(kParent).toBe(kSub);
+			} finally {
+				if (prev === undefined) delete process.env.PI_KIRO_CHILD_KEY;
+				else process.env.PI_KIRO_CHILD_KEY = prev;
+			}
+		});
+
+		it("default (unset) keeps different system prompts on separate children", () => {
+			const prev = process.env.PI_KIRO_CHILD_KEY;
+			delete process.env.PI_KIRO_CHILD_KEY; // guard against leak from another test
+			try {
+				const cwd = process.cwd();
+				expect(_acpRegistryKey(cwd, "PARENT")).not.toBe(_acpRegistryKey(cwd, "SUBAGENT"));
+			} finally {
+				if (prev !== undefined) process.env.PI_KIRO_CHILD_KEY = prev;
 			}
 		});
 	});

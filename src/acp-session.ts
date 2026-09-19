@@ -124,3 +124,8 @@ export function dropAcpSession(acpSessionId: string): void {
 export function _resetAcpSessions(): void {
 	sessions.length = 0;
 }
+
+/** Test hook: number of ACP sessions currently tracked (drop-on-death checks). */
+export function _acpSessionCount(): number {
+	return sessions.length;
+}

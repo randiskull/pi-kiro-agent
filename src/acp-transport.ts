@@ -10,7 +10,8 @@
  *    alone collapsed them onto a shared child, where a subagent turn's abort
  *    rejected the parent's in-flight turn (`acp child terminated: aborted`). The
  *    registry is bounded by PI_KIRO_MAX_CHILDREN (default 32) with LRU eviction of
- *    idle children. Session identity via ACP sessionId (not --list-sessions).
+ *    idle children. Set PI_KIRO_CHILD_KEY=cwd to force the old cwd-only keying
+ *    (rollback lever). Session identity via ACP sessionId (not --list-sessions).
  *
  * 2. Option B tool mounting (gate: probes/p3-gate-findings.md — PASSED):
  *    - Both bridge (HTTP) and gsd-workflow (stdio) injected directly in session/new.mcpServers
@@ -205,8 +206,15 @@ function conversationKey(systemPrompt: string | undefined): string {
  * Registry key: one child per (cwd, conversationKey). NUL-joined — NUL cannot
  * occur in a hex hash or a filesystem path, so the two fields cannot bleed
  * together into a colliding key.
+ *
+ * Escape hatch: PI_KIRO_CHILD_KEY=cwd reverts to keying on cwd alone (the
+ * pre-per-conversation behavior). That re-collapses the parent and its
+ * subagents onto one shared child — reintroducing the subagent-abort collision
+ * this keying fixes — so it exists only as a rollback lever if per-conversation
+ * keying ever misbehaves in the field.
  */
 function registryKey(cwd: string, systemPrompt: string | undefined): string {
+	if (process.env.PI_KIRO_CHILD_KEY === "cwd") return cwd;
 	return cwd + "\x00" + conversationKey(systemPrompt);
 }
 
@@ -256,7 +264,18 @@ export function _acpRegistryKey(cwd: string, systemPrompt: string | undefined): 
 
 // ─── Child lifecycle ──────────────────────────────────────────────────────────
 
-function killChild(entry: AcpChild, reason: string): void {
+/**
+ * Idempotent child teardown, shared by killChild (we initiate the kill via
+ * SIGTERM) and the child `exit` handler (the process died on its own). The
+ * `!alive` guard makes the second entry a no-op: killChild SIGTERMs the child,
+ * whose `exit` then re-enters here — teardown must run exactly once.
+ *
+ * Drop-on-death: a dead child's ACP session is unusable, so forget it here.
+ * Otherwise acp-session.ts retains dead sessions until its MAX_SESSIONS FIFO
+ * evicts them — harmless (a fresh child takes the new-session path and never
+ * resumes a dead sessionId) but leaky. Dropping keeps the session map honest.
+ */
+function teardownChild(entry: AcpChild, reason: string, options: { kill: boolean }): void {
 	if (!entry.alive) return;
 	entry.alive = false;
 	entry.ready = false;
@@ -265,17 +284,28 @@ function killChild(entry: AcpChild, reason: string): void {
 	// Close the per-session bridge
 	void entry.bridge?.close().catch(() => undefined);
 	entry.bridge = undefined;
-	try {
-		const { pid } = entry.child;
-		if (pid && process.platform !== "win32") process.kill(-pid, "SIGTERM");
-		else entry.child.kill("SIGTERM");
-	} catch { /* already gone */ }
+	if (entry.acpSessionId) {
+		dropAcpSession(entry.acpSessionId);
+		entry.acpSessionId = undefined;
+	}
+	if (options.kill) {
+		try {
+			const { pid } = entry.child;
+			if (pid && process.platform !== "win32") process.kill(-pid, "SIGTERM");
+			else entry.child.kill("SIGTERM");
+		} catch { /* already gone */ }
+	}
 	unregisterChildForCleanup(entry.child);
 	setChildKeepalive(entry, false);
 	for (const [, resolve] of entry.pending) {
 		resolve({ jsonrpc: "2.0", error: { code: -1, message: `acp child terminated: ${reason}` } });
 	}
 	entry.pending.clear();
+}
+
+/** Kill a live child (SIGTERM) and tear it down. Idempotent via teardownChild. */
+function killChild(entry: AcpChild, reason: string): void {
+	teardownChild(entry, reason, { kill: true });
 }
 
 // FDs the PARENT (pi) process holds per live child: 3 stdio pipes + the
@@ -622,19 +652,10 @@ async function spawnAcpChild(
 		} catch { /* malformed line */ }
 	});
 	child.stderr?.on("data", () => { /* consumed */ });
+	// Child died on its own (crash, or the SIGTERM killChild sent). teardownChild
+	// is idempotent, so the killChild → SIGTERM → exit path re-enters it harmlessly.
 	child.on("exit", () => {
-		unregisterChildForCleanup(child);
-		setChildKeepalive(entry, false);
-		entry.alive = false;
-		entry.ready = false;
-		if (entry.idleTimer) clearTimeout(entry.idleTimer);
-		entry.sessionAbort.abort();
-		void entry.bridge?.close().catch(() => undefined);
-		entry.bridge = undefined;
-		for (const [, resolve] of entry.pending) {
-			resolve({ jsonrpc: "2.0", error: { code: -1, message: "acp child exited unexpectedly" } });
-		}
-		entry.pending.clear();
+		teardownChild(entry, "exited unexpectedly", { kill: false });
 	});
 
 	// Register entry in registry BEFORE the initialize handshake so the abort
