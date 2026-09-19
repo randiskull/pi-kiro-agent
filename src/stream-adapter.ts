@@ -219,6 +219,7 @@ function buildScaffolding(bridgedTools?: string[], workflowMcp?: boolean, opts?:
 	const toolContextLines = [
 		"<tool_context>",
 		"The prior context below may reference tools from the calling session (read, grep, bash, Agent, todo, ask_user_question, subagent dispatch, skills, pipeline stages). Do not refuse or explain that you lack them: perform file/search/shell work yourself with your own tools.",
+		"When calling your own file-read tool, pass `path` as a top-level argument — not nested inside an `operations` array. That nested shape is a different, unavailable tool signature and will be rejected for a missing top-level `path`.",
 	];
 	if (bridgedTools && bridgedTools.length > 0) {
 		toolContextLines.push(
