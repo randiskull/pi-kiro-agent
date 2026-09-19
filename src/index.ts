@@ -59,8 +59,14 @@ export function parseSubagentsArgs(args: string): SubagentsArgs {
 	return { mode: "invalid" };
 }
 
-// Latest ExtensionContext, captured per turn for bridged tool execution.
-// Last-writer-wins under parallel turns in concurrent sessions.
+// ExtensionContext keyed by session id, captured per turn for bridged tool
+// execution. A bridged tool call resolves through this map at CALL TIME (not
+// a snapshot taken when the bridge was created), so a tool call made inside
+// one session's delegated turn always reaches for THAT session's newest ctx,
+// never a different session's turn that happened to write more recently
+// [L0-04]. latestCtx stays as a last-resort fallback for the rare case a
+// session id cannot be resolved.
+const sessionCtxMap = new Map<string, ExtensionContext>();
 let latestCtx: ExtensionContext | undefined;
 
 const deps: {
@@ -162,9 +168,11 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 
 	pi.on("context", (_event, ctx) => {
 		latestCtx = ctx;
+		sessionCtxMap.set(ctx.sessionManager.getSessionId(), ctx);
 	});
 	pi.on("before_provider_request", (_event, ctx) => {
 		latestCtx = ctx;
+		sessionCtxMap.set(ctx.sessionManager.getSessionId(), ctx);
 		maybeSelfHeal(pi);
 	});
 	// Session starts/reloads (/new, /resume, fork, reload) drop dynamically
@@ -179,7 +187,23 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 	deps.getBridge = async (signal) => {
 		if (!bridgeEnabled()) return undefined;
 		const tools = await captureBridgeTools(pi, process.env.PI_KIRO_BRIDGE_TOOLS);
-		return serveBridgeHttp(tools, () => latestCtx, signal);
+		// Pin this bridge to the session that is creating it: both transports
+		// await options.onPayload (-> before_provider_request -> the handler
+		// above) before ever calling deps.getBridge, so sessionCtxMap already
+		// holds THIS turn's session by the time we get here. Captured once, at
+		// call time, rather than re-read from the global on every bridged tool
+		// call -- so a DIFFERENT session's turn writing to the map afterward
+		// can no longer steal this bridge's tool calls [L0-04].
+		//
+		// Residual interleave window (accepted, not closed here): a concurrent
+		// turn from another session racing its own before_provider_request
+		// between that await and this line would still win originId. Closing
+		// that fully means threading session identity explicitly from the
+		// transport into getBridge(signal) instead of reading the global here
+		// -- an intentionally deferred, larger ripple into both transports'
+		// getBridge(signal) call sites (stream-adapter.ts, acp-transport.ts).
+		const originId = latestCtx?.sessionManager.getSessionId();
+		return serveBridgeHttp(tools, () => (originId ? sessionCtxMap.get(originId) ?? latestCtx : latestCtx), signal);
 	};
 
 	pi.registerCommand("kiro", {

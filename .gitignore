@@ -5,3 +5,6 @@ scans/
 .DS_Store
 .agents/
 probes/*.json
+.bg-shell/
+.gsd/
+.rpiv/

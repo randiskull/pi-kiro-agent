@@ -32,7 +32,7 @@ vi.mock("../src/bridge.js", () => ({
 	captureBridgeTools: vi.fn(async () => []),
 	serveBridgeHttp: vi.fn(),
 }));
-vi.mock("../src/kiro-bridge.js", () => ({ bridgeEnabled: () => false }));
+vi.mock("../src/kiro-bridge.js", () => ({ bridgeEnabled: vi.fn(() => false) }));
 vi.mock("../src/subagent-wiring.js", () => ({
 	wireSubagents: vi.fn(() => ({ changed: [], skipped: [] })),
 }));
@@ -59,8 +59,8 @@ function makeFakePi() {
 				commands.set(name, def);
 			},
 		},
-		emit: async (name: string, event: unknown = {}) => {
-			for (const fn of handlers.get(name) ?? []) fn(event);
+		emit: async (name: string, event: unknown = {}, ctx?: unknown) => {
+			for (const fn of handlers.get(name) ?? []) fn(event, ctx);
 			// registration on session_start is fire-and-forget — let it settle
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		},
@@ -155,5 +155,42 @@ describe("provider registration lifecycle", () => {
 		});
 		ctx = await fake.runCommand("kiro");
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("NOT registered"), "error");
+	});
+
+	it("pins each session's bridge to that session's own ctx, not whichever session wrote latestCtx last [L0-04]", async () => {
+		const piKiro = await loadExtension();
+		const { bridgeEnabled } = await import("../src/kiro-bridge.js");
+		vi.mocked(bridgeEnabled).mockReturnValue(true);
+		const { serveBridgeHttp } = await import("../src/bridge.js");
+		const serveMock = vi.mocked(serveBridgeHttp);
+		const { makeStreamViaKiro } = await import("../src/stream-adapter.js");
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+
+		// The real deps object index.ts built and wired deps.getBridge onto —
+		// captured as the argument makeStreamViaKiro (mocked) was called with.
+		const deps = vi.mocked(makeStreamViaKiro).mock.calls[0]?.[0] as {
+			getBridge?: (signal: AbortSignal) => Promise<unknown>;
+		};
+
+		const ctxA = { sessionManager: { getSessionId: () => "session-A" } };
+		const ctxB = { sessionManager: { getSessionId: () => "session-B" } };
+
+		// Session A's turn: before_provider_request fires (its onPayload) and
+		// THEN it calls getBridge — capturing session-A as this bridge's origin.
+		await fake.emit("before_provider_request", {}, ctxA);
+		await deps.getBridge?.(new AbortController().signal);
+		const getterA = serveMock.mock.calls[0]?.[1] as () => unknown;
+		expect(getterA).toBeDefined();
+
+		// Session B's turn interleaves afterward — overwrites the module-global
+		// latestCtx / sessionCtxMap entry with session-B's ctx.
+		await fake.emit("before_provider_request", {}, ctxB);
+
+		// Session A's already-created bridge must still resolve session-A's own
+		// ctx at call time, not session-B's, even though B wrote most recently.
+		// Before the fix this read a single `latestCtx` global and would have
+		// returned ctxB here — a bridged tool call from A's turn misrouted to B.
+		expect(getterA()).toBe(ctxA);
 	});
 });
