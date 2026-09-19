@@ -11,15 +11,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeAgentProfile } from "../src/kiro-bridge.js";
+import { createToolUseStreamParser, parseKiroToolUses, synthesizeToolCallBlocks } from "../src/kiro-tooluse-parser.js";
 import {
 	WORKFLOW_MCP_SERVER_KEY,
 	_resetWorkflowMcpNoticesForTest,
-	createToolUseStreamParser,
 	discoverWorkflowMcpServers,
-	parseKiroToolUses,
-	synthesizeToolCallBlocks,
 	synthesizeWorkflowMcpEntry,
-} from "../src/workflow-mcp.js";
+} from "../src/workflow-mcp-discovery.js";
 
 // Captured (ANSI-stripped) from the live probe: one real gsd tool round-trip.
 const PROBE_OUTPUT = `Running tool gsd_milestone_status with the param (from mcp server: gsdworkflow)

@@ -36,7 +36,8 @@ import type { HttpBridgeHandle } from "./bridge.js";
 import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { type KiroAgentProfile, writeAgentProfile } from "./kiro-bridge.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
-import { createToolUseStreamParser, discoverWorkflowMcpServers, parseKiroToolUses, synthesizeToolCallBlocks } from "./workflow-mcp.js";
+import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
+import { createToolUseStreamParser, parseKiroToolUses, synthesizeToolCallBlocks } from "./kiro-tooluse-parser.js";
 import {
 	advanceSession,
 	dropSession,

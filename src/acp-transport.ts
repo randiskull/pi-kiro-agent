@@ -63,7 +63,7 @@ import type { HttpBridgeHandle } from "./bridge.js";
 import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import { buildDeltaPrompt, buildPromptFromContext, mapEffort } from "./stream-adapter.js";
-import { discoverWorkflowMcpServers } from "./workflow-mcp.js";
+import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import {
 	advanceAcpSession,
 	dropAcpSession,
