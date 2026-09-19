@@ -23,7 +23,6 @@
 
 import { spawn } from "node:child_process";
 import type {
-	AssistantMessage,
 	AssistantMessageEventStream,
 	Context,
 	Message,
@@ -33,6 +32,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
+import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { type KiroAgentProfile, writeAgentProfile } from "./kiro-bridge.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import { createToolUseStreamParser, discoverWorkflowMcpServers, parseKiroToolUses, synthesizeToolCallBlocks } from "./workflow-mcp.js";
@@ -52,11 +52,6 @@ const MCP_STARTUP_EXIT_CODE = 3;
 // Up to 3: one turn plus room for an MCP-startup retry and a resume→full fallback.
 const MAX_ATTEMPTS = 3;
 
-/** Parse a positive-integer millisecond override from the environment. */
-function envMs(name: string, fallback: number): number {
-	const raw = Number.parseInt(process.env[name] ?? "", 10);
-	return Number.isFinite(raw) && raw > 0 ? raw : fallback;
-}
 /**
  * Hard ceiling for one chat-transport turn (default 45 min). Unlike the ACP
  * transport there is no protocol heartbeat to distinguish "working" from
@@ -289,26 +284,6 @@ export function buildDeltaPrompt(deltaMessages: Message[], bridgedTools?: string
 	return parts.join("\n\n");
 }
 
-function emptyAssistantMessage(model: Model<any>): AssistantMessage {
-	return {
-		role: "assistant",
-		content: [],
-		api: model.api,
-		provider: model.provider,
-		model: model.id,
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		stopReason: "stop",
-		timestamp: Date.now(),
-	};
-}
-
 interface StreamDeps {
 	binaryPath: string | undefined;
 	/**
@@ -364,18 +339,8 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				let stderrText = "";
 				let exitCode = -1;
 				let turnTimedOut = false;
-				let thinkingIndex = -1;
-				const pushThinking = (delta: string) => {
-					if (delta.length === 0) return;
-					if (thinkingIndex === -1) {
-						output.content.push({ type: "thinking", thinking: "" });
-						thinkingIndex = output.content.length - 1;
-						stream.push({ type: "thinking_start", contentIndex: thinkingIndex, partial: output });
-					}
-					const block = output.content[thinkingIndex];
-					if (block.type === "thinking") block.thinking += delta;
-					stream.push({ type: "thinking_delta", contentIndex: thinkingIndex, delta, partial: output });
-				};
+				const thinkingWriter = createThinkingWriter(stream, output);
+				const pushThinking = thinkingWriter.push;
 
 				for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
 					const args = ["chat", "--no-interactive", "--trust-all-tools"];
@@ -517,15 +482,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					break;
 				}
 
-				if (thinkingIndex !== -1) {
-					const block = output.content[thinkingIndex];
-					stream.push({
-						type: "thinking_end",
-						contentIndex: thinkingIndex,
-						content: block.type === "thinking" ? block.thinking : "",
-						partial: output,
-					});
-				}
+				thinkingWriter.end();
 
 				if (options?.signal?.aborted) throw new Error("kiro-cli run aborted");
 				if (turnTimedOut) {

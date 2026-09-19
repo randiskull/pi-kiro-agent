@@ -60,6 +60,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
+import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import { buildDeltaPrompt, buildPromptFromContext, mapEffort } from "./stream-adapter.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp.js";
@@ -85,11 +86,6 @@ interface AcpDeps {
 
 /** ACP protocol version — pinned to guard against kiro-cli drift (§5 row 1). */
 const ACP_PROTOCOL_VERSION = 1;
-/** Parse a positive-integer millisecond override from the environment. */
-function envMs(name: string, fallback: number): number {
-	const raw = Number.parseInt(process.env[name] ?? "", 10);
-	return Number.isFinite(raw) && raw > 0 ? raw : fallback;
-}
 /**
  * Idle-timeout before killing the persistent acp child (10 min per §3.1).
  * "Idle" means the child has been SILENT for this long — any inbound NDJSON
@@ -722,28 +718,6 @@ async function getOrCreateChild(
 	return spawnAcpChild(deps.binaryPath, cwd, key, childRegistry, turnSignal);
 }
 
-// ─── emptyAssistantMessage ────────────────────────────────────────────────────
-
-function emptyAssistantMessage(model: Model<any>): AssistantMessage {
-	return {
-		role: "assistant",
-		content: [],
-		api: model.api,
-		provider: model.provider,
-		model: model.id,
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		stopReason: "stop",
-		timestamp: Date.now(),
-	};
-}
-
 function mapStopReason(reason: string | undefined): AssistantMessage["stopReason"] {
 	switch (reason) {
 		case "end_turn": return "stop";
@@ -873,18 +847,8 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				}
 
 				// Thinking block management
-				let thinkingIndex = -1;
-				const pushThinking = (delta: string) => {
-					if (delta.length === 0) return;
-					if (thinkingIndex === -1) {
-						output.content.push({ type: "thinking", thinking: "" });
-						thinkingIndex = output.content.length - 1;
-						stream.push({ type: "thinking_start", contentIndex: thinkingIndex, partial: output });
-					}
-					const block = output.content[thinkingIndex];
-					if (block.type === "thinking") block.thinking += delta;
-					stream.push({ type: "thinking_delta", contentIndex: thinkingIndex, delta, partial: output });
-				};
+				const thinkingWriter = createThinkingWriter(stream, output);
+				const pushThinking = thinkingWriter.push;
 
 				let textAccum = "";
 				let creditsTotal = 0;
@@ -967,15 +931,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				}
 
 				// Close thinking block
-				if (thinkingIndex !== -1) {
-					const block = output.content[thinkingIndex];
-					stream.push({
-						type: "thinking_end",
-						contentIndex: thinkingIndex,
-						content: block.type === "thinking" ? block.thinking : "",
-						partial: output,
-					});
-				}
+				thinkingWriter.end();
 
 				// Push text block
 				// Defensive sentinel strip: a model that previously ran under the chat
