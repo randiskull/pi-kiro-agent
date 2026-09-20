@@ -745,3 +745,30 @@ driving auto-mode itself.
   ledger reads zero and GSD's zero tool-call guard pauses auto-mode. The no-redispatch
   half ships; this half needs pi to gate dispatch on `stopReason` or honour `endTurn`.
 - Sentinel, salvage heuristic, and list-sessions snapshot-diff code paths deleted.
+
+## 5h. Chat transport carries the same no-redispatch defect (2026-09-20)
+
+### The defect
+
+`reconcileToolCalls` in `stream-adapter.ts` synthesized end-of-turn `toolCall`
+blocks and pushed them onto `output.content` with plain `kiro-mcp-<hash>-N-<name>`
+IDs. pi's agent loop (`agent-loop.ts:228`) dispatches on the **presence** of
+`toolCall` blocks regardless of `stopReason`. A false docstring claimed `"stop"`
+prevented redispatch; it did not.
+
+### Mechanism
+
+Identical to §5d. The chat path had the same structural gap as ACP before
+`318e6c5`/`4fae29c`: synthesized blocks with non-LIVE IDs survive
+`stripLivePlaceholders` and reach pi's dispatch logic.
+
+### Fix (M001/S01–S02)
+
+`reconcileToolCalls` now tags every synthesized block with `LIVE_TOOL_ID_PREFIX`
+before pushing. The `done` and `error` push sites build filtered spread copies
+(`{ ...output, content: stripLivePlaceholders(output.content) }`) instead of
+passing `output` directly, preserving mid-turn `partial: output` events from
+retroactive mutation (§5e.2 applies identically here). `pushThinking` is called
+once per block emitting `⚙ <toolname>` markers, and `trace("chat.toolcall.surfaced",
+{ tool, displayOnly: true })` is emitted per block for `PI_KIRO_TRACE` parity
+with the ACP path.
