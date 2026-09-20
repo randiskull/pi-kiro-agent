@@ -484,6 +484,7 @@ function reconcileToolCalls(
 			id: `${LIVE_TOOL_ID_PREFIX}${block.id}`,
 		});
 		pushThinking(`\n⚙ ${block.name}\n`);
+		trace("chat.toolcall.surfaced", { tool: block.name, displayOnly: true });
 	}
 }
 
