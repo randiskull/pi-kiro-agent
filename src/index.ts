@@ -71,7 +71,10 @@ let latestCtx: ExtensionContext | undefined;
 
 const deps: {
 	binaryPath: string | undefined;
-	getBridge?: (signal: AbortSignal) => Promise<HttpBridgeHandle | undefined>;
+	getBridge?: (
+		signal: AbortSignal,
+		getCallSignal?: () => AbortSignal,
+	) => Promise<HttpBridgeHandle | undefined>;
 } = { binaryPath: undefined };
 let registered = false;
 
@@ -184,7 +187,7 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 		void ensureRegistered(pi).catch(() => undefined);
 	});
 
-	deps.getBridge = async (signal) => {
+	deps.getBridge = async (signal, getCallSignal) => {
 		if (!bridgeEnabled()) return undefined;
 		const tools = await captureBridgeTools(pi, process.env.PI_KIRO_BRIDGE_TOOLS);
 		// Pin this bridge to the session that is creating it: both transports
@@ -203,7 +206,12 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 		// -- an intentionally deferred, larger ripple into both transports'
 		// getBridge(signal) call sites (stream-adapter.ts, acp-transport.ts).
 		const originId = latestCtx?.sessionManager.getSessionId();
-		return serveBridgeHttp(tools, () => (originId ? sessionCtxMap.get(originId) ?? latestCtx : latestCtx), signal);
+		return serveBridgeHttp(
+			tools,
+			() => (originId ? sessionCtxMap.get(originId) ?? latestCtx : latestCtx),
+			signal,
+			getCallSignal,
+		);
 	};
 
 	pi.registerCommand("kiro", {

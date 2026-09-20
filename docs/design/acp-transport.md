@@ -456,11 +456,67 @@ what the divergence branch wants when it retires a controller whose tool calls m
 be in flight. Lifetime is not: from kiro's point of view the bridge URL is a
 property of the **child**, fixed when the child first learns it.
 
-Intended fix: separate the two. `serveBridgeHttp` takes the child-scoped signal
-for lifetime plus a `getCallSignal: () => AbortSignal` accessor for per-call
-cancellation (symmetric with the `getCtx` callback it already takes), the bridge
-is created once per child, and the divergence branch keeps retiring
-`sessionAbort` without touching the server. Not yet implemented.
+Fix (implemented): separate the two. `serveBridgeHttp` takes the child-scoped
+signal for lifetime plus a `getCallSignal: () => AbortSignal` accessor for
+per-call cancellation, symmetric with the `getCtx` callback it already takes and
+resolved **per request** rather than captured, so a reset mid-turn still cancels
+the calls the retired session had in flight. `AcpChild` gains a `childAbort`
+controller for the server's lifetime, aborted only by `teardownChild`. The bridge
+is mounted once (`acpEntry.bridge ??= ...`) and both the new-session and
+divergence branches reuse it; divergence keeps retiring `sessionAbort` and no
+longer touches the server.
+
+Consequence worth stating: the bridge no longer discriminates which branch a turn
+took, which one test used as its signal. The discriminator is now the session
+controller -- the new-session branch reuses it (that path only ever discards a
+session that never reached `ready`, so nothing can be in flight), the divergence
+branch aborts and replaces it.
+
+Pinned by `keeps one bridge URL across a divergence reset, so kiro never calls a
+dead port`. The mock `getBridge` hands out a distinct port per mount, matching
+`serveBridgeHttp`'s `listen(0)`, so "both sessions saw the same url" is not
+vacuously true. Verified to catch the regression: reverting the source leaves the
+test failing on `expected [ { …(2) }, { …(2) } ] to have a length of 1`.
+
+Confirmed live (run 13, the same five-step bridge smoke test that produced the
+trace above):
+
+```
+08:55:06.855 bridge.serve      port=60696
+08:55:06.855 acp.session.new   servers=[{name:'pi', url:'http://127.0.0.1:60696/mcp/...'}]
+08:55:22.463 bridge.call       tool=Agent               -> ms=11     isError=False
+08:55:24.180 acp.session.new   servers=[{name:'pi', url:'http://127.0.0.1:60696/mcp/...'}]   SAME PORT
+08:55:29.247 acp.prompt.send   mode=fresh                                              divergence branch
+08:55:34.091 bridge.call       tool=steer_subagent      -> ms=2      isError=False
+08:55:37.468 bridge.call       tool=get_subagent_result -> ms=21209  isError=False
+08:56:09.940 bridge.call       tool=todo                -> ms=2      isError=False
+```
+
+One `bridge.serve` for the whole conversation, no `bridge.close` before teardown,
+the second `session/new` carrying the *same* URL, and the two calls that used to
+fail on the dead port now returning cleanly across a `mode=fresh` reset.
+
+### 5e.4 A missing bridge tool failed silently at mount
+
+Symptom class rather than a single incident: a name in the allow-list that no
+loaded extension provides is dropped from the bridge without comment. kiro is
+never told the tool exists, so the failure surfaces much later and somewhere else
+-- the delegated model reaching for a different tool, or, for a name pi does not
+register either, a bare `Tool <name> not found` from pi's own dispatcher with
+nothing in it pointing at the bridge. Debugging starts from the wrong end.
+
+Fix (implemented): `captureBridgeTools` calls `warnOnMissingBridgeTools(allowed,
+bridged)` immediately after filtering. It names the missing tools **and** the ones
+that were bridged, which is what separates "one extension is stale" from "nothing
+loaded at all" (`Bridged: (none).`), and points at the two real causes: an
+extension that failed to load, or a typo in `PI_KIRO_BRIDGE_TOOLS`.
+
+Two deliberate properties. It never throws -- a partial bridge is still useful, so
+this is advisory. And it dedupes per **tool name**, not per call: every ACP child
+mounts its own bridge, so an unguarded warning repeats on each spawn and drowns
+the log it exists to draw attention to, while per-name dedupe still reports a
+*second, different* tool going missing later. `clearBridgeCache()` resets the set
+so test order cannot silence it.
 
 ## 6. Non-goals
 

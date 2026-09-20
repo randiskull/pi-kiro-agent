@@ -250,7 +250,38 @@ export async function captureBridgeTools(realPi: ExtensionAPI, envOverride?: str
 	})();
 	const captured = await capturePromise;
 	const allowed = allowedToolNames(envOverride);
-	return captured.filter((tool) => allowed.has(tool.name));
+	const bridged = captured.filter((tool) => allowed.has(tool.name));
+	warnOnMissingBridgeTools(allowed, bridged);
+	return bridged;
+}
+
+/** Names already reported missing, so the warning fires once per process. */
+const warnedMissingTools = new Set<string>();
+
+/**
+ * Warn at MOUNT time about a requested tool that no loaded extension provides.
+ *
+ * Without this the failure is deferred and opaque: the tool is simply absent from
+ * the bridge, kiro never learns it exists, and the only symptom is the delegated
+ * model calling something else or (for a tool pi does not register either) a bare
+ * `Tool <name> not found` arriving from pi's own dispatcher with no hint that the
+ * bridge was the missing link. Naming it here points at the real cause -- usually
+ * an extension that failed to load, or a typo in PI_KIRO_BRIDGE_TOOLS.
+ *
+ * Advisory only. A partial bridge is still useful, so this never throws.
+ */
+export function warnOnMissingBridgeTools(allowed: Set<string>, bridged: Array<{ name: string }>): void {
+	const present = new Set(bridged.map((tool) => tool.name));
+	const missing = [...allowed].filter((name) => !present.has(name) && !warnedMissingTools.has(name));
+	if (missing.length === 0) return;
+	for (const name of missing) warnedMissingTools.add(name);
+	console.error(
+		`[pi-kiro] bridge: ${missing.length === 1 ? "tool" : "tools"} ${missing.map((n) => `\`${n}\``).join(", ")} ` +
+		`${missing.length === 1 ? "was" : "were"} requested but no loaded extension provides ${missing.length === 1 ? "it" : "them"}; ` +
+		`${missing.length === 1 ? "it" : "they"} will be absent from the bridge. ` +
+		`Check that the providing extension loaded, or adjust PI_KIRO_BRIDGE_TOOLS. ` +
+		`Bridged: ${[...present].sort().join(", ") || "(none)"}.`,
+	);
 }
 
 /** Test hook: reset the capture cache. */
@@ -258,6 +289,7 @@ export function clearBridgeCache(): void {
 	capturePromise = undefined;
 	inFlightSingleFlight.clear();
 	orphanGraceMs = DEFAULT_ORPHAN_GRACE_MS;
+	warnedMissingTools.clear();
 }
 
 /** Strip TypeBox symbol keys; guarantee an object-typed JSON schema. */
@@ -478,7 +510,8 @@ export interface HttpBridgeHandle {
 	/** Per-session bearer token required on every request. */
 	token: string;
 	toolNames: string[];
-	close: () => Promise<void>;
+	/** Optional `reason` is diagnostic only; it lands in the `bridge.close` trace. */
+	close: (reason?: string) => Promise<void>;
 }
 
 /**
@@ -491,6 +524,7 @@ export async function serveBridgeHttp(
 	tools: CapturedTool[],
 	getCtx: () => ExtensionContext | undefined,
 	signal: AbortSignal,
+	getCallSignal?: () => AbortSignal,
 ): Promise<HttpBridgeHandle | undefined> {
 	if (tools.length === 0) return undefined;
 	const toolNames = tools.map((tool) => tool.name);
@@ -502,7 +536,16 @@ export async function serveBridgeHttp(
 	// documented stateless pattern). Tool captures are closures — rebuilding
 	// the server per request is cheap and side-effect free.
 	const handleMcp = async (req: IncomingMessage, res: ServerResponse) => {
-		const built = buildBridgeServer(tools, getCtx, signal);
+		// `signal` is the server's LIFETIME; getCallSignal() is the cancellation
+		// signal handed to each bridged tool.execute. Under ACP these differ: the
+		// URL is a property of the kiro CHILD (it learns the port once, at
+		// session/new, and has no way to learn a new one), while cancellation is
+		// per-SESSION, because a session reset has to cancel calls in flight. Before
+		// they were split, a session reset closed the server and opened a new one on
+		// a new ephemeral port, stranding kiro on the closed one for the rest of the
+		// conversation -- see docs/design/acp-transport.md §5e.3. Resolved per
+		// request, not captured, so a reset mid-turn still cancels correctly.
+		const built = buildBridgeServer(tools, getCtx, getCallSignal?.() ?? signal);
 		if (!built) {
 			res.writeHead(500).end();
 			return;

@@ -173,12 +173,18 @@ interface BridgeCall {
  */
 function makeBridgeDeps(): { calls: BridgeCall[]; deps: AcpDeps } {
 	const calls: BridgeCall[] = [];
+	// Each mount gets a DISTINCT port, mirroring the real bridge: serveBridgeHttp
+	// listens on 0 and the OS hands out a fresh ephemeral port every time. A
+	// constant url here would make "both sessions saw the same url" vacuously true
+	// for the §5e.3 regression test.
+	let port = 40000;
 	const getBridge = async (signal: AbortSignal) => {
 		const close = makeCloseSpy();
 		calls.push({ signal, close });
+		const p = port++;
 		return {
-			url: "http://127.0.0.1:1/mcp",
-			urlWithToken: "http://127.0.0.1:1/mcp/fake-token",
+			url: `http://127.0.0.1:${p}/mcp`,
+			urlWithToken: `http://127.0.0.1:${p}/mcp/fake-token`,
 			token: "fake-token",
 			toolNames: ["todo"],
 			close,
@@ -849,6 +855,9 @@ describe("makeStreamViaAcp", () => {
 			const entry = _getAcpChildRegistry().get(_acpRegistryKey(process.cwd(), undefined));
 			expect(entry?.ready).toBe(false);
 			expect(entry?.acpSessionId).toBeUndefined();
+			// Captured for the branch check after turn 2: the new-session branch reuses
+			// this controller, the divergence branch replaces it.
+			const sessionAbortBefore = entry?.sessionAbort;
 
 			// A startup timeout discards the half-started SESSION, not the child.
 			// Nothing on this path calls killChild, so the session controller is
@@ -872,17 +881,18 @@ describe("makeStreamViaAcp", () => {
 			expect(doneText(events2)).toContain("recovered");
 			expect(spawnMock).toHaveBeenCalledTimes(1); // same child, no respawn
 
-			// Which branch turn 2 took. `!acpEntry.acpSessionId` is the predicate, and
-			// the two branches leave different traces on the bridge:
-			//  - new-session branch closes the stale bridge and keeps the session
-			//    controller, so both getBridge calls share one signal;
-			//  - divergence branch calls sessionAbort.abort() and installs a fresh
-			//    controller, so calls[0].signal would be aborted and calls[1].signal
-			//    would be a different object.
-			expect(calls).toHaveLength(2);
-			expect(calls[0].close).toHaveBeenCalled();
-			expect(calls[0].signal.aborted).toBe(false);
-			expect(calls[1].signal).toBe(calls[0].signal);
+			// Which branch turn 2 took. `!acpEntry.acpSessionId` is the predicate. The
+			// bridge no longer discriminates: it is child-scoped now and BOTH branches
+			// reuse it, because kiro cannot be told a new URL (§5e.3). So the
+			// discriminator is the session controller:
+			//  - new-session branch reuses it (this path discards a session that never
+			//    reached `ready`, so no bridged call can be in flight to cancel);
+			//  - divergence branch aborts it and installs a replacement.
+			expect(entry?.sessionAbort).toBe(sessionAbortBefore);
+			expect(sessionAbortBefore?.signal.aborted).toBe(false);
+			// One bridge for the life of the child, still the one turn 1 mounted.
+			expect(calls).toHaveLength(1);
+			expect(calls[0].close).not.toHaveBeenCalled();
 		});
 	});
 
@@ -959,6 +969,67 @@ describe("makeStreamViaAcp", () => {
 			await collect({ messages: [user("original")] });
 			await collect({ messages: [user("SUMMARY: replaced"), user("new turn")] });
 			expect(sessionNewCount).toBe(2); // initial + diverged
+		});
+
+		it("keeps one bridge URL across a divergence reset, so kiro never calls a dead port", async () => {
+			// Regression, docs/design/acp-transport.md §5e.3. kiro learns the bridge
+			// URL once, from the mcpServers array in session/new, and has no way to be
+			// told a new one. The divergence branch used to close the bridge and mount
+			// a replacement on a fresh ephemeral port: kiro accepted the new session
+			// but kept the MCP client it had already built for the server named "pi",
+			// still pointed at the closed port, so every bridged tool call for the rest
+			// of the conversation failed with
+			// `error sending request for url (http://127.0.0.1:59808/mcp/...)`.
+			// Observed live as steer_subagent and get_subagent_result failing while
+			// native tools (read, glob) kept working.
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementation(() => child);
+			const { calls, deps } = makeBridgeDeps();
+			const urlsPerSession: Array<string | undefined> = [];
+
+			const answerSessionNew = (req: { id: number; params: { mcpServers: Array<{ name: string; url?: string }> } }, sessionId: string) => {
+				urlsPerSession.push(req.params.mcpServers.find((s) => s.name === "pi")?.url);
+				child.sendLine({ jsonrpc: "2.0", id: req.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				for (const server of req.params.mcpServers) {
+					child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/mcp/server_initialized", params: { sessionId, serverName: server.name }});
+				}
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
+			};
+
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
+				answerSessionNew((await child.awaitLine()) as never, "sess-b1");
+				const p1 = (await child.awaitLine()) as { id: number };
+				await deliverTurn(child, "sess-b1", "reply1");
+				child.sendLine({ jsonrpc: "2.0", id: p1.id, result: { stopReason: "end_turn" }});
+				// Turn 2 diverges, so the transport sends a second session/new.
+				answerSessionNew((await child.awaitLine()) as never, "sess-b2");
+				const p2 = (await child.awaitLine()) as { id: number };
+				await deliverTurn(child, "sess-b2", "reply2");
+				child.sendLine({ jsonrpc: "2.0", id: p2.id, result: { stopReason: "end_turn" }});
+			})();
+
+			await collect({ messages: [user("original")] }, undefined, deps);
+			const entry = _getAcpChildRegistry().get(_acpRegistryKey(process.cwd(), undefined));
+			const sessionAbortBefore = entry?.sessionAbort;
+
+			await collect({ messages: [user("SUMMARY: replaced"), user("new turn")] }, undefined, deps);
+
+			// Both sessions were handed the SAME url — the whole point.
+			expect(urlsPerSession).toHaveLength(2);
+			expect(urlsPerSession[0]).toBeDefined();
+			expect(urlsPerSession[1]).toBe(urlsPerSession[0]);
+			// One mount for the life of the child, never closed, its lifetime signal
+			// untouched by the reset.
+			expect(calls).toHaveLength(1);
+			expect(calls[0].close).not.toHaveBeenCalled();
+			expect(calls[0].signal.aborted).toBe(false);
+			// The reset still did its real job: the SESSION controller was retired, so
+			// bridged calls the discarded session had in flight are cancelled.
+			expect(sessionAbortBefore?.signal.aborted).toBe(true);
+			expect(entry?.sessionAbort).not.toBe(sessionAbortBefore);
+			expect(entry?.sessionAbort.signal.aborted).toBe(false);
 		});
 	});
 

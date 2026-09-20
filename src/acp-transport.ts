@@ -102,26 +102,21 @@ async function resolveSession(
 		// was cleared). Nothing else owns that handle now that bridge lifetime is
 		// session-scoped, so close it here or its HTTP server leaks for the life
 		// of the child.
-		if (acpEntry.bridge) {
-			await acpEntry.bridge.close().catch(() => undefined);
-			acpEntry.bridge = undefined;
-		}
-		// Session-scoped signal, not turnSignal: the bridge must outlive this
-		// turn and die with the session (see AcpChild.sessionAbort).
+		// The bridge is CHILD-scoped, not session-scoped: kiro learns its URL once,
+		// at session/new, and has no way to learn a new one, so a bridge that dies
+		// with a session leaves the child calling a closed port (§5e.3). It is
+		// therefore mounted once, on the first session, and reused by every
+		// successor session on this child -- including the divergence branch below.
 		//
-		// sessionAbort is deliberately REUSED here, not aborted-and-replaced
-		// the way the divergence branch below does it. The asymmetry tracks
-		// the state, not an oversight: divergence discards a session that
-		// reached `ready`, whose bridge may have tool calls in flight, so its
-		// controller has to be retired to cancel them. This branch only ever
-		// discards a session that never reached `ready` -- no prompt was sent,
-		// so nothing can be in flight -- and the controller was never aborted,
-		// so it is still a valid handle on the child's current session.
-		// Aborting it would also be wrong on the common path, where this is a
-		// brand-new child with no predecessor session at all.
-		const bridge = await deps.getBridge?.(acpEntry.sessionAbort.signal);
-		acpEntry.bridge = bridge;
-		const mcpServers = buildMcpServersConfig(bridge, workflowServers);
+		// The two signals are deliberately different. childAbort.signal is the
+		// server's lifetime; the accessor returns the CURRENT sessionAbort.signal
+		// for per-call cancellation, read per request rather than captured, so a
+		// session reset still cancels the calls the retired session had in flight.
+		acpEntry.bridge ??= await deps.getBridge?.(
+			acpEntry.childAbort.signal,
+			() => acpEntry.sessionAbort.signal,
+		);
+		const mcpServers = buildMcpServersConfig(acpEntry.bridge, workflowServers);
 		await startSession(acpEntry, mcpServers);
 		resetIdleTimer(acpEntry);
 		return acpEntry.acpSessionId!;
@@ -130,15 +125,19 @@ async function resolveSession(
 		dropAcpSession(acpEntry.acpSessionId);
 		acpEntry.acpSessionId = undefined;
 		acpEntry.ready = false;
+		// Retire the session controller: this branch discards a session that reached
+		// `ready`, so bridged tool calls may be in flight and must be cancelled.
 		acpEntry.sessionAbort.abort();
-		await acpEntry.bridge?.close().catch(() => undefined);
-		acpEntry.bridge = undefined;
 		acpEntry.sessionAbort = new AbortController();
-		// The successor session's bridge rides the successor controller -- the
-		// one aborted above is spent.
-		const newBridge = await deps.getBridge?.(acpEntry.sessionAbort.signal);
-		acpEntry.bridge = newBridge;
-		const mcpServers = buildMcpServersConfig(newBridge, workflowServers);
+		// The bridge is NOT touched. It rides childAbort and reads the session
+		// signal through an accessor, so the successor session keeps the same URL --
+		// which is the only URL kiro will ever call. Closing and re-mounting here is
+		// what stranded it on a dead ephemeral port (§5e.3).
+		acpEntry.bridge ??= await deps.getBridge?.(
+			acpEntry.childAbort.signal,
+			() => acpEntry.sessionAbort.signal,
+		);
+		const mcpServers = buildMcpServersConfig(acpEntry.bridge, workflowServers);
 		await startSession(acpEntry, mcpServers);
 		resetIdleTimer(acpEntry);
 		return acpEntry.acpSessionId!;
@@ -157,7 +156,10 @@ interface AcpDeps {
 	 * The chat transport (stream-adapter.ts) mounts a genuinely per-turn bridge
 	 * and correctly passes the caller's turn signal to the same dep.
 	 */
-	getBridge?: (signal: AbortSignal) => Promise<HttpBridgeHandle | undefined>;
+	getBridge?: (
+		signal: AbortSignal,
+		getCallSignal?: () => AbortSignal,
+	) => Promise<HttpBridgeHandle | undefined>;
 }
 
 /** ACP protocol version — pinned to guard against kiro-cli drift (§5 row 1). */
@@ -250,6 +252,14 @@ interface AcpChild {
 	 * can reach it, so it never fires on a normal successful turn.
 	 */
 	sessionAbort: AbortController;
+	/**
+	 * Lifetime of everything that must outlive a SESSION but die with the CHILD --
+	 * currently just the MCP bridge's HTTP server. Distinct from sessionAbort
+	 * because kiro learns the bridge URL once, at session/new, and cannot be told a
+	 * new one: closing the server on a session reset stranded it on a dead port
+	 * (docs/design/acp-transport.md §5e.3). Aborted only by teardownChild.
+	 */
+	childAbort: AbortController;
 	alive: boolean;
 	ready: boolean;
 	idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -313,6 +323,13 @@ interface AcpChildProbe {
 	/** Undefined unless a session reached `ready` — see startSession's finally. */
 	acpSessionId: string | undefined;
 	ready: boolean;
+	/**
+	 * Exposed so tests can tell the new-session branch of resolveSession from the
+	 * divergence branch. The bridge no longer distinguishes them (it is
+	 * child-scoped and both reuse it, see §5e.3), so this controller's identity --
+	 * reused vs aborted-and-replaced -- is the discriminator.
+	 */
+	sessionAbort: AbortController;
 }
 
 /**
@@ -365,8 +382,12 @@ function teardownChild(entry: AcpChild, reason: string, options: { kill: boolean
 	entry.ready = false;
 	if (entry.idleTimer) { clearTimeout(entry.idleTimer); entry.idleTimer = undefined; }
 	entry.sessionAbort.abort();
-	// Close the per-session bridge
-	void entry.bridge?.close().catch(() => undefined);
+	// childAbort is what the bridge's HTTP server listens on; aborting it is the
+	// only thing that closes a bridge now that one outlives every session on the
+	// child. The explicit close() stays: it is idempotent and makes the shutdown
+	// synchronous with teardown rather than dependent on listener ordering.
+	entry.childAbort.abort();
+	void entry.bridge?.close("child-teardown").catch(() => undefined);
 	entry.bridge = undefined;
 	if (entry.acpSessionId) {
 		dropAcpSession(entry.acpSessionId);
@@ -724,6 +745,7 @@ async function spawnAcpChild(
 		pending: new Map(),
 		listeners: new Map(),
 		sessionAbort: new AbortController(),
+		childAbort: new AbortController(),
 		alive: true,
 		ready: false,
 		idleTimer: undefined,

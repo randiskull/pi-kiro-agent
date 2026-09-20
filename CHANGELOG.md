@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A session reset no longer strands kiro on a closed bridge port.** kiro learns the MCP bridge
+  URL once, from the `mcpServers` array in `session/new`, and has no way to be told a new one. The
+  divergence branch of `resolveSession` closed the bridge and mounted a replacement on a fresh
+  ephemeral port, so kiro accepted the new session but kept the MCP client it had already built for
+  the server named `pi` -- still pointed at the closed port. Every bridged tool call for the rest of
+  the conversation then failed with `error sending request for url (http://127.0.0.1:PORT/...)`,
+  while kiro-native tools kept working. Observed live as `steer_subagent` and `get_subagent_result`
+  failing immediately after a successful `Agent` call. The cause was `serveBridgeHttp` conflating two
+  different lifetimes in one `AbortSignal`: the server's lifetime and the cancellation signal handed
+  to each bridged `tool.execute`. Cancellation really is per-session; lifetime is per-**child**. They
+  are now separate -- `AcpChild.childAbort` owns the server, and a `getCallSignal` accessor supplies
+  the current session's signal per request -- so the bridge is mounted once per child and reused by
+  every session on it, while a reset still cancels in-flight calls.
+
 - **The unit test suite no longer depends on whether the checkout is a GSD project.** 29 of the 43
   `acp-transport.test.ts` tests were failing with 5-second timeouts, and the file took 146 of the
   suite's 149 seconds. Cause: `discoverWorkflowMcpServers()` walks up from `process.cwd()` looking
@@ -19,8 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existed to stop tests reading the developer's real environment (it redirects `$HOME`); it now
   pins `PI_KIRO_WORKFLOW_MCP=off` for the same reason. `test/workflow-mcp.test.ts`, the one suite
   that exercises discovery for real, clears the variable in `beforeEach` as well as `afterEach` --
-  clearing it only on the way out left its first test inheriting the run-wide default. The suite is
-  now 209/209 in ~3 seconds.
+  clearing it only on the way out left its first test inheriting the run-wide default. The suite went from
+  29 failures in 149 seconds to fully green in ~3 seconds.
 
 - **Surfaced tool calls stay visible in the mid-turn display instead of vanishing retroactively.**
   The end-of-turn reconciliation replaced `output.content` in place, but every streamed event
@@ -33,6 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   happened to arrive.
 
 ### Added
+
+- **A mount-time warning when a requested bridge tool is missing.** A name in the bridge allow-list
+  that no loaded extension provides used to fail silently at mount and opaquely much later: the tool
+  was simply absent from the bridge, kiro never learned it existed, and the only symptom was the
+  delegated model reaching for something else, or -- for a tool pi does not register either -- a bare
+  `Tool <name> not found` from pi's own dispatcher with nothing pointing at the bridge as the missing
+  link. `captureBridgeTools` now names the missing tools on stderr as soon as the bridge is built,
+  along with the ones that did make it through (so "one extension is stale" is distinguishable from
+  "nothing loaded"), and points at the two real causes: an extension that failed to load, or a typo
+  in `PI_KIRO_BRIDGE_TOOLS`. The warning is advisory and deduped per tool name, since every ACP child
+  mounts its own bridge and an unguarded warning would repeat on each spawn.
 
 - **Trace coverage for bridge and child lifetime.** A bridged tool failing with kiro's bare
   `error sending request for url (http://127.0.0.1:PORT/...)` was previously indistinguishable
