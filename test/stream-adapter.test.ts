@@ -387,7 +387,7 @@ describe("makeStreamViaKiro", () => {
 });
 
 describe("nonzero-exit salvage (kiro-cli dies after completing work)", () => {
-	it("salvages exit 1 when MCP tool calls landed — done with toolCall blocks, no error", async () => {
+	it("salvages exit 1 when MCP tool calls landed — done carries no toolCall blocks (stripped by LIVE prefix), no error", async () => {
 		const out = [
 			"working prose",
 			"Running tool gsd_task_complete with the param (from mcp server: gsdworkflow)",
@@ -400,8 +400,7 @@ describe("nonzero-exit salvage (kiro-cli dies after completing work)", () => {
 		expect(done).toBeDefined();
 		expect(events.find((e) => e.type === "error")).toBeUndefined();
 		const toolCalls = (done?.message.content ?? []).filter((b) => (b as { type?: string }).type === "toolCall");
-		expect(toolCalls).toHaveLength(1);
-		expect((toolCalls[0] as { name: string }).name).toBe("gsd_task_complete");
+		expect(toolCalls).toHaveLength(0);
 		expect(done?.message.stopReason).toBe("stop");
 	});
 
