@@ -518,7 +518,7 @@ the log it exists to draw attention to, while per-name dedupe still reports a
 *second, different* tool going missing later. `clearBridgeCache()` resets the set
 so test order cannot silence it.
 
-### 5f A bridged tool runs against a SECOND, cold instance of its extension
+## 5f. Field evidence, 2026-09-20: a bridged tool runs against a SECOND, cold instance of its extension
 
 The largest finding of the session, and the one that changes what the bridge can
 promise. `captureBridgeTools` imports each bridgeable package's entry file and
