@@ -672,6 +672,28 @@ persisted session holds 2 assistant messages and 0 `toolCall` blocks. So for tha
 would compute `{ toolCalls: 0, assistantMessages: 2 }`: the ghost-completion guard stays
 quiet exactly as predicted, and the zero tool-call guard fires.
 
+### This repo's own tests asserted the losing side
+
+Worth recording, because it shows the conflict is not a matter of taste. Two tests in
+`test/stream-adapter.test.ts` predate all of this and assert the GSD-ledger property directly
+on the `done` message:
+
+- `:397-400` -- exactly one `toolCall` block, named `gsd_task_complete`, with
+  `stopReason === "stop"`.
+- `:479-482` -- exactly one block, its id `not.toContain("kiro-live-")`, and its `arguments`
+  equal to the parsed `{ cmd: "cargo test" }`.
+
+The second one is explicit: the final message must carry a block that is **not** live-tagged.
+That is the same requirement GSD's counter has, written as an assertion, and it is
+unsatisfiable together with "pi must not redispatch". M001/S01/T01 turned both tests red, and
+correctly so.
+
+The belief that let the two coexist on paper is in the comment M001 deleted: the synthesized
+blocks are "surfaced with stopReason `stop` -- the host counts/renders these but never
+redispatches them". The first half is true and the second half is false, for the same reason
+§5d gives. It is the chat transport's copy of the mistake §5f found in the bridge docstring:
+an assumption about what the host does with what we hand it, never checked against the host.
+
 ### Why there is no fix inside this package
 
 Anything countable is dispatchable. pi's `ToolCall` (`ai/src/types.ts:385-393`) carries `type`,
