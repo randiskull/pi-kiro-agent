@@ -595,6 +595,83 @@ The general fix belongs upstream in pi: a supported way for an extension to invo
 a registered tool by name would remove the need to re-import at all. Until then the
 per-package discipline is the only mechanism.
 
+## 5g. Field evidence, 2026-09-20: not redispatching and GSD's tool-call ledger are mutually exclusive
+
+§5d's fix is correct and it has a cost that §7's definition of done rules out. Both cannot hold
+at once with the block types pi has today. Recording it here rather than discovering it a third
+time.
+
+### The conflict
+
+pi decides whether to execute tool calls by looking for `toolCall` blocks on the assistant
+message (`agent-loop.ts:228` filter, `:232` dispatch). GSD decides whether a unit did any work by
+counting `toolCall` blocks on assistant messages in the persisted session
+(`snapshotUnitActivity`, `auto-unit-closeout.ts:56-81`, counting `block?.type === "toolCall"` at
+`:71-73`). **It is the same block on the same message.** Removing it satisfies pi and starves GSD;
+leaving it satisfies GSD and makes pi re-run work kiro already did.
+
+There is one message, not two. `streamAssistantResponse` returns `await response.result()`
+(`agent-loop.ts:401`, `:411`, `:416`, `:424`), `result()` resolves to the `done` event's `message`
+or the `error` event's `error` (`ai/src/utils/event-stream.ts:86-88` and the
+`AssistantMessageEventStream` selector at `:91-105`), and the returned object is both dispatched
+(`agent-loop.ts:228`) and pushed into the persisted `newMessages` (`:219`). So the filtered copy
+built at `acp-transport.ts:1088` (done) and `:1107` (error) is exactly what GSD later counts, and
+under ACP **every** tool call is tagged `LIVE_TOOL_ID_PREFIX` and stripped. GSD sees zero.
+
+### What zero costs
+
+Two guards read that number and they behave differently:
+
+- `isSuspiciousGhostCompletion` (`auto-unit-closeout.ts:83-94`) requires `toolCalls === 0` **and**
+  `assistantMessages === 0`. A delegated turn always produces text, so this one does not fire.
+- The zero tool-call guard (`auto/unit-phase.ts:858-948`, GSD issues #1833 and #2653) tests
+  `lastUnit.toolCalls === 0` **alone**. It marks the unit failed, retries it in a fresh context,
+  and past `MAX_ZERO_TOOL_RETRIES` notifies "context exhaustion" and calls `pauseAuto` with reason
+  `zero-tool-calls-exhausted` (`:932-939`).
+
+So GSD auto-mode on `PI_KIRO_TRANSPORT=acp` retries every unit and then stops, attributing it to
+context exhaustion, while the units were in fact doing the work. That is the same
+false-negative shape as the 2.21 stderr/format regression in §5b, reached by a different route:
+the blocks exist mid-turn and are gone from history.
+
+This is not ACP-only any more. M001/S01/T01 (`48d2ee5`) adopted the same tagging and
+push-site filtering in `stream-adapter.ts`, so after M001 both transports have the property.
+
+### Why there is no fix inside this package
+
+Anything countable is dispatchable. pi's `ToolCall` (`ai/src/types.ts:385-393`) carries `type`,
+`id`, `name`, `arguments`, `thoughtSignature` and `namespace` -- no way to say "already executed
+by the provider". A block that GSD counts is a block pi runs.
+
+Two upstream fixes in pi, both using machinery that already exists:
+
+1. **Gate dispatch on `stopReason`.** `"toolUse"` is already a `StopReason`
+   (`ai/src/types.ts:418`), and it is what the enum is for. pi-kiro sets `"stop"` on a completed
+   delegated turn, so a `stopReason`-gated loop would leave real blocks on the message, count
+   correctly in GSD, and never redispatch. Note `:236-239` already reads `stopReason` -- but only
+   to fail a batch on `"length"`, after deciding to dispatch.
+2. **Honour `endTurn`.** `AssistantMessage.endTurn?: boolean` exists, and its own docstring says
+   it is "preserved for debugging and does not currently affect agent control flow"
+   (`ai/src/types.ts:530-534`).
+
+A GSD-side mitigation would be to make the zero tool-call guard provider-aware and skip it for a
+provider advertising `authMode: "externalCli"`, since such a provider's tool calls happen outside
+pi by construction. That is a weaker fix: it restores auto-mode but leaves the ledger wrong.
+
+Until one of those lands, §7's "tool-call counts matching GSD's ledger" is unreachable, and the
+honest reading of the definition of done is that the *no-redispatch* half ships and the *ledger*
+half is blocked on pi.
+
+### How this was found, and how it was nearly missed
+
+Not by a failing test: by reading what the consumer counts after changing what the producer
+emits. The GSD run in progress when this was written is unaffected, because GSD's own agent
+(`~/.gsd/agent/settings.json`) runs a Bedrock model with `packages: []` and so never loads
+pi-kiro. A green `gsd headless auto` in this repo therefore says nothing about this defect. The
+test that would expose it is the documented pattern in
+`docs/integrations/gsd-workflow-mcp.md` -- pi with `/model kiro/auto` inside a GSD project,
+driving auto-mode itself.
+
 ## 6. Non-goals
 
 - No change to the trust/billing model (kiro-cli owns auth; seat-billed).
@@ -606,5 +683,8 @@ per-package discipline is the only mechanism.
 - All six probes green with captured fixtures; parity suite green on both transports.
 - A full GSD milestone slice completes on `PI_KIRO_TRANSPORT=acp` with **zero** salvage
   events, **zero** synthesized tool calls (all event-sourced), and tool-call counts
-  matching GSD's ledger.
+  matching GSD's ledger. **Blocked on pi, see §5g:** the ledger clause and §5d's
+  no-redispatch fix are mutually exclusive with the block types pi has today, so the
+  ledger reads zero and GSD's zero tool-call guard pauses auto-mode. The no-redispatch
+  half ships; this half needs pi to gate dispatch on `stopReason` or honour `endTurn`.
 - Sentinel, salvage heuristic, and list-sessions snapshot-diff code paths deleted.

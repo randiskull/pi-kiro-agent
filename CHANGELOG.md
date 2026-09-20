@@ -112,6 +112,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `PI_KIRO_TRANSPORT=acp` selecting the ACP transport. Makes no model call.
 - `CONTRIBUTORS.md`, and worked integration guides for rpiv and the GSD workflow MCP under
   `docs/integrations/`.
+- **Documented: not redispatching kiro's tool calls and GSD's tool-call ledger are mutually
+  exclusive.** The §5d fix strips every surfaced `toolCall` block from the final assistant message
+  so pi does not re-run work kiro already did. pi decides what to execute by filtering `toolCall`
+  blocks off that message (`agent-loop.ts:228`), and GSD decides whether a unit did any work by
+  counting `toolCall` blocks on the same persisted message (`snapshotUnitActivity`). There is one
+  message, not two: `streamAssistantResponse` returns the `done` event's `message`, and that object
+  is both dispatched and persisted. So the strip that fixes pi zeroes GSD's count, and GSD's zero
+  tool-call guard (`auto/unit-phase.ts:858-948`) then retries every unit and pauses auto-mode
+  blaming context exhaustion. Nothing inside this package can fix it: pi's `ToolCall` has no way to
+  say "already executed by the provider", so any block GSD can count is a block pi will run. Two
+  small upstream fixes in pi would resolve it, both using machinery that already exists -- gate
+  dispatch on `stopReason` (`"toolUse"` is already in the enum) or honour `endTurn`, whose own
+  docstring says it does not currently affect control flow. Until then the definition of done's
+  "tool-call counts matching GSD's ledger" is unreachable and is marked as such. Write-up:
+  `docs/design/acp-transport.md` §5g.
 
 ### Changed
 
