@@ -256,6 +256,7 @@ export async function captureBridgeTools(realPi: ExtensionAPI, envOverride?: str
 /** Test hook: reset the capture cache. */
 export function clearBridgeCache(): void {
 	capturePromise = undefined;
+	inFlightSingleFlight.clear();
 }
 
 /** Strip TypeBox symbol keys; guarantee an object-typed JSON schema. */
@@ -287,6 +288,20 @@ function toMcpContent(content: Array<Record<string, unknown>>): Array<Record<str
 
 let callCounter = 0;
 
+/**
+ * Tools that block on a human answering. Measured on the wire: kiro's MCP HTTP
+ * client abandons a bridged call at about 126 seconds and reports a transport
+ * error, and nothing here cancelled the queued question -- so kiro's retry
+ * stacked ANOTHER question on the same user. One @pi/ask_user_question was
+ * re-issued at 02:32:44, 02:34:50 and 02:37:07, and all three resolved to a
+ * real answer hours later. Any question a human thought about for longer than
+ * that window was asked again, once per window.
+ */
+const SINGLE_FLIGHT_TOOLS = new Set(["ask_user_question"]);
+
+/** In-flight callId per single-flight tool name. Empty when nothing is pending. */
+const inFlightSingleFlight = new Map<string, string>();
+
 /** Build a fresh McpServer serving `tools`; one instance per delegated session. */
 export function buildBridgeServer(
 	tools: CapturedTool[],
@@ -312,7 +327,7 @@ export function buildBridgeServer(
 		};
 	});
 
-	instance.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+	instance.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 		const tool = tools.find((candidate) => candidate.name === request.params.name);
 		if (!tool) {
 			return {
@@ -332,16 +347,53 @@ export function buildBridgeServer(
 				isError: true,
 			};
 		}
+		// Refuse a second blocking call while one is still pending, rather than
+		// queueing it. The caller cannot see that its earlier call is still live
+		// (its HTTP request already timed out), so left unguarded it retries and
+		// the user is asked again. Arg-hash dedupe would not catch this: kiro
+		// rewords the question on each retry.
+		const singleFlight = SINGLE_FLIGHT_TOOLS.has(tool.name);
+		if (singleFlight) {
+			const pending = inFlightSingleFlight.get(tool.name);
+			if (pending !== undefined) {
+				trace("bridge.reject.inflight", { tool: tool.name, blockedBy: pending });
+				return {
+					content: [
+						{
+							type: "text",
+							text: `A ${tool.name} call (${pending}) is already awaiting the user's answer. Your earlier call is still live even though this connection timed out -- the user will answer that one. Do not issue another; wait for the pending result.`,
+						},
+					],
+					isError: true,
+				};
+			}
+		}
 		callCounter += 1;
 		const callId = `ccbridge-${callCounter}`;
+		if (singleFlight) inFlightSingleFlight.set(tool.name, callId);
 		// Trace the invocation, not the narration: a double-executed tool (the
 		// same @pi/ask_user_question asked twice) is only distinguishable from a
 		// model that chose to call it twice by counting the calls that actually
 		// arrived here.
-		trace("bridge.call", { callId, tool: tool.name, args: request.params.arguments ?? {} });
+		trace("bridge.call", { callId, tool: tool.name, args: request.params.arguments ?? {}, singleFlight });
 		const startedAt = Date.now();
+		// extra.signal fires when the CALLER cancels or drops the connection.
+		// Passing only the bridge-lifetime signal meant a call whose caller had
+		// already given up kept running, holding a question in the user's queue
+		// that nothing would ever collect. Union the two so a bridge shutdown
+		// still cancels as well.
+		const execSignal = extra?.signal ? AbortSignal.any([signal, extra.signal]) : signal;
+		const onAbort = () => {
+			trace("bridge.abort", {
+				callId,
+				tool: tool.name,
+				ms: Date.now() - startedAt,
+				byCaller: extra?.signal?.aborted === true,
+			});
+		};
+		execSignal.addEventListener("abort", onAbort, { once: true });
 		try {
-			const result = await tool.execute(callId, request.params.arguments ?? {}, signal, undefined, ctx);
+			const result = await tool.execute(callId, request.params.arguments ?? {}, execSignal, undefined, ctx);
 			const isError = result.isError === true;
 			const content = toMcpContent(result.content ?? []);
 			trace("bridge.result", { callId, tool: tool.name, isError, ms: Date.now() - startedAt, content });
@@ -353,6 +405,9 @@ export function buildBridgeServer(
 				content: [{ type: "text", text: message }],
 				isError: true,
 			};
+		} finally {
+			execSignal.removeEventListener("abort", onAbort);
+			if (singleFlight) inFlightSingleFlight.delete(tool.name);
 		}
 	});
 
