@@ -537,6 +537,11 @@ export async function serveBridgeHttp(
 		httpServer.listen(0, "127.0.0.1", resolve);
 	});
 	const address = httpServer.address() as AddressInfo;
+	// Mount/close are traced because a bridged tool failing with a bare
+	// "error sending request for url" is indistinguishable, from the kiro side,
+	// between a bridge that never came up, one that was torn down early, and a
+	// client still holding a previous session's port. The port is the join key.
+	trace("bridge.serve", { port: address.port, tools: toolNames });
 
 	// Idempotent: the owner closes the handle explicitly AND the signal's own
 	// listener fires on abort, so close() is routinely called twice for one
@@ -544,11 +549,16 @@ export async function serveBridgeHttp(
 	// first instead of issuing a redundant httpServer.close() whose callback
 	// receives ERR_SERVER_NOT_RUNNING.
 	let closed: Promise<void> | undefined;
-	const close = () => {
-		closed ??= new Promise<void>((resolve) => httpServer.close(() => resolve()));
+	// `reason` is diagnostic only and optional, so this still satisfies the
+	// handle's `close: () => Promise<void>` contract for owners that pass nothing.
+	const close = (reason?: string) => {
+		if (!closed) {
+			trace("bridge.close", { port: address.port, reason: reason ?? "owner" });
+			closed = new Promise<void>((resolve) => httpServer.close(() => resolve()));
+		}
 		return closed;
 	};
-	signal.addEventListener("abort", () => void close(), { once: true });
+	signal.addEventListener("abort", () => void close("signal-abort"), { once: true });
 
 	return {
 		url: `http://127.0.0.1:${address.port}/mcp`,

@@ -349,6 +349,18 @@ export function _acpRegistryKey(cwd: string, systemPrompt: string | undefined): 
  */
 function teardownChild(entry: AcpChild, reason: string, options: { kill: boolean }): void {
 	if (!entry.alive) return;
+	// Traced before any state changes: a child dying takes its session-scoped
+	// bridge with it (line below), which surfaces to kiro only as an opaque
+	// "error sending request for url" on the NEXT bridged tool call. Without the
+	// reason recorded here that failure has to be inferred from timing.
+	trace("acp.child.teardown", {
+		registryKey: entry.registryKey,
+		pid: entry.child.pid,
+		reason,
+		killed: options.kill,
+		acpSessionId: entry.acpSessionId,
+		pending: entry.pending.size,
+	});
 	entry.alive = false;
 	entry.ready = false;
 	if (entry.idleTimer) { clearTimeout(entry.idleTimer); entry.idleTimer = undefined; }
@@ -593,6 +605,15 @@ async function startSession(
 	entry.ready = false;
 	const expectedServers = new Set(mcpServers.map((s) => s.name));
 	const readyServers = new Set<string>();
+	// The URLs handed to kiro here are the ONLY ones it will ever use for this
+	// session: it has no way to learn a new port. Recording them makes a later
+	// "error sending request for url (…:PORT…)" joinable to a bridge.serve /
+	// bridge.close pair on that same port.
+	trace("acp.session.new", {
+		registryKey: entry.registryKey,
+		pid: entry.child.pid,
+		servers: mcpServers.map((s) => ({ name: s.name, url: (s as { url?: string }).url })),
+	});
 
 	// Track server_initialized events
 	let onServersReady: (() => void) | undefined;
@@ -733,6 +754,7 @@ async function spawnAcpChild(
 	// Register entry in registry BEFORE the initialize handshake so the abort
 	// handler in makeStreamViaAcp can find and kill it even mid-spawn.
 	registry.set(key, entry);
+	trace("acp.child.spawn", { registryKey: key, pid: child.pid, children: registry.size });
 
 	// Handshake: initialize
 	const initResp = await request(entry, "initialize", {
@@ -925,6 +947,12 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 								name: kiroToolName,
 								arguments: (u.rawInput as Record<string, unknown>) ?? {},
 							} as AssistantMessage["content"][number]);
+							// Full parity with the chat transport (stream-adapter.ts:404):
+							// pushing onto output.content alone is invisible to the consumer,
+							// because nothing carries `partial` until the next stream event.
+							// The thinking marker both emits that event and gives the user the
+							// same "⚙ <tool>" progress line the chat transport shows.
+							pushThinking(`\n⚙ ${kiroToolName}\n`);
 							break;
 						}
 						case "tool_call_update":
@@ -990,12 +1018,6 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				// Close thinking block
 				thinkingWriter.end();
 
-				// End-of-turn reconciliation, mirroring the chat transport: drop the
-				// display-only progress blocks before pi sees the final message, so pi
-				// cannot re-dispatch work kiro already did. Done BEFORE the text block is
-				// appended so textIndex refers to the final content array.
-				output.content = stripLivePlaceholders(output.content);
-
 				// Push text block
 				// Defensive sentinel strip: a model that previously ran under the chat
 				// transport (which injects a sentinel instruction) may still emit
@@ -1032,24 +1054,35 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				}
 
 				resetIdleTimer(acpEntry);
-				stream.push({ type: "done", reason: output.stopReason as "stop" | "length", message: output });
+				// End-of-turn reconciliation, mirroring the chat transport: pi must not
+				// see the display-only progress blocks, or it re-dispatches work kiro
+				// already did. Done as a filtered COPY, not an in-place strip of
+				// output.content: every partial event carries `partial: output` BY
+				// REFERENCE, so mutating it retroactively empties the mid-turn display
+				// for any consumer that reads the partial after the turn ends -- which,
+				// with an async generator, is every consumer the producer outruns.
+				const finalMessage = {
+					...output,
+					content: stripLivePlaceholders(output.content),
+				} as typeof output;
+				stream.push({ type: "done", reason: output.stopReason as "stop" | "length", message: finalMessage });
 				stream.end();
 			} catch (error) {
 				removeUpdateHandler?.();
 				removeMetadataHandler?.();
-				// Same reconciliation as the success path: a turn that failed mid-flight
-				// can still have surfaced progress blocks, and pi dispatches toolCall
-				// blocks off an errored message too once the caller retries.
-				output.content = stripLivePlaceholders(output.content);
 				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 				output.errorMessage = error instanceof Error ? error.message : String(error);
 				if (/profileArn is required/i.test(output.errorMessage) && !output.errorMessage.includes("kiro-cli profile")) {
 					output.errorMessage += " — run `kiro-cli profile` to select a profile for this IdC seat.";
 				}
+				// Same reconciliation as the success path, and for the same reason a
+				// copy rather than a strip: a turn that failed mid-flight can still
+				// have surfaced progress blocks, and pi dispatches toolCall blocks off
+				// an errored message too once the caller retries.
 				stream.push({
 					type: "error",
 					reason: output.stopReason as "error" | "aborted",
-					error: output,
+					error: { ...output, content: stripLivePlaceholders(output.content) } as typeof output,
 				});
 				stream.end();
 			} finally {

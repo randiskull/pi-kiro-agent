@@ -364,6 +364,104 @@ overlays do stack:
   while already holding a precisely-targeted handle from `showOverlay` (`tui.ts:703-716`). Patched
   locally.
 
+## 5e. Field evidence, 2026-09-20: the test suite was coupled to `.gsd`, and a session reset strands kiro on a dead bridge port
+
+Two findings from the same debugging session, both made cheap by the trace events
+added alongside them.
+
+### 5e.1 29 of 43 `acp-transport.test.ts` tests were failing on the developer's machine
+
+Symptom: 29 failures, every one a 5000ms timeout inside the `AcpScriptChild`
+harness, including tests nobody had touched. The file accounted for 146 of the
+suite's 149 seconds. Two wrong theories were ruled out first: CPU starvation from
+concurrent live load (the machine was idle and the failures were identical), and
+the `node:child_process` mock exporting only `spawn` while `acp-transport.ts` also
+imports `execSync` (patching the mock to spread the real module changed nothing).
+
+Instrumenting `spawnAcpChild` and `sendRaw` showed the transport getting *further*
+than assumed: `initialize` was written, answered, and `session/new` was written
+too. The stall was after that, in `startSession`'s MCP startup gate.
+
+Root cause: `discoverWorkflowMcpServers()` walks up from `process.cwd()` looking
+for a GSD project, and pi-kiro's own repo root has a `.gsd` directory. So every
+test turn synthesized a `gsdworkflow` server, `startSession` added it to
+`expectedServers`, and each test script -- which answers `initialize` and
+`session/new` but never sends `_kiro.dev/mcp/server_initialized` for a server it
+does not know exists -- waited on the gate until the test timeout. One command
+proved it: `PI_KIRO_WORKFLOW_MCP=off npx vitest run test/acp-transport.test.ts`
+went green instantly.
+
+The suite was therefore silently coupled to whether the checkout happened to be a
+GSD project: correct in CI, broken the day someone ran `gsd init` here. The fix
+belongs in `test/test-setup.ts`, which already exists to stop tests reading the
+developer's real environment (it redirects `$HOME`), and now pins
+`PI_KIRO_WORKFLOW_MCP=off`.
+
+Generalisable: the production code is fine. A workflow MCP server that never
+initializes does stall a turn, but only until the startup timeout, which is
+deliberately longer than 5s. What broke was a **test asserting against ambient
+filesystem state**, and the tell was that untouched tests failed.
+
+### 5e.2 A partial carries `partial: output` by reference, so an in-place strip rewrites history
+
+The §5d fix stripped the display-only blocks with `output.content = strip(output.content)`
+before pushing `done`. Two tests then failed claiming no `toolCall` block ever
+reached a partial -- even though the live TUI visibly rendered them.
+
+Both are right. Every streamed event carries `partial: output`, the same object,
+so reassigning `output.content` retroactively empties the mid-turn view for any
+consumer that reads a partial *after* the turn ends. With an async generator that
+is any consumer the producer outruns; pi's TUI renders promptly and so sees the
+blocks, which is why this never showed up in the live pane.
+
+The final `done` (and `error`) message now gets a filtered **copy** and
+`output.content` is left alone, which makes the mid-turn display deterministic
+instead of dependent on consumer timing. A surfaced block is also now paired with
+a `⚙ <tool>` thinking marker, full parity with `stream-adapter.ts:404`: pushing
+onto `output.content` emits no event by itself, so previously nothing carried the
+update until the next `agent_message_chunk` happened to arrive.
+
+### 5e.3 Open defect: a session reset hands kiro a new bridge port it will never use
+
+Found while re-running the smoke test with the §5d fix in place. `read`, `glob`,
+`todo` and `Agent` all now work. `steer_subagent` and `get_subagent_result` fail
+with kiro's `error sending request for url (http://127.0.0.1:59808/mcp/...)`.
+
+Before the new trace events this had to be guessed at. Now it reads directly
+(run 12, one kiro child, `pid=99684`, one registry key):
+
+```
+08:45:27.081 bridge.serve      port=59808
+08:45:27.082 acp.session.new   servers=[{name:'pi', url:'http://127.0.0.1:59808/mcp/...'}]
+08:45:38.656 bridge.call       tool=Agent  -> bridge.result ms=10          OK
+08:45:40.340 bridge.close      port=59808  reason=signal-abort
+08:45:40.340 bridge.serve      port=59886
+08:45:40.341 acp.session.new   servers=[{name:'pi', url:'http://127.0.0.1:59886/mcp/...'}]
+08:45:45.411 acp.prompt.send   mode=fresh
+08:45:49.439 acp.toolcall.surfaced tool=steer_subagent            FAILS on 59808
+```
+
+Mechanism: the second turn took the divergence branch of `resolveSession`
+(`mode=fresh` on a child that already had a session). That branch aborts
+`sessionAbort`, which closes the bridge, mints a new one on a **new ephemeral
+port**, and calls `session/new` with the new URL. kiro accepts the new session but
+keeps the MCP client it already built for the server named `pi`, still pointed at
+the closed port. Every bridged call for the rest of the conversation then fails.
+Native tools are unaffected, which is exactly the pattern observed.
+
+The bug is a conflation in `serveBridgeHttp(tools, getCtx, signal)`: the single
+`signal` is both the server's **lifetime** and the **cancellation signal** handed
+to each bridged `tool.execute`. Cancellation is genuinely per-session -- that is
+what the divergence branch wants when it retires a controller whose tool calls may
+be in flight. Lifetime is not: from kiro's point of view the bridge URL is a
+property of the **child**, fixed when the child first learns it.
+
+Intended fix: separate the two. `serveBridgeHttp` takes the child-scoped signal
+for lifetime plus a `getCallSignal: () => AbortSignal` accessor for per-call
+cancellation (symmetric with the `getCtx` callback it already takes), the bridge
+is created once per child, and the divergence branch keeps retiring
+`sessionAbort` without touching the server. Not yet implemented.
+
 ## 6. Non-goals
 
 - No change to the trust/billing model (kiro-cli owns auth; seat-billed).

@@ -520,9 +520,12 @@ describe("makeStreamViaAcp", () => {
 			expect(events.some((e) => e.type === "thinking_delta")).toBe(true);
 			// toolCall block must be visible in a partial BEFORE the done event
 			expect(toolCallAppearedBeforeDone).toBe(true);
-			// And must still be in the final done event
+			// ...and must be GONE from the final done event. kiro already executed the
+			// tool; pi dispatches any toolCall block it finds on an assistant message,
+			// so one left here made pi run it a second time. The two halves are the
+			// whole point of the split: live in the partials, absent from the final.
 			const done = events.find((e) => e.type === "done");
-			expect(done?.type === "done" && done.message.content.some((b) => b.type === "toolCall")).toBe(true);
+			expect(done?.type === "done" && done.message.content.some((b) => b.type === "toolCall")).toBe(false);
 		});
 	});
 
