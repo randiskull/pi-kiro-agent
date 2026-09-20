@@ -38,6 +38,7 @@ import { type KiroAgentProfile, writeAgentProfile } from "./kiro-bridge.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import { createToolUseStreamParser, parseKiroToolUses, synthesizeToolCallBlocks } from "./kiro-tooluse-parser.js";
+import { trace } from "./trace.js";
 import {
 	advanceSession,
 	dropSession,
@@ -570,11 +571,22 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					if (model.id !== "auto") args.push("--model", model.id);
 					const effort = mapEffort(options?.reasoning);
 					if (effort) args.push("--effort", effort);
-					args.push(
-						useResume
-							? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridge?.toolNames, !!workflowServers)
-							: buildPromptFromContext(context, bridge?.toolNames, !!workflowServers),
-					);
+					const promptText = useResume
+						? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridge?.toolNames, !!workflowServers)
+						: buildPromptFromContext(context, bridge?.toolNames, !!workflowServers);
+					args.push(promptText);
+					// attempt is traced explicitly: this loop re-sends the whole prompt on
+					// an MCP-startup retry or a resume fallback, so a bridged tool already
+					// executed on attempt 0 gets asked again on attempt 1. Counting sends
+					// is the only way to tell that apart from a model choosing to re-call.
+					trace("chat.prompt.send", {
+						attempt,
+						mode: useResume ? "resume" : "fresh",
+						deltaStart: plan.deltaStart,
+						messageCount: context.messages.length,
+						promptChars: promptText.length,
+						prompt: promptText,
+					});
 
 					const attemptResult = await runAttempt(args, deps.binaryPath, output, pushThinking, options?.signal);
 					raw = attemptResult.raw;

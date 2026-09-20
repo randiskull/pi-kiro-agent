@@ -29,6 +29,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { trace } from "./trace.js";
 
 export const BRIDGE_SERVER_NAME = "pi";
 
@@ -296,13 +297,20 @@ export function buildBridgeServer(
 
 	const instance = new McpServer({ name: BRIDGE_SERVER_NAME, version: "1.0.0" }, { capabilities: { tools: {} } });
 
-	instance.server.setRequestHandler(ListToolsRequestSchema, () => ({
-		tools: tools.map((tool) => ({
-			name: tool.name,
-			description: tool.description,
-			inputSchema: toJsonSchema(tool.parameters),
-		})),
-	}));
+	instance.server.setRequestHandler(ListToolsRequestSchema, () => {
+		// Traced because a tools/list is the only moment kiro learns what the
+		// bridge serves: a tool missing HERE explains a later "Tool <name> not
+		// found" that otherwise looks like a call-time failure, and a second
+		// tools/list reveals a second mount of the same bridge.
+		trace("bridge.list", { tools: tools.map((tool) => tool.name) });
+		return {
+			tools: tools.map((tool) => ({
+				name: tool.name,
+				description: tool.description,
+				inputSchema: toJsonSchema(tool.parameters),
+			})),
+		};
+	});
 
 	instance.server.setRequestHandler(CallToolRequestSchema, async (request) => {
 		const tool = tools.find((candidate) => candidate.name === request.params.name);
@@ -324,19 +332,25 @@ export function buildBridgeServer(
 				isError: true,
 			};
 		}
+		callCounter += 1;
+		const callId = `ccbridge-${callCounter}`;
+		// Trace the invocation, not the narration: a double-executed tool (the
+		// same @pi/ask_user_question asked twice) is only distinguishable from a
+		// model that chose to call it twice by counting the calls that actually
+		// arrived here.
+		trace("bridge.call", { callId, tool: tool.name, args: request.params.arguments ?? {} });
+		const startedAt = Date.now();
 		try {
-			callCounter += 1;
-			const result = await tool.execute(
-				`ccbridge-${callCounter}`,
-				request.params.arguments ?? {},
-				signal,
-				undefined,
-				ctx,
-			);
-			return { content: toMcpContent(result.content ?? []), isError: result.isError === true };
+			const result = await tool.execute(callId, request.params.arguments ?? {}, signal, undefined, ctx);
+			const isError = result.isError === true;
+			const content = toMcpContent(result.content ?? []);
+			trace("bridge.result", { callId, tool: tool.name, isError, ms: Date.now() - startedAt, content });
+			return { content, isError };
 		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			trace("bridge.throw", { callId, tool: tool.name, ms: Date.now() - startedAt, message });
 			return {
-				content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+				content: [{ type: "text", text: message }],
 				isError: true,
 			};
 		}

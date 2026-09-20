@@ -63,6 +63,7 @@ import type { HttpBridgeHandle } from "./bridge.js";
 import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import { buildDeltaPrompt, buildPromptFromContext, mapEffort } from "./stream-adapter.js";
+import { trace } from "./trace.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import {
 	advanceAcpSession,
@@ -919,6 +920,15 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				const promptContent = useResume
 					? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridgeToolNames, !!workflowServers, { sentinel: false })
 					: buildPromptFromContext(context, bridgeToolNames, !!workflowServers, { sentinel: false });
+
+				trace("acp.prompt.send", {
+					sessionId: currentSessionId,
+					mode: plan.mode,
+					deltaStart: plan.deltaStart,
+					messageCount: context.messages.length,
+					promptChars: promptContent.length,
+					prompt: promptContent,
+				});
 
 				const promptParams: Record<string, unknown> = {
 					sessionId: currentSessionId,
