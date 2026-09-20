@@ -7,52 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-### Fixed
-
-- **Docs accuracy: `PI_KIRO_RESUME` applies to the chat transport only.** The README env table
-  previously implied the flag applied to all transports. The ACP transport (`PI_KIRO_TRANSPORT=acp`)
-  has its own built-in divergence detection in `acp-session.ts` (`planAcpTurn`) and is not gated on
-  `PI_KIRO_RESUME` at all. The README row now says so explicitly and documents the escape hatch for
-  users who want to fully disable session continuity under ACP (`PI_KIRO_TRANSPORT=chat` +
-  `PI_KIRO_RESUME=off`). A regression test in `acp-session.test.ts` pins this independence.
-
-- **A session reset no longer strands kiro on a closed bridge port.** kiro learns the MCP bridge
-  URL once, from the `mcpServers` array in `session/new`, and has no way to be told a new one. The
-  divergence branch of `resolveSession` closed the bridge and mounted a replacement on a fresh
-  ephemeral port, so kiro accepted the new session but kept the MCP client it had already built for
-  the server named `pi` -- still pointed at the closed port. Every bridged tool call for the rest of
-  the conversation then failed with `error sending request for url (http://127.0.0.1:PORT/...)`,
-  while kiro-native tools kept working. Observed live as `steer_subagent` and `get_subagent_result`
-  failing immediately after a successful `Agent` call. The cause was `serveBridgeHttp` conflating two
-  different lifetimes in one `AbortSignal`: the server's lifetime and the cancellation signal handed
-  to each bridged `tool.execute`. Cancellation really is per-session; lifetime is per-**child**. They
-  are now separate -- `AcpChild.childAbort` owns the server, and a `getCallSignal` accessor supplies
-  the current session's signal per request -- so the bridge is mounted once per child and reused by
-  every session on it, while a reset still cancels in-flight calls.
-
-- **The unit test suite no longer depends on whether the checkout is a GSD project.** 29 of the 43
-  `acp-transport.test.ts` tests were failing with 5-second timeouts, and the file took 146 of the
-  suite's 149 seconds. Cause: `discoverWorkflowMcpServers()` walks up from `process.cwd()` looking
-  for a GSD project, and this repo's own root now has a `.gsd` directory -- so every ACP turn
-  synthesized a `gsdworkflow` MCP server, `startSession` added it to the set it waits on, and every
-  test script that answers `initialize`/`session/new` but never sends
-  `_kiro.dev/mcp/server_initialized` for it hung on the startup gate. `test/test-setup.ts` already
-  existed to stop tests reading the developer's real environment (it redirects `$HOME`); it now
-  pins `PI_KIRO_WORKFLOW_MCP=off` for the same reason. `test/workflow-mcp.test.ts`, the one suite
-  that exercises discovery for real, clears the variable in `beforeEach` as well as `afterEach` --
-  clearing it only on the way out left its first test inheriting the run-wide default. The suite went from
-  29 failures in 149 seconds to fully green in ~3 seconds.
-
-- **Surfaced tool calls stay visible in the mid-turn display instead of vanishing retroactively.**
-  The end-of-turn reconciliation replaced `output.content` in place, but every streamed event
-  carries `partial: output` *by reference* -- so the strip retroactively emptied the tool-by-turn
-  progress display for any consumer that reads a partial after the turn ends, which with an async
-  generator is any consumer the producer outruns. The final `done`/`error` message now gets a
-  filtered **copy** and the partials keep their blocks. Each surfaced block is also paired with a
-  `⚙ <tool>` thinking marker, exactly as the chat transport does (`stream-adapter.ts:404`): pushing
-  onto `output.content` alone emits no event, so nothing carried the update until the next chunk
-  happened to arrive.
-
 ### Added
 
 - **Documented: a bridged tool runs against a second, cold instance of its extension.** Not a code
@@ -119,7 +73,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `wireSubagents` had always supported restricting to named agents. `off [name1,name2]` now mirrors
   `on`.
 
-### Added
 
 - **End-to-end load test against the real pi host** (`test/extension-load.e2e.test.ts`). It packs
   the tarball `npm publish` would upload, gives it only the runtime dependencies its own manifest
@@ -176,6 +129,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BRIDGE_SOURCES` is exported, so the live suite asserts against the real list instead of a copy.
 
 ### Fixed
+
+- **Docs accuracy: `PI_KIRO_RESUME` applies to the chat transport only.** The README env table
+  previously implied the flag applied to all transports. The ACP transport (`PI_KIRO_TRANSPORT=acp`)
+  has its own built-in divergence detection in `acp-session.ts` (`planAcpTurn`) and is not gated on
+  `PI_KIRO_RESUME` at all. The README row now says so explicitly and documents the escape hatch for
+  users who want to fully disable session continuity under ACP (`PI_KIRO_TRANSPORT=chat` +
+  `PI_KIRO_RESUME=off`). A regression test in `acp-session.test.ts` pins this independence.
+
+- **A session reset no longer strands kiro on a closed bridge port.** kiro learns the MCP bridge
+  URL once, from the `mcpServers` array in `session/new`, and has no way to be told a new one. The
+  divergence branch of `resolveSession` closed the bridge and mounted a replacement on a fresh
+  ephemeral port, so kiro accepted the new session but kept the MCP client it had already built for
+  the server named `pi` -- still pointed at the closed port. Every bridged tool call for the rest of
+  the conversation then failed with `error sending request for url (http://127.0.0.1:PORT/...)`,
+  while kiro-native tools kept working. Observed live as `steer_subagent` and `get_subagent_result`
+  failing immediately after a successful `Agent` call. The cause was `serveBridgeHttp` conflating two
+  different lifetimes in one `AbortSignal`: the server's lifetime and the cancellation signal handed
+  to each bridged `tool.execute`. Cancellation really is per-session; lifetime is per-**child**. They
+  are now separate -- `AcpChild.childAbort` owns the server, and a `getCallSignal` accessor supplies
+  the current session's signal per request -- so the bridge is mounted once per child and reused by
+  every session on it, while a reset still cancels in-flight calls.
+
+- **The unit test suite no longer depends on whether the checkout is a GSD project.** 29 of the 43
+  `acp-transport.test.ts` tests were failing with 5-second timeouts, and the file took 146 of the
+  suite's 149 seconds. Cause: `discoverWorkflowMcpServers()` walks up from `process.cwd()` looking
+  for a GSD project, and this repo's own root now has a `.gsd` directory -- so every ACP turn
+  synthesized a `gsdworkflow` MCP server, `startSession` added it to the set it waits on, and every
+  test script that answers `initialize`/`session/new` but never sends
+  `_kiro.dev/mcp/server_initialized` for it hung on the startup gate. `test/test-setup.ts` already
+  existed to stop tests reading the developer's real environment (it redirects `$HOME`); it now
+  pins `PI_KIRO_WORKFLOW_MCP=off` for the same reason. `test/workflow-mcp.test.ts`, the one suite
+  that exercises discovery for real, clears the variable in `beforeEach` as well as `afterEach` --
+  clearing it only on the way out left its first test inheriting the run-wide default. The suite went from
+  29 failures in 149 seconds to fully green in ~3 seconds.
+
+- **Surfaced tool calls stay visible in the mid-turn display instead of vanishing retroactively.**
+  The end-of-turn reconciliation replaced `output.content` in place, but every streamed event
+  carries `partial: output` *by reference* -- so the strip retroactively emptied the tool-by-turn
+  progress display for any consumer that reads a partial after the turn ends, which with an async
+  generator is any consumer the producer outruns. The final `done`/`error` message now gets a
+  filtered **copy** and the partials keep their blocks. Each surfaced block is also paired with a
+  `⚙ <tool>` thinking marker, exactly as the chat transport does (`stream-adapter.ts:404`): pushing
+  onto `output.content` alone emits no event, so nothing carried the update until the next chunk
+  happened to arrive.
+
 
 - **Tool calls made inside a delegated kiro run were being missed, silently, on kiro-cli 2.21 and
   later, which made GSD salvage units that had really done the work.** `synthesizeToolCallBlocks`
