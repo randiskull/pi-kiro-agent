@@ -221,10 +221,25 @@ async function importBridgeModules(source: string): Promise<ExtensionModule[]> {
 let capturePromise: Promise<CapturedTool[]> | undefined;
 
 /**
- * Capture bridgeable tool definitions from sibling extensions. The raw
- * capture is cached for the process lifetime (definitions are closures over
- * each package's module-level state, shared with the live extension
- * instances); the allowlist filter applies per call so backends can differ.
+ * Capture bridgeable tool definitions from sibling extensions. The raw capture is
+ * cached for the process lifetime; the allowlist filter applies per call so
+ * backends can differ.
+ *
+ * The captured definitions are closures over module-level state belonging to a
+ * SECOND instance of each package -- NOT the live instance pi is running. pi's
+ * extension loader creates jiti with `moduleCache: false`
+ * (coding-agent/src/core/extensions/loader.ts), so an import here always
+ * re-evaluates the entry file into a fresh module graph. There is no specifier
+ * that would reach pi's own instance, and pi exposes no way to invoke a
+ * registered tool by name, so this is structural rather than a choice.
+ *
+ * Consequence, and the reason this is spelled out: a bridged tool only behaves
+ * correctly if it is self-contained or keys its cross-instance state globally. A
+ * tool relying on module-level state that pi's instance populates -- from a slash
+ * command, or a lifecycle handler the capture never receives -- reads a cold copy,
+ * and the divergence is silent because each instance stays internally consistent.
+ * See docs/design/acp-transport.md section 5f for the two cases found in the field
+ * and the fix pattern (`globalThis[Symbol.for(...)]`).
  */
 export async function captureBridgeTools(realPi: ExtensionAPI, envOverride?: string): Promise<CapturedTool[]> {
 	capturePromise ??= (async () => {

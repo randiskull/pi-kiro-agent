@@ -55,6 +55,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Documented: a bridged tool runs against a second, cold instance of its extension.** Not a code
+  change here, but the most consequential thing learned about the bridge, and previously documented
+  backwards. `captureBridgeTools` imports each package's entry file to harvest tool definitions, and
+  its docstring claimed those definitions close over module state "shared with the live extension
+  instances". They do not: pi's loader creates jiti with `moduleCache: false`, so every import
+  re-evaluates the entry into a fresh module graph, and no specifier would reach pi's own instance
+  (nor does `ExtensionAPI` expose a way to invoke a registered tool by name). Proven by counting
+  module evaluations against a `globalThis` counter in one pid: instance 1 receives the `/advisor`
+  restore, instance 2 is created at bridge-mount time and answers kiro's call. Two silent victims
+  were found and fixed upstream in rpiv: `advisor` always reported "No advisor model is configured"
+  to the delegated model while pi's UI showed the model restored, and `todo` wrote to a store pi's
+  `/todos` could not see. Both are now anchored on `globalThis[Symbol.for(...)]`, which is already
+  the rpiv convention for this hazard. The docstring is corrected and the constraint stated: a
+  bridged tool is only correct if it is self-contained or keys its cross-instance state globally.
+  The bridge cannot enforce that and cannot detect a violation. Write-up:
+  `docs/design/acp-transport.md` section 5f.
+
 - **A mount-time warning when a requested bridge tool is missing.** A name in the bridge allow-list
   that no loaded extension provides used to fail silently at mount and opaquely much later: the tool
   was simply absent from the bridge, kiro never learned it existed, and the only symptom was the

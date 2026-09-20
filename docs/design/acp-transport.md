@@ -518,6 +518,83 @@ the log it exists to draw attention to, while per-name dedupe still reports a
 *second, different* tool going missing later. `clearBridgeCache()` resets the set
 so test order cannot silence it.
 
+### 5f A bridged tool runs against a SECOND, cold instance of its extension
+
+The largest finding of the session, and the one that changes what the bridge can
+promise. `captureBridgeTools` imports each bridgeable package's entry file and
+calls its `default(shim)` to harvest tool definitions. Its docstring claimed the
+captured definitions are "closures over each package's module-level state, shared
+with the live extension instances". They are not. They close over a **second
+instance** of that package, and pi's live instance is a different one.
+
+Mechanism, pinned in pi's source: the extension loader builds jiti with
+`moduleCache: false`.
+
+```
+coding-agent/src/core/extensions/loader.ts:496
+    const jiti = createJitiImpl(import.meta.url, {
+        moduleCache: false,
+        ...resolutionOptions,
+    });
+```
+
+Every import of an entry file therefore re-evaluates it into a fresh module graph
+with its own bindings. That is deliberate on pi's side (it is what lets `/reload`
+pick up edits, and pi caches the resulting *factory* separately). It also means no
+specifier the bridge could use would reach pi's instance, and `ExtensionAPI` /
+`ExtensionContext` expose no way to enumerate or invoke a registered tool by name
+(`getAllRegisteredTools` and `getToolDefinition` live on `ExtensionRunner`, which
+an extension cannot reach). So the second instance is structural, not a choice.
+
+Proven directly rather than inferred. A globalThis counter plus a per-accessor log
+in `rpiv-advisor/advisor/state.ts`, one pid:
+
+```
+09:05:25.558 pid=36269 instance=1 module-loaded
+09:05:30.053 pid=36269 instance=1 setAdvisorModel(model)     <- /advisor restore
+09:05:55.623 pid=36269 instance=1 getAdvisorModel -> SET
+09:05:56.422 pid=36269 instance=2 module-loaded              <- bridge mount
+09:06:07.326 pid=36269 instance=2 getAdvisorModel -> undefined  <- kiro's call
+```
+
+Two victims found, both silent, both by behaviour rather than by error:
+
+1. **`advisor` never worked from kiro.** pi's UI announced
+   `Advisor restored: amazon-bedrock/us.xai.grok-4.6, high` while the delegated
+   model, on the same turn, got
+   `No advisor model is configured. The user can enable one with the /advisor command.`
+   The selection lived in a module-level `let`, so instance 2's copy was empty and
+   `executeAdvisor`'s `if (!advisor)` guard fired.
+
+2. **`todo` wrote to a store pi could not see.** kiro created and listed
+   `#1 cross-instance-check` successfully through the bridge; `/todos` in the same
+   process reported `No todos yet. Ask the agent to add some!`. The per-session task
+   Map and the foreground render pointer were both module-scoped.
+
+Worth stating plainly: this was invisible for as long as it was because each
+instance is internally consistent. Nothing errors, nothing is logged, and a smoke
+test driven entirely through the bridge passes. Both were only found by comparing
+what the two sides of the process said about the same fact.
+
+Fix (implemented upstream, not here): anchor the state on
+`globalThis[Symbol.for(...)]`. This is already the convention in the rpiv monorepo
+for exactly this hazard -- `rpiv-i18n`, `rpiv-workflow`'s built-ins and
+skill-contracts registries, and `rpiv-advisor`'s own `inventory.ts`, whose docstring
+gives the reason ("so the cache survives module re-import on /new, /fork,
+/resume"). `advisor/state.ts` and `rpiv-todo`'s store were the two outliers.
+Verified live afterwards: the advisor call from kiro returns content, and an item
+kiro creates appears in `/todos`.
+
+What this repo owns: the docstring on `captureBridgeTools` is corrected, and the
+constraint is now stated where a future reader will hit it. **A bridged tool is only
+correct if it is self-contained or keys its cross-instance state globally.** The
+bridge cannot enforce that, and cannot detect a violation -- a cold instance looks
+exactly like a working one.
+
+The general fix belongs upstream in pi: a supported way for an extension to invoke
+a registered tool by name would remove the need to re-import at all. Until then the
+per-package discipline is the only mechanism.
+
 ## 6. Non-goals
 
 - No change to the trust/billing model (kiro-cli owns auth; seat-billed).
