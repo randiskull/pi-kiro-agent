@@ -259,6 +259,111 @@ The roadmap is: probe the three unknowns above, add a stream-json reader beside 
 behind an env flag, run the live suite against both, then make stream-json the default and keep the
 text parser only for kiro-cli versions that lack the flag.
 
+## 5d. Field evidence, 2026-09-20: surfaced tool calls were being executed a second time
+
+The single worst defect found in this transport so far, and it had been mistaken for four
+different bugs. **Every ACP `tool_call` notification was pushed onto the assistant message as a
+real, executable pi `toolCall` block.** kiro had already run the tool; pi ran it again.
+
+### The four symptoms, all one cause
+
+1. **Duplicate `ask_user_question` cards.** A bridged questionnaire appeared, was answered, and a
+   second identical card appeared. The second one never touched the MCP bridge, which is why the
+   single-flight guard in `bridge.ts` never fired and looked useless: there was nothing in flight
+   to collide with.
+2. **`Tool shell not found`.** kiro runs `shell`, `read`, `glob` natively. Surfaced as pi tool
+   calls, pi looked them up in its own registry, found nothing, and produced an error tool result.
+3. **kiro apparently restarting the delegated task.** The error results from (2) were serialised
+   into kiro's next prompt, which then consisted of nothing but tool-result noise. kiro read that
+   as a stray turn with no instruction ("It looks like a stray artifact — there's no actual
+   instruction or task from the user") and re-ran the task from the top.
+4. **"Five kiro sessions in five minutes."** Not restarts at all. Five *pi conversations* (one
+   main, the rest pi-subagents children), each opening its own ACP session. Three of the five
+   match their pi session file to the millisecond.
+
+### Mechanism
+
+pi dispatches tool calls off the **presence** of `toolCall` blocks on an assistant message, not off
+`stopReason`:
+
+```ts
+// pi packages/agent/src/agent-loop.ts
+const toolCalls = message.content.filter((c) => c.type === "toolCall");   // :228
+if (toolCalls.length > 0) { ... }                                        // :232
+```
+
+and an unknown name short-circuits to an error result rather than being ignored:
+
+```ts
+// pi packages/agent/src/agent-loop.ts, prepareToolCall
+const tool = currentContext.tools?.find((t) => t.name === toolCall.name); // :669
+if (!tool) return { kind: "immediate", result: createErrorToolResult(`Tool ${toolCall.name} not found`), isError: true };
+```
+
+So any block this transport left on the final message was a *fresh instruction to pi*, not a record
+of something already done.
+
+### Receipts
+
+A live turn on 2026-09-20 asked for exactly one `ask_user_question` and nothing else. The trace
+recorded **one** bridge call:
+
+```
+08:11:12.611 bridge.call   ask_user_question ccbridge-1
+08:13:12.610 bridge.abort  ask_user_question ccbridge-1 ms=119999 byCaller=true
+08:13:12.611 bridge.result ask_user_question ccbridge-1 ms=120000
+```
+
+...and a second questionnaire card was on screen anyway, with no second `bridge.call` anywhere in
+the trace. That card was pi executing the surfaced block.
+
+pi's own session transcript for the earlier five-session run shows the same thing from the other
+side: one assistant message carrying 15 `toolCall` blocks (the entire smoke-test sequence), each
+with kiro's upstream Bedrock id, each dispatched by pi, with results including
+
+```
+RESULT name=shell    id=toolu_bdrk_014phGyvevDRowjDtdzVP1of ERROR :: Tool shell not found
+RESULT name=gsd_exec id=toolu_bdrk_0139uYgt7xsBSFqzqEEgJer7 ERROR :: Tool gsd_exec not found
+RESULT name=glob     id=toolu_bdrk_01Qgyw7zu2tBfXzcxLq5Rrqy ERROR :: Tool glob not found
+```
+
+The ids are conclusive on two points. They are kiro's own `toolCallId` values passed straight
+through by `id: u.toolCallId ?? ...`, so these blocks provably originate in this handler. And the
+*same* ids reappear in a **subagent's** pi session, where `steer_subagent` and `get_subagent_result`
+are not registered — the child inherited the parent's unresolved blocks verbatim and dispatched them
+too.
+
+### Fix
+
+The chat transport already had the answer and the ACP path had simply never adopted it. Progress
+blocks are tagged with `LIVE_TOOL_ID_PREFIX` and stripped at end of turn, so they drive the
+mid-turn display via `partial` but never reach pi as work to do. `LIVE_TOOL_ID_PREFIX` and
+`stripLivePlaceholders` are now exported from `stream-adapter.ts` and used by the ACP
+`session/update` handler, with the strip applied **before** the final text block is appended so
+`textIndex` still refers to the final content array. kiro's real id is kept as the suffix of the
+placeholder id so traces stay correlatable, and a new `acp.toolcall.surfaced` trace event records
+each one.
+
+### Ruled out along the way
+
+Recorded so the same ground is not re-walked: multi-question questionnaires (the args carried
+exactly one question); `rpiv-todo` and the `pi-subagents` widget (both use `setWidget` into
+`widgetContainerAbove`, not the overlay stack); arg-hash dedupe in the bridge (run 8's two calls
+were an original plus a *reworded* retry, so no hash would have matched); and the toolCall-replay
+defect fixed in `82c591e`, which is a different path (history serialisation) and remains fixed.
+
+Two genuine upstream bugs were found while chasing this and are **not** the cause of the duplicate
+cards, though the first is a real hang and the second makes teardown unpredictable once two
+overlays do stack:
+
+- `rpiv-ask-user-question` ignored its `AbortSignal`, so an abandoned turn left the questionnaire
+  blocking forever. Patched locally; verified by the `bridge.result` at ms=120000 above, which
+  previously never arrived.
+- pi's `showExtensionCustom` tears down with the untargeted `this.ui.hideOverlay()`
+  (`interactive-mode.ts:2841`), which pops the top of the overlay stack rather than its own entry,
+  while already holding a precisely-targeted handle from `showOverlay` (`tui.ts:703-716`). Patched
+  locally.
+
 ## 6. Non-goals
 
 - No change to the trust/billing model (kiro-cli owns auth; seat-billed).

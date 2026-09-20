@@ -408,7 +408,7 @@ describe("makeStreamViaAcp", () => {
 	});
 
 	describe("tool-call events (parity: chat transport synthesized from log lines)", () => {
-		it("surfaces tool_call session/update events as ToolCall content blocks", async () => {
+		it("surfaces tool_call events for display but strips them from the final message", async () => {
 			const child = new AcpScriptChild();
 			spawnMock.mockImplementationOnce(() => child);
 			void (async () => {
@@ -434,12 +434,32 @@ describe("makeStreamViaAcp", () => {
 				child.end();
 			})();
 			const events = await collect({ messages: [user("use a tool")] });
+
+			// The block MUST reach the partial: that is what drives the mid-turn
+			// tool-by-tool progress display (and is asserted end-to-end by the
+			// "commit 802a6a1 parity" test below).
+			const partialToolCalls = events
+				.flatMap((e) => ("partial" in e && e.partial ? e.partial.content : []))
+				.filter((b) => b.type === "toolCall");
+			expect(partialToolCalls.length).toBeGreaterThan(0);
+			expect((partialToolCalls[0] as { name: string }).name).toBe("my_tool");
+			// ...tagged display-only, so the strip pass can find it.
+			expect((partialToolCalls[0] as { id: string }).id).toContain("kiro-live-");
+			// ...and it keeps kiro's own id in the suffix so traces stay correlatable.
+			expect((partialToolCalls[0] as { id: string }).id).toContain("tooluse_abc");
+
 			const done = events.find((e) => e.type === "done");
 			expect(done?.type).toBe("done");
 			if (done?.type === "done") {
+				// The FINAL message must carry no toolCall block. kiro already executed
+				// this tool; pi dispatches any toolCall block it finds on an assistant
+				// message (it keys off presence, not stopReason), so leaving one here
+				// made pi run the tool a SECOND time — a bridged ask_user_question
+				// raised a duplicate questionnaire card that bypassed the bridge
+				// entirely, and a kiro-native tool pi does not register came back as
+				// "Tool shell not found", which then fed back to kiro as a stray prompt.
 				const toolCalls = done.message.content.filter((b) => b.type === "toolCall");
-				expect(toolCalls).toHaveLength(1);
-				expect((toolCalls[0] as { name: string }).name).toBe("my_tool");
+				expect(toolCalls).toHaveLength(0);
 				expect(done.message.stopReason).toBe("stop");
 			}
 		});

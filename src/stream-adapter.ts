@@ -55,13 +55,19 @@ const MCP_STARTUP_EXIT_CODE = 3;
 // Up to 3: one turn plus room for an MCP-startup retry and a resume→full fallback.
 const MAX_ATTEMPTS = 3;
 
-/** Id prefix for live-progress toolCall placeholders — shared by the producer
- * (id construction, both stream handlers) and the two strip sites, so they
- * cannot drift apart [L1-03]. */
-const LIVE_TOOL_ID_PREFIX = "kiro-live-";
+/** Id prefix for live-progress toolCall placeholders — shared by every producer
+ * (id construction in both chat stream handlers and the ACP session/update
+ * handler) and every strip site, so they cannot drift apart [L1-03].
+ *
+ * Exported because the ACP transport surfaces the same kind of display-only
+ * block: pi dispatches ANY toolCall block it finds on an assistant message
+ * (agent-loop.ts keys off presence, not stopReason), so a block describing a
+ * call kiro has ALREADY executed must be marked and stripped, or pi runs it a
+ * second time. */
+export const LIVE_TOOL_ID_PREFIX = "kiro-live-";
 
 /** Drop live-progress placeholder toolCall blocks (matched by LIVE_TOOL_ID_PREFIX). */
-function stripLivePlaceholders(content: AssistantMessage["content"]): AssistantMessage["content"] {
+export function stripLivePlaceholders(content: AssistantMessage["content"]): AssistantMessage["content"] {
 	return content.filter(
 		(block) => !(block.type === "toolCall" && String(block.id).startsWith(LIVE_TOOL_ID_PREFIX)),
 	);

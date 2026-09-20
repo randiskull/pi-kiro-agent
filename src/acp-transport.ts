@@ -62,7 +62,13 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
 import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
-import { buildDeltaPrompt, buildPromptFromContext, mapEffort } from "./stream-adapter.js";
+import {
+	buildDeltaPrompt,
+	buildPromptFromContext,
+	LIVE_TOOL_ID_PREFIX,
+	mapEffort,
+	stripLivePlaceholders,
+} from "./stream-adapter.js";
 import { trace } from "./trace.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import {
@@ -882,20 +888,45 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 								textAccum += u.content.text;
 							}
 							break;
-						case "tool_call":
+						case "tool_call": {
+							// DISPLAY ONLY. Under ACP, kiro has already EXECUTED this tool by the
+							// time it notifies us: bridged tools ran over the MCP bridge, native
+							// ones (shell, read, glob) ran inside kiro. pi, however, dispatches
+							// every toolCall block it finds on an assistant message — it keys off
+							// presence, not stopReason (pi agent-loop.ts, executeToolCalls). So a
+							// bare block here made pi run the call a SECOND time: a bridged
+							// ask_user_question raised a second questionnaire card that never
+							// touched the bridge (so no single-flight guard could see it), while a
+							// native tool pi does not register failed with "Tool shell not found"
+							// — an error result that then went back to kiro as its next prompt,
+							// which kiro read as a stray turn with no instruction and restarted.
+							// Tagging with LIVE_TOOL_ID_PREFIX keeps the mid-turn progress display
+							// (pushed on `partial`) while stripLivePlaceholders removes the block
+							// from the final message, so pi never dispatches it.
+							const kiroToolName =
+								u._meta?.kiro?.toolName ?? u.title?.replace(/^Running:\s*@[^/]*\//, "") ?? "unknown";
+							// The real kiro id is kept in the suffix: the prefix is what marks the
+							// block display-only, and retaining the id keeps traces correlatable.
+							// randomUUID (not Date.now()): tool_call updates arrive in bursts, so
+							// two fallbacks in the same millisecond would collide inside one
+							// AssistantMessage. The fallback only fires under protocol drift
+							// (toolCallId is normally protocol-supplied).
+							trace("acp.toolcall.surfaced", {
+								sessionId: currentSessionId,
+								tool: kiroToolName,
+								kiroToolCallId: u.toolCallId,
+								displayOnly: true,
+							});
 							output.content.push({
 								type: "toolCall",
-								// randomUUID (not Date.now()): tool_call updates arrive in bursts,
-								// so two fallbacks in the same millisecond would collide inside one
-								// AssistantMessage. The fallback only fires under protocol drift
-								// (toolCallId is normally protocol-supplied).
-								id: u.toolCallId ?? `acp-tool-${randomUUID()}`,
+								id: `${LIVE_TOOL_ID_PREFIX}${u.toolCallId ?? `acp-tool-${randomUUID()}`}`,
 								// u.title can be a "Running: @<server>/<tool>" progress string; strip
 								// that prefix so history carries the bare tool name, not the banner.
-								name: u._meta?.kiro?.toolName ?? u.title?.replace(/^Running:\s*@[^/]*\//, "") ?? "unknown",
+								name: kiroToolName,
 								arguments: (u.rawInput as Record<string, unknown>) ?? {},
 							} as AssistantMessage["content"][number]);
 							break;
+						}
 						case "tool_call_update":
 							// Update is informational; stopReason stays "stop"
 							break;
@@ -959,6 +990,12 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				// Close thinking block
 				thinkingWriter.end();
 
+				// End-of-turn reconciliation, mirroring the chat transport: drop the
+				// display-only progress blocks before pi sees the final message, so pi
+				// cannot re-dispatch work kiro already did. Done BEFORE the text block is
+				// appended so textIndex refers to the final content array.
+				output.content = stripLivePlaceholders(output.content);
+
 				// Push text block
 				// Defensive sentinel strip: a model that previously ran under the chat
 				// transport (which injects a sentinel instruction) may still emit
@@ -1000,6 +1037,10 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 			} catch (error) {
 				removeUpdateHandler?.();
 				removeMetadataHandler?.();
+				// Same reconciliation as the success path: a turn that failed mid-flight
+				// can still have surfaced progress blocks, and pi dispatches toolCall
+				// blocks off an errored message too once the caller retries.
+				output.content = stripLivePlaceholders(output.content);
 				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 				output.errorMessage = error instanceof Error ? error.message : String(error);
 				if (/profileArn is required/i.test(output.errorMessage) && !output.errorMessage.includes("kiro-cli profile")) {

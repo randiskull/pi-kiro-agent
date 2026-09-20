@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The ACP transport no longer makes pi execute tool calls kiro has already run.** Every
+  `session/update` `tool_call` notification was pushed onto the assistant message as a real,
+  executable `toolCall` block. pi dispatches tool calls off the *presence* of those blocks rather
+  than off `stopReason`, so it ran each one a second time. A bridged `ask_user_question` therefore
+  raised a **duplicate questionnaire card that never touched the MCP bridge** -- which is why the
+  single-flight guard could not see it and appeared to be doing nothing -- and a kiro-native tool
+  pi does not register (`shell`, `read`, `glob`, `gsd_exec`) came back as `Tool shell not found`.
+  That error result was then serialised into kiro's next prompt, leaving kiro with a turn made
+  entirely of tool-result noise and no instruction, which it treated as a stray artifact and
+  answered by restarting the whole delegated task. The apparent "five kiro sessions in five
+  minutes" was this loop, not kiro restarting itself: the five were five pi conversations, three
+  of which match their pi session file to the millisecond. These blocks are now tagged with
+  `LIVE_TOOL_ID_PREFIX` and stripped before the final message, the same mechanism the chat
+  transport has always used, so they still drive the mid-turn progress display without being
+  mistaken for work to do. A new `acp.toolcall.surfaced` trace event records each one.
+
 - **`/kiro-subagents on` no longer destroys an agent's existing model routing.** It used to overwrite
   a pre-existing `model:` value with no record of it, so a later `off` had nothing to restore and
   deleted the line outright -- silently discarding routing the user had set by hand. `on` now stashes
