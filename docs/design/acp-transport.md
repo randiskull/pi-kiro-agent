@@ -637,6 +637,41 @@ the blocks exist mid-turn and are gone from history.
 This is not ACP-only any more. M001/S01/T01 (`48d2ee5`) adopted the same tagging and
 push-site filtering in `stream-adapter.ts`, so after M001 both transports have the property.
 
+### Receipts
+
+Measured, not inferred, and with a matched control arm. Every pi session file for this
+project under `~/.pi/agent/sessions/`, counting `toolCall` blocks on persisted assistant
+messages -- the exact quantity `snapshotUnitActivity` reads:
+
+```
+mtime              assistant msgs   toolCall blocks
+09-20 00:59:20          4                 3
+09-20 01:06:01          5                77
+09-20 01:10:18          9                55
+09-20 01:11:06         14                74
+09-20 01:25:52          8                 3     <- last session before the running pi
+                                                   picked up the 5d fix
+09-20 01:40:09          1                 0
+09-20 01:40:22          2                 0
+09-20 01:46:04          1                 0
+09-20 01:46:11          1                 0
+09-20 01:55:58          2                 0
+09-20 02:02:26          2                 0
+09-20 02:08:16          2                 0
+09-20 02:19:55          2                 0
+09-20 02:20:02          2                 0
+```
+
+53 of the 78 session files persist at least one `toolCall` block; not one of them is after
+the restart, and not one carries a `kiro-live-` id (the strip is working exactly as designed).
+
+The last row is the six-tool bridge verification run. Its trace
+(`pikiro-trace-run15.jsonl`) holds 9 `acp.toolcall.surfaced` events over 9 distinct
+`kiroToolCallId`s and 7 `bridge.call`/`bridge.result` pairs, all `isError: false`. Its
+persisted session holds 2 assistant messages and 0 `toolCall` blocks. So for that unit GSD
+would compute `{ toolCalls: 0, assistantMessages: 2 }`: the ghost-completion guard stays
+quiet exactly as predicted, and the zero tool-call guard fires.
+
 ### Why there is no fix inside this package
 
 Anything countable is dispatchable. pi's `ToolCall` (`ai/src/types.ts:385-393`) carries `type`,
