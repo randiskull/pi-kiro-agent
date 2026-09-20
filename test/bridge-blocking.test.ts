@@ -1,7 +1,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildBridgeServer, type CapturedTool, clearBridgeCache } from "../src/bridge.js";
+import {
+	buildBridgeServer,
+	type CapturedTool,
+	clearBridgeCache,
+	setSingleFlightOrphanGraceMs,
+} from "../src/bridge.js";
 
 /**
  * Regression cover for the duplicate-question defect.
@@ -80,6 +85,15 @@ function textOf(result: unknown): string {
 	return content.map((block) => block.text ?? "").join("\n");
 }
 
+/** Poll until `predicate` holds, or fail the test with `label`. */
+async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+	const deadline = Date.now() + 5000;
+	while (!predicate()) {
+		if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+		await new Promise((r) => setTimeout(r, 5));
+	}
+}
+
 const isError = (result: unknown): boolean => (result as { isError?: boolean }).isError === true;
 
 describe("bridge blocking-call guards", () => {
@@ -94,7 +108,8 @@ describe("bridge blocking-call guards", () => {
 
 		const second = await h.client.callTool({ name: "ask_user_question", arguments: { q: "second" } });
 		expect(isError(second)).toBe(true);
-		expect(textOf(second)).toContain("already awaiting");
+		expect(textOf(second)).toContain("already on the user's screen");
+		expect(textOf(second)).toContain("Do not retry");
 		// Names the pending call so the caller can correlate rather than retry.
 		expect(textOf(second)).toMatch(/ccbridge-\d+/);
 		// The decisive assertion: the refused call never reached the user.
@@ -155,6 +170,91 @@ describe("bridge blocking-call guards", () => {
 
 		h.release("Yes");
 		await call;
+		await h.close();
+	});
+	/**
+	 * Run 8 on the wire: the caller abandoned at 120_001ms, but ask_user_question
+	 * ignores the signal it is handed, so execute() stayed blocked for 494
+	 * seconds. The slot is released in a finally, so it was held that whole time
+	 * and every later question was refused. Bound the block instead of trusting
+	 * the tool to unwind.
+	 */
+	it("keeps refusing while an abandoned call is still inside its grace window", async () => {
+		const h = await harness("ask_user_question");
+		setSingleFlightOrphanGraceMs(60_000);
+
+		const ac = new AbortController();
+		const first = h.client.callTool({ name: "ask_user_question", arguments: {} }, undefined, {
+			signal: ac.signal,
+		});
+		await h.waitForCalls(1);
+		ac.abort();
+		await first.catch(() => undefined);
+		await waitUntil(() => h.signals()[0]?.aborted === true, "the tool's signal to abort");
+
+		const second = await h.client.callTool({ name: "ask_user_question", arguments: {} });
+		expect(isError(second)).toBe(true);
+		// Still on screen, so a second overlay must not be stacked on the user.
+		expect(h.entered()).toBe(1);
+
+		h.release("Yes");
+		await h.close();
+	});
+
+	it("releases the guard once an abandoned call outlives its grace window", async () => {
+		const h = await harness("ask_user_question");
+		setSingleFlightOrphanGraceMs(25);
+
+		const ac = new AbortController();
+		const first = h.client.callTool({ name: "ask_user_question", arguments: {} }, undefined, {
+			signal: ac.signal,
+		});
+		await h.waitForCalls(1);
+		ac.abort();
+		await first.catch(() => undefined);
+		await waitUntil(() => h.signals()[0]?.aborted === true, "the tool's signal to abort");
+		await new Promise((r) => setTimeout(r, 60));
+
+		// The orphan is still blocked inside execute(), so this proves the release
+		// path, not the finally.
+		const second = h.client.callTool({ name: "ask_user_question", arguments: {} });
+		await h.waitForCalls(2);
+		h.release("orphan answer"); // the abandoned call, resolving late
+		h.release("live answer");
+		const result = await second;
+		expect(isError(result)).toBe(false);
+		expect(textOf(result)).toBe("live answer");
+
+		await h.close();
+	});
+
+	it("does not let a late orphan clear a successor's slot", async () => {
+		const h = await harness("ask_user_question");
+		setSingleFlightOrphanGraceMs(25);
+
+		const ac = new AbortController();
+		const orphan = h.client.callTool({ name: "ask_user_question", arguments: {} }, undefined, {
+			signal: ac.signal,
+		});
+		await h.waitForCalls(1);
+		ac.abort();
+		await orphan.catch(() => undefined);
+		await waitUntil(() => h.signals()[0]?.aborted === true, "the tool's signal to abort");
+		await new Promise((r) => setTimeout(r, 60));
+
+		const live = h.client.callTool({ name: "ask_user_question", arguments: {} });
+		await h.waitForCalls(2);
+
+		// The orphan finishes now. Its finally must leave the live call's slot alone.
+		h.release("orphan answer");
+		await waitUntil(() => h.signals().length === 2, "both calls to be registered");
+
+		const third = await h.client.callTool({ name: "ask_user_question", arguments: {} });
+		expect(isError(third)).toBe(true);
+		expect(h.entered()).toBe(2);
+
+		h.release("live answer");
+		expect(textOf(await live)).toBe("live answer");
 		await h.close();
 	});
 });

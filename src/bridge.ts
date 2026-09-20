@@ -257,6 +257,7 @@ export async function captureBridgeTools(realPi: ExtensionAPI, envOverride?: str
 export function clearBridgeCache(): void {
 	capturePromise = undefined;
 	inFlightSingleFlight.clear();
+	orphanGraceMs = DEFAULT_ORPHAN_GRACE_MS;
 }
 
 /** Strip TypeBox symbol keys; guarantee an object-typed JSON schema. */
@@ -299,8 +300,36 @@ let callCounter = 0;
  */
 const SINGLE_FLIGHT_TOOLS = new Set(["ask_user_question"]);
 
-/** In-flight callId per single-flight tool name. Empty when nothing is pending. */
-const inFlightSingleFlight = new Map<string, string>();
+/** What a single-flight tool is currently holding, and whether its caller left. */
+type InFlightEntry = {
+	callId: string;
+	startedAt: number;
+	/** When the caller abandoned the call; undefined while the caller is still waiting. */
+	abortedAt?: number;
+};
+
+/** In-flight entry per single-flight tool name. Empty when nothing is pending. */
+const inFlightSingleFlight = new Map<string, InFlightEntry>();
+
+/**
+ * How long a call whose caller has left keeps blocking its successors.
+ *
+ * The block itself is correct: the pi-side question is still on screen, so
+ * admitting a second call would stack a second overlay on the same user. But
+ * the slot is released in a finally, and ask_user_question cannot be cancelled
+ * (its execute ignores the signal it is handed), so the finally does not run
+ * until the user answers. A user who never answers would leave the tool
+ * refusing for the rest of the process. Cap the block instead of trusting the
+ * tool to unwind: past the grace window the old overlay is treated as
+ * abandoned and a fresh question is allowed through.
+ */
+const DEFAULT_ORPHAN_GRACE_MS = 5 * 60_000;
+let orphanGraceMs = DEFAULT_ORPHAN_GRACE_MS;
+
+/** Test hook: shorten the orphan grace window so the release path is testable. */
+export function setSingleFlightOrphanGraceMs(ms: number): void {
+	orphanGraceMs = ms;
+}
 
 /** Build a fresh McpServer serving `tools`; one instance per delegated session. */
 export function buildBridgeServer(
@@ -356,27 +385,40 @@ export function buildBridgeServer(
 		if (singleFlight) {
 			const pending = inFlightSingleFlight.get(tool.name);
 			if (pending !== undefined) {
-				trace("bridge.reject.inflight", { tool: tool.name, blockedBy: pending });
-				return {
-					content: [
-						{
-							type: "text",
-							text: `A ${tool.name} call (${pending}) is already awaiting the user's answer. Your earlier call is still live even though this connection timed out -- the user will answer that one. Do not issue another; wait for the pending result.`,
-						},
-					],
-					isError: true,
-				};
+				const orphanedForMs = pending.abortedAt === undefined ? undefined : Date.now() - pending.abortedAt;
+				if (orphanedForMs !== undefined && orphanedForMs >= orphanGraceMs) {
+					// Caller gone, grace spent: stop blocking. The old call may still
+					// resolve later; its finally will not touch this slot (see below).
+					trace("bridge.orphan.release", { tool: tool.name, releasedCallId: pending.callId, orphanedForMs });
+					inFlightSingleFlight.delete(tool.name);
+				} else {
+					trace("bridge.reject.inflight", {
+						tool: tool.name,
+						blockedBy: pending.callId,
+						pendingForMs: Date.now() - pending.startedAt,
+						orphanedForMs,
+					});
+					return {
+						content: [
+							{
+								type: "text",
+								text: `A ${tool.name} call (${pending.callId}) is already on the user's screen. This connection timed out, so its answer cannot be returned to you -- but the question is still displayed and asking again would stack a second one on the same user. Do not retry ${tool.name}; continue without an answer, or state what you need and stop.`,
+							},
+						],
+						isError: true,
+					};
+				}
 			}
 		}
 		callCounter += 1;
 		const callId = `ccbridge-${callCounter}`;
-		if (singleFlight) inFlightSingleFlight.set(tool.name, callId);
+		const startedAt = Date.now();
+		if (singleFlight) inFlightSingleFlight.set(tool.name, { callId, startedAt });
 		// Trace the invocation, not the narration: a double-executed tool (the
 		// same @pi/ask_user_question asked twice) is only distinguishable from a
 		// model that chose to call it twice by counting the calls that actually
 		// arrived here.
 		trace("bridge.call", { callId, tool: tool.name, args: request.params.arguments ?? {}, singleFlight });
-		const startedAt = Date.now();
 		// extra.signal fires when the CALLER cancels or drops the connection.
 		// Passing only the bridge-lifetime signal meant a call whose caller had
 		// already given up kept running, holding a question in the user's queue
@@ -384,6 +426,11 @@ export function buildBridgeServer(
 		// still cancels as well.
 		const execSignal = extra?.signal ? AbortSignal.any([signal, extra.signal]) : signal;
 		const onAbort = () => {
+			// Stamp the abort rather than releasing the slot now: the question is
+			// still on the user's screen, so an immediate retry must still be
+			// refused. This only starts the clock on the grace window.
+			const entry = inFlightSingleFlight.get(tool.name);
+			if (entry?.callId === callId) entry.abortedAt = Date.now();
 			trace("bridge.abort", {
 				callId,
 				tool: tool.name,
@@ -407,7 +454,12 @@ export function buildBridgeServer(
 			};
 		} finally {
 			execSignal.removeEventListener("abort", onAbort);
-			if (singleFlight) inFlightSingleFlight.delete(tool.name);
+			// Only if the slot is still ours. An orphan released past its grace
+			// window can resolve after a successor has claimed the slot, and
+			// deleting unconditionally would unblock a live question.
+			if (singleFlight && inFlightSingleFlight.get(tool.name)?.callId === callId) {
+				inFlightSingleFlight.delete(tool.name);
+			}
 		}
 	});
 
