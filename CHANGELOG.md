@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Docs accuracy: `PI_KIRO_RESUME` applies to the chat transport only.** The README env table
+  previously implied the flag applied to all transports. The ACP transport (`PI_KIRO_TRANSPORT=acp`)
+  has its own built-in divergence detection in `acp-session.ts` (`planAcpTurn`) and is not gated on
+  `PI_KIRO_RESUME` at all. The README row now says so explicitly and documents the escape hatch for
+  users who want to fully disable session continuity under ACP (`PI_KIRO_TRANSPORT=chat` +
+  `PI_KIRO_RESUME=off`). A regression test in `acp-session.test.ts` pins this independence.
 - **`/kiro-subagents on` no longer destroys an agent's existing model routing.** It used to overwrite
   a pre-existing `model:` value with no record of it, so a later `off` had nothing to restore and
   deleted the line outright -- silently discarding routing the user had set by hand. `on` now stashes
