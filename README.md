@@ -87,6 +87,7 @@ fails quietly — see the transport section of the
 | `PI_KIRO_CHAT_TIMEOUT_MS` | `2700000` (45 min) | Hard turn ceiling for the chat transport; child killed if exceeded |
 | `PI_KIRO_TURN_TIMEOUT_MS` | `2700000` (45 min) | Hard turn ceiling for the ACP transport pending requests |
 | `PI_KIRO_IDLE_TIMEOUT_MS` | `600000` (10 min) | Idle timeout before killing the persistent ACP child |
+| `PI_KIRO_MCP_STARTUP_TIMEOUT_MS` | `30000` (30 s) | ACP transport: how long to wait for all MCP servers to report ready after `session/new` before failing the turn. Override for slow-starting servers or to speed up tests. |
 
 ## Security scanning
 
