@@ -176,6 +176,12 @@ describe("discoverWorkflowMcpServers", () => {
 	let dir: string;
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "pi-kiro-wmcp-"));
+		// test-setup.ts pins PI_KIRO_WORKFLOW_MCP=off for the whole run so no other
+		// suite depends on whether the checkout is a GSD project. This describe is
+		// the one place that exercises discovery for real, so it owns the variable:
+		// cleared before each test, and set explicitly by the tests about the
+		// opt-out. Clearing only in afterEach left the FIRST test inheriting "off".
+		delete process.env.PI_KIRO_WORKFLOW_MCP;
 	});
 	afterEach(() => {
 		rmSync(dir, { recursive: true, force: true });
