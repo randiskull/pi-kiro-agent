@@ -11,15 +11,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeAgentProfile } from "../src/kiro-bridge.js";
+import { createToolUseStreamParser, parseKiroToolUses, synthesizeToolCallBlocks } from "../src/kiro-tooluse-parser.js";
 import {
 	WORKFLOW_MCP_SERVER_KEY,
 	_resetWorkflowMcpNoticesForTest,
-	createToolUseStreamParser,
 	discoverWorkflowMcpServers,
-	parseKiroToolUses,
-	synthesizeToolCallBlocks,
 	synthesizeWorkflowMcpEntry,
-} from "../src/workflow-mcp.js";
+} from "../src/workflow-mcp-discovery.js";
 
 // Captured (ANSI-stripped) from the live probe: one real gsd tool round-trip.
 const PROBE_OUTPUT = `Running tool gsd_milestone_status with the param (from mcp server: gsdworkflow)
@@ -178,6 +176,12 @@ describe("discoverWorkflowMcpServers", () => {
 	let dir: string;
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "pi-kiro-wmcp-"));
+		// test-setup.ts pins PI_KIRO_WORKFLOW_MCP=off for the whole run so no other
+		// suite depends on whether the checkout is a GSD project. This describe is
+		// the one place that exercises discovery for real, so it owns the variable:
+		// cleared before each test, and set explicitly by the tests about the
+		// opt-out. Clearing only in afterEach left the FIRST test inheriting "off".
+		delete process.env.PI_KIRO_WORKFLOW_MCP;
 	});
 	afterEach(() => {
 		rmSync(dir, { recursive: true, force: true });

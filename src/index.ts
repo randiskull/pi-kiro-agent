@@ -28,8 +28,45 @@ import { makeStreamViaAcp } from "./acp-transport.js";
 import { makeStreamViaKiro } from "./stream-adapter.js";
 import { wireSubagents } from "./subagent-wiring.js";
 
-// Latest ExtensionContext, captured per turn for bridged tool execution.
-// Last-writer-wins under parallel turns in concurrent sessions.
+/** Comma-separated name list → trimmed, non-empty names. Shared by both /kiro-subagents branches. */
+export function parseNameList(csv: string): string[] {
+	return csv
+		.split(",")
+		.map((name) => name.trim())
+		.filter((name) => name.length > 0);
+}
+
+interface SubagentsArgs {
+	mode: "on" | "off" | "invalid";
+	model?: string;
+	only?: string[];
+}
+
+/** Pure parse of /kiro-subagents's argument string — no runtime deps, unit-testable standalone. */
+export function parseSubagentsArgs(args: string): SubagentsArgs {
+	const trimmed = args.trim();
+	if (trimmed === "off" || trimmed.startsWith("off ")) {
+		const names = trimmed === "off" ? "" : trimmed.slice(4).trim();
+		const only = names.length > 0 ? parseNameList(names) : undefined;
+		return { mode: "off", only };
+	}
+	if (trimmed === "on" || trimmed.startsWith("on ")) {
+		const rest = trimmed === "on" ? [] : trimmed.slice(3).trim().split(/\s+/);
+		const model = rest[0]?.includes("/") ? rest.shift() : DEFAULT_SUBAGENT_MODEL;
+		const only = parseNameList(rest.join(" "));
+		return { mode: "on", model, only: only.length > 0 ? only : undefined };
+	}
+	return { mode: "invalid" };
+}
+
+// ExtensionContext keyed by session id, captured per turn for bridged tool
+// execution. A bridged tool call resolves through this map at CALL TIME (not
+// a snapshot taken when the bridge was created), so a tool call made inside
+// one session's delegated turn always reaches for THAT session's newest ctx,
+// never a different session's turn that happened to write more recently
+// [L0-04]. latestCtx stays as a last-resort fallback for the rare case a
+// session id cannot be resolved.
+const sessionCtxMap = new Map<string, ExtensionContext>();
 let latestCtx: ExtensionContext | undefined;
 
 const deps: {
@@ -60,12 +97,18 @@ function maybeSelfHeal(pi: ExtensionAPI): void {
 		});
 }
 
-async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string> {
+/** ensureRegistered's per-call outcome — read this, never the lingering module-global `registered` flag [L0-03]. */
+interface RegistrationResult {
+	ok: boolean;
+	detail: string;
+}
+
+async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<RegistrationResult> {
 	if (force) clearKiroReadinessCache();
 	const readiness = await checkKiroReadiness(force);
 	deps.binaryPath = readiness.binaryPath;
 	if (!readiness.ready) {
-		return `kiro provider NOT registered: ${readiness.detail}`;
+		return { ok: false, detail: `kiro provider NOT registered: ${readiness.detail}` };
 	}
 	// ALWAYS register when ready — never gate on the local `registered` flag.
 	// The host's registerProvider is an upsert (validate → apply → upsert), and
@@ -73,7 +116,8 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string
 	// reload) while this module (and its flag) survive. Gating on the flag made
 	// ensureRegistered, /kiro, and the lazy self-heal all no-ops after /new,
 	// wedging the provider until a full process relaunch. The flag remains only
-	// as a status/throttle hint for maybeSelfHeal and /kiro's notify level.
+	// as maybeSelfHeal's throttle hint ("have we ever registered") — /kiro reads
+	// this call's own {ok, detail} for its notify level, not the flag [L0-03].
 	{
 		const models = readiness.binaryPath
 			? await fetchKiroModels(readiness.binaryPath)
@@ -105,7 +149,10 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<string
 		pi.registerProvider(KIRO_PROVIDER, config);
 		registered = true;
 	}
-	return `kiro provider registered (${readiness.detail}). Select with /model ${KIRO_PROVIDER}/<id>.`;
+	return {
+		ok: true,
+		detail: `kiro provider registered (${readiness.detail}). Select with /model ${KIRO_PROVIDER}/<id>.`,
+	};
 }
 
 export default async function piKiro(pi: ExtensionAPI): Promise<void> {
@@ -121,9 +168,11 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 
 	pi.on("context", (_event, ctx) => {
 		latestCtx = ctx;
+		sessionCtxMap.set(ctx.sessionManager.getSessionId(), ctx);
 	});
 	pi.on("before_provider_request", (_event, ctx) => {
 		latestCtx = ctx;
+		sessionCtxMap.set(ctx.sessionManager.getSessionId(), ctx);
 		maybeSelfHeal(pi);
 	});
 	// Session starts/reloads (/new, /resume, fork, reload) drop dynamically
@@ -138,14 +187,30 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 	deps.getBridge = async (signal) => {
 		if (!bridgeEnabled()) return undefined;
 		const tools = await captureBridgeTools(pi, process.env.PI_KIRO_BRIDGE_TOOLS);
-		return serveBridgeHttp(tools, () => latestCtx, signal);
+		// Pin this bridge to the session that is creating it: both transports
+		// await options.onPayload (-> before_provider_request -> the handler
+		// above) before ever calling deps.getBridge, so sessionCtxMap already
+		// holds THIS turn's session by the time we get here. Captured once, at
+		// call time, rather than re-read from the global on every bridged tool
+		// call -- so a DIFFERENT session's turn writing to the map afterward
+		// can no longer steal this bridge's tool calls [L0-04].
+		//
+		// Residual interleave window (accepted, not closed here): a concurrent
+		// turn from another session racing its own before_provider_request
+		// between that await and this line would still win originId. Closing
+		// that fully means threading session identity explicitly from the
+		// transport into getBridge(signal) instead of reading the global here
+		// -- an intentionally deferred, larger ripple into both transports'
+		// getBridge(signal) call sites (stream-adapter.ts, acp-transport.ts).
+		const originId = latestCtx?.sessionManager.getSessionId();
+		return serveBridgeHttp(tools, () => (originId ? sessionCtxMap.get(originId) ?? latestCtx : latestCtx), signal);
 	};
 
 	pi.registerCommand("kiro", {
 		description: "Show Kiro delegation status and (re)register the provider",
 		handler: async (_args, ctx) => {
-			const summary = await ensureRegistered(pi, true);
-			ctx.ui.notify(summary, registered ? "info" : "error");
+			const result = await ensureRegistered(pi, true);
+			ctx.ui.notify(result.detail, result.ok ? "info" : "error");
 		},
 	});
 
@@ -157,47 +222,31 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 				.filter((item) => item.startsWith(prefix))
 				.map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
-			const trimmed = args.trim();
-			if (trimmed === "off" || trimmed.startsWith("off ")) {
-				const names = trimmed === "off" ? "" : trimmed.slice(4).trim();
-				const only =
-					names.length > 0
-						? names
-								.split(",")
-								.map((name) => name.trim())
-								.filter((name) => name.length > 0)
-						: undefined;
-				const result = wireSubagents(undefined, only);
+			const parsed = parseSubagentsArgs(args);
+			if (parsed.mode === "invalid") {
 				ctx.ui.notify(
-					`Unrouted ${result.changed.length} ${only ? "named" : "of all"} agent(s) from kiro (${result.skipped.length} untouched).`,
+					"Usage: /kiro-subagents on [provider/model] [names,...] | off [names,...]",
+					"error",
+				);
+				return;
+			}
+			if (parsed.mode === "off") {
+				const result = wireSubagents(undefined, parsed.only);
+				ctx.ui.notify(
+					`Unrouted ${result.changed.length} ${parsed.only ? "named" : "of all"} agent(s) from kiro (${result.skipped.length} untouched).`,
 					"info",
 				);
 				return;
 			}
-			if (trimmed === "on" || trimmed.startsWith("on ")) {
-				const rest = trimmed === "on" ? [] : trimmed.slice(3).trim().split(/\s+/);
-				const model = rest[0]?.includes("/") ? rest.shift() : DEFAULT_SUBAGENT_MODEL;
-				const names = rest
-					.join(" ")
-					.split(",")
-					.map((name) => name.trim())
-					.filter((name) => name.length > 0);
-				const only = names.length > 0 ? names : undefined;
-				if (!model || !model.startsWith(`${KIRO_PROVIDER}/`)) {
-					ctx.ui.notify(`Model must be ${KIRO_PROVIDER}/<id> (got "${model}").`, "error");
-					return;
-				}
-				const registration = await ensureRegistered(pi);
-				const result = wireSubagents(model, only);
-				ctx.ui.notify(
-					`${result.changed.length} agent(s) now use ${model}; ${result.skipped.length} already set or missing. ${registration}`,
-					"info",
-				);
+			if (!parsed.model || !parsed.model.startsWith(`${KIRO_PROVIDER}/`)) {
+				ctx.ui.notify(`Model must be ${KIRO_PROVIDER}/<id> (got "${parsed.model}").`, "error");
 				return;
 			}
+			const registration = await ensureRegistered(pi);
+			const result = wireSubagents(parsed.model, parsed.only);
 			ctx.ui.notify(
-				"Usage: /kiro-subagents on [provider/model] [names,...] | off [names,...]",
-				"error",
+				`${result.changed.length} agent(s) now use ${parsed.model}; ${result.skipped.length} already set or missing. ${registration.detail}`,
+				"info",
 			);
 		},
 	});

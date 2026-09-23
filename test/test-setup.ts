@@ -19,3 +19,17 @@ import { TEST_HOME_ROOT_ENV } from "./global-setup.js";
 const TEST_HOME = mkdtempSync(join(process.env[TEST_HOME_ROOT_ENV] ?? tmpdir(), "pi-kiro-test-home-"));
 process.env.HOME = TEST_HOME;
 process.env.USERPROFILE = TEST_HOME;
+
+// Opt out of workflow-MCP discovery for the same reason $HOME is redirected: it
+// reads the developer's real environment. discoverWorkflowMcpServers() walks up
+// from process.cwd() looking for a GSD project, and pi-kiro's own repo root has
+// a `.gsd` directory -- so it synthesizes a `gsdworkflow` server, startSession
+// adds it to the set it waits on, and every acp-transport.test.ts script that
+// answers initialize/session-new but never sends
+// `_kiro.dev/mcp/server_initialized` for it hangs on the startup gate until the
+// 5s test timeout. That is how 29 of those 43 tests came to fail: the suite was
+// silently coupled to whether the checkout happened to be a GSD project.
+//
+// test/workflow-mcp.test.ts is unaffected -- it deletes this variable in its own
+// beforeEach and drives discovery against explicit fixture directories.
+process.env.PI_KIRO_WORKFLOW_MCP = "off";
