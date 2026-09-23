@@ -61,9 +61,10 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
+import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import { buildDeltaPrompt, buildPromptFromContext, mapEffort } from "./stream-adapter.js";
-import { discoverWorkflowMcpServers } from "./workflow-mcp.js";
+import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import {
 	advanceAcpSession,
 	dropAcpSession,
@@ -72,6 +73,75 @@ import {
 } from "./acp-session.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve which ACP session this turn runs against, mutating `acpEntry` as
+ * needed: a brand-new child (no acpSessionId yet) gets its first session; an
+ * existing session whose message-prefix diverged (Pi compacted/edited
+ * history) is dropped and replaced with a fresh one on the same child; a
+ * session that still matches the prefix resumes as-is. Scoped extraction of
+ * streamViaAcp's 3-branch session setup [L1-05] -- the notification-handler
+ * wiring that follows stays inline in the caller, as specified.
+ */
+async function resolveSession(
+	deps: AcpDeps,
+	acpEntry: AcpChild,
+	useResume: boolean,
+	workflowServers: ReturnType<typeof discoverWorkflowMcpServers>,
+): Promise<string> {
+	if (!acpEntry.acpSessionId) {
+		// New child: no session yet -- create one now.
+		// A previous startSession attempt may have failed the MCP startup gate
+		// after mounting a bridge (its session never went ready, so acpSessionId
+		// was cleared). Nothing else owns that handle now that bridge lifetime is
+		// session-scoped, so close it here or its HTTP server leaks for the life
+		// of the child.
+		if (acpEntry.bridge) {
+			await acpEntry.bridge.close().catch(() => undefined);
+			acpEntry.bridge = undefined;
+		}
+		// Session-scoped signal, not turnSignal: the bridge must outlive this
+		// turn and die with the session (see AcpChild.sessionAbort).
+		//
+		// sessionAbort is deliberately REUSED here, not aborted-and-replaced
+		// the way the divergence branch below does it. The asymmetry tracks
+		// the state, not an oversight: divergence discards a session that
+		// reached `ready`, whose bridge may have tool calls in flight, so its
+		// controller has to be retired to cancel them. This branch only ever
+		// discards a session that never reached `ready` -- no prompt was sent,
+		// so nothing can be in flight -- and the controller was never aborted,
+		// so it is still a valid handle on the child's current session.
+		// Aborting it would also be wrong on the common path, where this is a
+		// brand-new child with no predecessor session at all.
+		const bridge = await deps.getBridge?.(acpEntry.sessionAbort.signal);
+		acpEntry.bridge = bridge;
+		const mcpServers = buildMcpServersConfig(bridge, workflowServers);
+		await startSession(acpEntry, mcpServers);
+		resetIdleTimer(acpEntry);
+		return acpEntry.acpSessionId!;
+	} else if (!useResume) {
+		// Existing session but prefix diverged -- create a fresh session on the same child.
+		dropAcpSession(acpEntry.acpSessionId);
+		acpEntry.acpSessionId = undefined;
+		acpEntry.ready = false;
+		acpEntry.sessionAbort.abort();
+		await acpEntry.bridge?.close().catch(() => undefined);
+		acpEntry.bridge = undefined;
+		acpEntry.sessionAbort = new AbortController();
+		// The successor session's bridge rides the successor controller -- the
+		// one aborted above is spent.
+		const newBridge = await deps.getBridge?.(acpEntry.sessionAbort.signal);
+		acpEntry.bridge = newBridge;
+		const mcpServers = buildMcpServersConfig(newBridge, workflowServers);
+		await startSession(acpEntry, mcpServers);
+		resetIdleTimer(acpEntry);
+		return acpEntry.acpSessionId!;
+	} else {
+		// Resume: reuse the existing session.
+		resetIdleTimer(acpEntry);
+		return acpEntry.acpSessionId!;
+	}
+}
 
 interface AcpDeps {
 	binaryPath: string | undefined;
@@ -86,11 +156,6 @@ interface AcpDeps {
 
 /** ACP protocol version — pinned to guard against kiro-cli drift (§5 row 1). */
 const ACP_PROTOCOL_VERSION = 1;
-/** Parse a positive-integer millisecond override from the environment. */
-function envMs(name: string, fallback: number): number {
-	const raw = Number.parseInt(process.env[name] ?? "", 10);
-	return Number.isFinite(raw) && raw > 0 ? raw : fallback;
-}
 /**
  * Idle-timeout before killing the persistent acp child (10 min per §3.1).
  * "Idle" means the child has been SILENT for this long — any inbound NDJSON
@@ -735,28 +800,6 @@ async function getOrCreateChild(
 	return spawnAcpChild(deps.binaryPath, cwd, key, childRegistry, turnSignal);
 }
 
-// ─── emptyAssistantMessage ────────────────────────────────────────────────────
-
-function emptyAssistantMessage(model: Model<any>): AssistantMessage {
-	return {
-		role: "assistant",
-		content: [],
-		api: model.api,
-		provider: model.provider,
-		model: model.id,
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		stopReason: "stop",
-		timestamp: Date.now(),
-	};
-}
-
 function mapStopReason(reason: string | undefined): AssistantMessage["stopReason"] {
 	switch (reason) {
 		case "end_turn": return "stop";
@@ -830,74 +873,11 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					? planAcpTurn(cwd, acpEntry.acpSessionId, context.messages)
 					: { mode: "fresh" as const, deltaStart: 0 };
 				const useResume = plan.mode === "resume";
-				let currentSessionId: string;
-
-				if (!acpEntry.acpSessionId) {
-					// New child: no session yet — create one now.
-					// A previous startSession attempt may have failed the MCP startup gate
-					// after mounting a bridge (its session never went ready, so acpSessionId
-					// was cleared). Nothing else owns that handle now that bridge lifetime is
-					// session-scoped, so close it here or its HTTP server leaks for the life
-					// of the child.
-					if (acpEntry.bridge) {
-						await acpEntry.bridge.close().catch(() => undefined);
-						acpEntry.bridge = undefined;
-					}
-					// Session-scoped signal, not turnSignal: the bridge must outlive this
-					// turn and die with the session (see AcpChild.sessionAbort).
-					//
-					// sessionAbort is deliberately REUSED here, not aborted-and-replaced
-					// the way the divergence branch below does it. The asymmetry tracks
-					// the state, not an oversight: divergence discards a session that
-					// reached `ready`, whose bridge may have tool calls in flight, so its
-					// controller has to be retired to cancel them. This branch only ever
-					// discards a session that never reached `ready` — no prompt was sent,
-					// so nothing can be in flight — and the controller was never aborted,
-					// so it is still a valid handle on the child's current session.
-					// Aborting it would also be wrong on the common path, where this is a
-					// brand-new child with no predecessor session at all.
-					const bridge = await deps.getBridge?.(acpEntry.sessionAbort.signal);
-					acpEntry.bridge = bridge;
-					const mcpServers = buildMcpServersConfig(bridge, workflowServers);
-					await startSession(acpEntry, mcpServers);
-					resetIdleTimer(acpEntry);
-					currentSessionId = acpEntry.acpSessionId!;
-				} else if (!useResume) {
-					// Existing session but prefix diverged — create a fresh session on the same child.
-					dropAcpSession(acpEntry.acpSessionId);
-					acpEntry.acpSessionId = undefined;
-					acpEntry.ready = false;
-					acpEntry.sessionAbort.abort();
-					await acpEntry.bridge?.close().catch(() => undefined);
-					acpEntry.bridge = undefined;
-					acpEntry.sessionAbort = new AbortController();
-					// The successor session's bridge rides the successor controller — the
-					// one aborted above is spent.
-					const newBridge = await deps.getBridge?.(acpEntry.sessionAbort.signal);
-					acpEntry.bridge = newBridge;
-					const mcpServers = buildMcpServersConfig(newBridge, workflowServers);
-					await startSession(acpEntry, mcpServers);
-					resetIdleTimer(acpEntry);
-					currentSessionId = acpEntry.acpSessionId!;
-				} else {
-					// Resume: reuse the existing session.
-					resetIdleTimer(acpEntry);
-					currentSessionId = acpEntry.acpSessionId!;
-				}
+				const currentSessionId = await resolveSession(deps, acpEntry, useResume, workflowServers);
 
 				// Thinking block management
-				let thinkingIndex = -1;
-				const pushThinking = (delta: string) => {
-					if (delta.length === 0) return;
-					if (thinkingIndex === -1) {
-						output.content.push({ type: "thinking", thinking: "" });
-						thinkingIndex = output.content.length - 1;
-						stream.push({ type: "thinking_start", contentIndex: thinkingIndex, partial: output });
-					}
-					const block = output.content[thinkingIndex];
-					if (block.type === "thinking") block.thinking += delta;
-					stream.push({ type: "thinking_delta", contentIndex: thinkingIndex, delta, partial: output });
-				};
+				const thinkingWriter = createThinkingWriter(stream, output);
+				const pushThinking = thinkingWriter.push;
 
 				let textAccum = "";
 				let creditsTotal = 0;
@@ -980,15 +960,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				}
 
 				// Close thinking block
-				if (thinkingIndex !== -1) {
-					const block = output.content[thinkingIndex];
-					stream.push({
-						type: "thinking_end",
-						contentIndex: thinkingIndex,
-						content: block.type === "thinking" ? block.thinking : "",
-						partial: output,
-					});
-				}
+				thinkingWriter.end();
 
 				// Push text block
 				// Defensive sentinel strip: a model that previously ran under the chat

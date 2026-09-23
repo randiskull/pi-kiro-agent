@@ -34,13 +34,13 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { _resetSessions } from "../src/session-manager.js";
 import { makeStreamViaKiro } from "../src/stream-adapter.js";
+import { parseKiroToolUses } from "../src/kiro-tooluse-parser.js";
 import {
 	_resetWorkflowMcpNoticesForTest,
 	discoverWorkflowMcpServers,
-	parseKiroToolUses,
 	WORKFLOW_MCP_CONFIG_NAME,
 	WORKFLOW_MCP_SERVER_KEY,
-} from "../src/workflow-mcp.js";
+} from "../src/workflow-mcp-discovery.js";
 import {
 	ctx,
 	drainTurn,
