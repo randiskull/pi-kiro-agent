@@ -160,7 +160,10 @@ describe("provider registration lifecycle", () => {
 	it("pins each session's bridge to that session's own ctx, not whichever session wrote latestCtx last [L0-04]", async () => {
 		const piKiro = await loadExtension();
 		const { bridgeEnabled } = await import("../src/kiro-bridge.js");
-		vi.mocked(bridgeEnabled).mockReturnValue(true);
+		// mockReturnValueOnce (not mockReturnValue): self-scopes to this test's
+		// single getBridge call so the `true` cannot leak to a later-appended
+		// test — vi.clearAllMocks() clears call history, not the implementation.
+		vi.mocked(bridgeEnabled).mockReturnValueOnce(true);
 		const { serveBridgeHttp } = await import("../src/bridge.js");
 		const serveMock = vi.mocked(serveBridgeHttp);
 		const { makeStreamViaKiro } = await import("../src/stream-adapter.js");
@@ -191,6 +194,87 @@ describe("provider registration lifecycle", () => {
 		// ctx at call time, not session-B's, even though B wrote most recently.
 		// Before the fix this read a single `latestCtx` global and would have
 		// returned ctxB here — a bridged tool call from A's turn misrouted to B.
+		expect(getterA()).toBe(ctxA);
+	});
+});
+
+
+describe("session ctx map is bounded [L0-04 leak]", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		// Force the chat transport deterministically: on this branch (segment 1)
+		// test-setup.ts does not yet scrub PI_KIRO_TRANSPORT (that lands with
+		// c6c9a42 in a later segment), and index.ts selects makeStreamViaAcp when
+		// it is "acp" — leaving makeStreamViaKiro (the mock the touch test reads
+		// getBridge from) uncalled. Keep this suite hermetic to the launching shell.
+		delete process.env.PI_KIRO_TRANSPORT;
+	});
+
+	const ctxFor = (id: string) => ({ sessionManager: { getSessionId: () => id } });
+
+	it("never retains more than the cap, however many sessions fire", async () => {
+		const piKiro = await loadExtension();
+		const { _sessionCtxCount } = await import("../src/index.js");
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+
+		// 200 distinct sessions each fire before_provider_request. Pre-fix this
+		// grew the map to 200 (one ExtensionContext retained per session id, for
+		// the life of the process, never pruned); bounded it caps at 64.
+		for (let i = 0; i < 200; i++) {
+			await fake.emit("before_provider_request", {}, ctxFor(`session-${i}`));
+		}
+		expect(_sessionCtxCount()).toBe(64);
+	});
+
+	it("a ctx with no sessionManager does not throw and is not retained", async () => {
+		const piKiro = await loadExtension();
+		const { _sessionCtxCount } = await import("../src/index.js");
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+
+		// The set-sites guard on ctx?.sessionManager?.getSessionId() — a ctx
+		// missing sessionManager must not throw inside the event handler (which
+		// would also skip maybeSelfHeal on before_provider_request).
+		await expect(fake.emit("before_provider_request", {}, {})).resolves.toBeUndefined();
+		await expect(fake.emit("context", {}, undefined)).resolves.toBeUndefined();
+		expect(_sessionCtxCount()).toBe(0);
+	});
+
+	it("touch-on-use keeps an in-flight session's ctx off the eviction front", async () => {
+		const piKiro = await loadExtension();
+		const { bridgeEnabled } = await import("../src/kiro-bridge.js");
+		vi.mocked(bridgeEnabled).mockReturnValueOnce(true);
+		const { serveBridgeHttp } = await import("../src/bridge.js");
+		const serveMock = vi.mocked(serveBridgeHttp);
+		const { makeStreamViaKiro } = await import("../src/stream-adapter.js");
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const deps = vi.mocked(makeStreamViaKiro).mock.calls[0]?.[0] as {
+			getBridge?: (signal: AbortSignal) => Promise<unknown>;
+		};
+
+		const ctxA = ctxFor("session-A");
+		// A's turn: before_provider_request records A, then getBridge pins A as
+		// this bridge's origin. A is now the oldest (least-recently-used) entry.
+		await fake.emit("before_provider_request", {}, ctxA);
+		await deps.getBridge?.(new AbortController().signal);
+		const getterA = serveMock.mock.calls[0]?.[1] as () => unknown;
+
+		// Churn from 63 other sessions fills the map to the cap; A sits at the
+		// eviction front.
+		for (let i = 0; i < 63; i++) {
+			await fake.emit("before_provider_request", {}, ctxFor(`other-${i}`));
+		}
+		// A bridged tool call resolves A's ctx. This READ must count as a touch,
+		// moving A to the MRU end. (Without touch-on-use A would be the next
+		// eviction victim and the assertion below would fall back to the wrong
+		// ctx.)
+		expect(getterA()).toBe(ctxA);
+
+		// One more session overflows the cap and evicts the true LRU entry — no
+		// longer A, because the read above touched it.
+		await fake.emit("before_provider_request", {}, ctxFor("overflow"));
 		expect(getterA()).toBe(ctxA);
 	});
 });
