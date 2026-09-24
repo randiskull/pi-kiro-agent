@@ -15,3 +15,8 @@ probes/*.json
 .gsd-id
 .rpiv
 *.bak
+
+# Trace output. PI_KIRO_TRACE records full prompt text and the raw arguments of
+# every bridged tool call, so a stray trace in the worktree is a secret leak that
+# scripts/secret-scan.mjs cannot catch (it only scans tracked files).
+*.jsonl

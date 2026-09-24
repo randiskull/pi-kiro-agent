@@ -304,6 +304,7 @@ export function clearBridgeCache(): void {
 	capturePromise = undefined;
 	inFlightSingleFlight.clear();
 	orphanGraceMs = DEFAULT_ORPHAN_GRACE_MS;
+	singleFlightCeilingMs = DEFAULT_SINGLE_FLIGHT_CEILING_MS;
 	warnedMissingTools.clear();
 }
 
@@ -373,9 +374,34 @@ const inFlightSingleFlight = new Map<string, InFlightEntry>();
 const DEFAULT_ORPHAN_GRACE_MS = 5 * 60_000;
 let orphanGraceMs = DEFAULT_ORPHAN_GRACE_MS;
 
+/**
+ * Hard ceiling on how long ONE call may hold the slot, measured from startedAt
+ * rather than from an abort.
+ *
+ * The grace window above keys off abortedAt, which onAbort only stamps when an
+ * abort actually reaches us. A caller that abandons a call WITHOUT aborting --
+ * a reset connection, a client that simply stops reading, an SDK path that does
+ * not surface cancellation -- leaves abortedAt undefined forever, and since
+ * ask_user_question also ignores the signal it is handed, the finally that
+ * would free the slot never runs either. The slot was then unreleasable for the
+ * life of the process: every later ask_user_question from every child refused.
+ *
+ * Measured from startedAt so it bounds that case without shortening the abort
+ * case, which stays governed by the grace window: kiro abandons a bridged call
+ * at about 120s, so the longest legitimate hold is that plus the grace window,
+ * comfortably inside this.
+ */
+const DEFAULT_SINGLE_FLIGHT_CEILING_MS = 15 * 60_000;
+let singleFlightCeilingMs = DEFAULT_SINGLE_FLIGHT_CEILING_MS;
+
 /** Test hook: shorten the orphan grace window so the release path is testable. */
 export function setSingleFlightOrphanGraceMs(ms: number): void {
 	orphanGraceMs = ms;
+}
+
+/** Test hook: shorten the hard ceiling so the no-abort release path is testable. */
+export function setSingleFlightCeilingMs(ms: number): void {
+	singleFlightCeilingMs = ms;
 }
 
 /** Build a fresh McpServer serving `tools`; one instance per delegated session. */
@@ -433,16 +459,33 @@ export function buildBridgeServer(
 			const pending = inFlightSingleFlight.get(tool.name);
 			if (pending !== undefined) {
 				const orphanedForMs = pending.abortedAt === undefined ? undefined : Date.now() - pending.abortedAt;
-				if (orphanedForMs !== undefined && orphanedForMs >= orphanGraceMs) {
+				const heldForMs = Date.now() - pending.startedAt;
+				// Two independent releases. "grace" is the caller-left case and is the
+				// common one. "ceiling" covers a call no abort ever arrived for, which
+				// leaves abortedAt undefined and would otherwise hold the slot for the
+				// life of the process -- see DEFAULT_SINGLE_FLIGHT_CEILING_MS.
+				const releaseReason =
+					orphanedForMs !== undefined && orphanedForMs >= orphanGraceMs
+						? "grace"
+						: heldForMs >= singleFlightCeilingMs
+							? "ceiling"
+							: undefined;
+				if (releaseReason !== undefined) {
 					// Caller gone, grace spent: stop blocking. The old call may still
 					// resolve later; its finally will not touch this slot (see below).
-					trace("bridge.orphan.release", { tool: tool.name, releasedCallId: pending.callId, orphanedForMs });
+					trace("bridge.orphan.release", {
+						tool: tool.name,
+						releasedCallId: pending.callId,
+						orphanedForMs,
+						heldForMs,
+						reason: releaseReason,
+					});
 					inFlightSingleFlight.delete(tool.name);
 				} else {
 					trace("bridge.reject.inflight", {
 						tool: tool.name,
 						blockedBy: pending.callId,
-						pendingForMs: Date.now() - pending.startedAt,
+						pendingForMs: heldForMs,
 						orphanedForMs,
 					});
 					return {
@@ -527,6 +570,19 @@ export interface HttpBridgeHandle {
 	toolNames: string[];
 	/** Optional `reason` is diagnostic only; it lands in the `bridge.close` trace. */
 	close: (reason?: string) => Promise<void>;
+	/**
+	 * Re-point this bridge's ExtensionContext lookup at whatever session is
+	 * current now.
+	 *
+	 * Only a CHILD-scoped bridge needs it. The owner captures an origin session
+	 * id when the bridge is mounted so a concurrent session cannot steal its tool
+	 * calls [L0-04]; that capture is correct for a bridge that dies with its
+	 * session, but an ACP bridge outlives every session on its child, so without
+	 * a rebind the second and later sessions run their bridged tools against the
+	 * FIRST session's ctx. Supplied by whoever built the handle (src/index.ts),
+	 * optional so the per-turn chat-transport bridge can ignore it.
+	 */
+	rebindOrigin?: () => void;
 }
 
 /**

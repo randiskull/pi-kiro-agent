@@ -5,6 +5,7 @@ import {
 	buildBridgeServer,
 	type CapturedTool,
 	clearBridgeCache,
+	setSingleFlightCeilingMs,
 	setSingleFlightOrphanGraceMs,
 } from "../src/bridge.js";
 
@@ -225,6 +226,38 @@ describe("bridge blocking-call guards", () => {
 		expect(isError(result)).toBe(false);
 		expect(textOf(result)).toBe("live answer");
 
+		await h.close();
+	});
+
+	it("releases the guard when no abort ever arrives", async () => {
+		// The grace window keys off abortedAt, which is only stamped when an abort
+		// REACHES us. A caller that abandons a call without aborting -- a reset
+		// connection, a client that stops reading, an SDK path that does not
+		// surface cancellation -- left abortedAt undefined, and since
+		// ask_user_question ignores the signal it is handed, the finally never ran
+		// either: the slot was unreleasable for the life of the process and every
+		// later question from every child was refused. A ceiling measured from
+		// startedAt bounds that case.
+		const h = await harness("ask_user_question");
+		// Grace far out of reach, so only the ceiling can release this.
+		setSingleFlightOrphanGraceMs(60_000);
+		setSingleFlightCeilingMs(25);
+
+		const first = h.client.callTool({ name: "ask_user_question", arguments: {} });
+		await h.waitForCalls(1);
+		await new Promise((r) => setTimeout(r, 60));
+
+		// Nothing aborted, so abortedAt is undefined and orphanedForMs stays
+		// undefined: before the ceiling this was refused, with entered() stuck at 1.
+		const second = h.client.callTool({ name: "ask_user_question", arguments: {} });
+		await h.waitForCalls(2);
+		expect(h.entered()).toBe(2);
+
+		h.release("first answer");
+		h.release("second answer");
+		expect(isError(await second)).toBe(false);
+		expect(textOf(await second)).toBe("second answer");
+		await first;
 		await h.close();
 	});
 

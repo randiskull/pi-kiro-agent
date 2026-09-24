@@ -159,10 +159,12 @@ async function collect(
 /** The transport does `bridge.close().catch(...)`, so the spy must be thenable. */
 const makeCloseSpy = () => vi.fn(() => Promise.resolve());
 
-/** One recorded getBridge() call: the signal it was handed and its close spy. */
+/** One recorded getBridge() call: the signal it was handed and its spies. */
 interface BridgeCall {
 	signal: AbortSignal;
 	close: ReturnType<typeof makeCloseSpy>;
+	/** Called by resolveSession at every session start; see the §5e.3 test. */
+	rebindOrigin: ReturnType<typeof vi.fn>;
 }
 
 /**
@@ -180,7 +182,8 @@ function makeBridgeDeps(): { calls: BridgeCall[]; deps: AcpDeps } {
 	let port = 40000;
 	const getBridge = async (signal: AbortSignal) => {
 		const close = makeCloseSpy();
-		calls.push({ signal, close });
+		const rebindOrigin = vi.fn();
+		calls.push({ signal, close, rebindOrigin });
 		const p = port++;
 		return {
 			url: `http://127.0.0.1:${p}/mcp`,
@@ -188,6 +191,7 @@ function makeBridgeDeps(): { calls: BridgeCall[]; deps: AcpDeps } {
 			token: "fake-token",
 			toolNames: ["todo"],
 			close,
+			rebindOrigin,
 		} as never;
 	};
 	return { calls, deps: { binaryPath: "kiro-cli", getBridge } };
@@ -1025,6 +1029,13 @@ describe("makeStreamViaAcp", () => {
 			expect(calls).toHaveLength(1);
 			expect(calls[0].close).not.toHaveBeenCalled();
 			expect(calls[0].signal.aborted).toBe(false);
+			// The URL is per CHILD, but the session a bridged tool runs against is per
+			// SESSION: every session start must re-point the handle's ctx origin, or
+			// session two keeps executing bridged tools against session one's
+			// ExtensionContext (src/index.ts _makeBridgeCtxBinding). Once per
+			// session/new, so a rebind missing from either branch of resolveSession
+			// leaves this at 1.
+			expect(calls[0].rebindOrigin).toHaveBeenCalledTimes(2);
 			// The reset still did its real job: the SESSION controller was retired, so
 			// bridged calls the discarded session had in flight are cancelled.
 			expect(sessionAbortBefore?.signal.aborted).toBe(true);

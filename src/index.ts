@@ -105,6 +105,36 @@ export function _sessionCtxCount(): number {
 	return sessionCtxMap.size;
 }
 
+/**
+ * The ctx accessor handed to one bridge, plus the rebind its owner calls when a
+ * new session starts on that same bridge.
+ *
+ * getCtx pins to the session that was current when the binding was made, so a
+ * concurrent turn from another session writing to the map cannot steal this
+ * bridge's tool calls [L0-04]. rebindOrigin re-points that pin, which is what a
+ * CHILD-scoped bridge needs: an ACP bridge is mounted once and reused by every
+ * session on its child (kiro can only ever call the URL it learned at
+ * session/new), so with a one-shot capture the second and later sessions
+ * resolved the FIRST session's ctx -- and kept resolving it, because the LRU
+ * still holds that entry, so the latestCtx fallback never fired either.
+ *
+ * Exported for tests: the pin and the rebind are only observable together.
+ */
+export function _makeBridgeCtxBinding(): {
+	getCtx: () => ExtensionContext | undefined;
+	rebindOrigin: () => void;
+} {
+	let originId = latestCtx?.sessionManager?.getSessionId();
+	return {
+		// Reads through resolveSessionCtx, so a long-lived bridge's own session
+		// counts as recently used and cannot be evicted by churn from others.
+		getCtx: () => (originId ? resolveSessionCtx(originId) ?? latestCtx : latestCtx),
+		rebindOrigin: () => {
+			originId = latestCtx?.sessionManager?.getSessionId();
+		},
+	};
+}
+
 const deps: {
 	binaryPath: string | undefined;
 	getBridge?: (
@@ -243,13 +273,19 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 		// transport into getBridge(signal) instead of reading the global here
 		// -- an intentionally deferred, larger ripple into both transports'
 		// getBridge(signal) call sites (stream-adapter.ts, acp-transport.ts).
-		const originId = latestCtx?.sessionManager?.getSessionId();
-		return serveBridgeHttp(
+		//
+		// The pin is REBINDABLE because an ACP bridge outlives the session that
+		// mounted it (one URL per child, §5e.3): resolveSession calls
+		// rebindOrigin at every session start, so session two does not keep
+		// running its bridged tools against session one's ctx.
+		const binding = _makeBridgeCtxBinding();
+		const handle = await serveBridgeHttp(
 			tools,
-			() => (originId ? resolveSessionCtx(originId) ?? latestCtx : latestCtx),
+			binding.getCtx,
 			signal,
 			getCallSignal,
 		);
+		return handle && { ...handle, rebindOrigin: binding.rebindOrigin };
 	};
 
 	pi.registerCommand("kiro", {
