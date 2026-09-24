@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Docs accuracy: `PI_KIRO_RESUME` applies to the chat transport only.** The README env table
+  previously implied the flag applied to all transports. The ACP transport (`PI_KIRO_TRANSPORT=acp`)
+  has its own built-in divergence detection in `acp-session.ts` (`planAcpTurn`) and is not gated on
+  `PI_KIRO_RESUME` at all. The README row now says so explicitly and documents the escape hatch for
+  users who want to fully disable session continuity under ACP (`PI_KIRO_TRANSPORT=chat` +
+  `PI_KIRO_RESUME=off`). A regression test in `acp-session.test.ts` pins this independence.
+
 - **A session reset no longer strands kiro on a closed bridge port.** kiro learns the MCP bridge
   URL once, from the `mcpServers` array in `session/new`, and has no way to be told a new one. The
   divergence branch of `resolveSession` closed the bridge and mounted a replacement on a fresh

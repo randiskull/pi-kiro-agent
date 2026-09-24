@@ -66,8 +66,44 @@ export function parseSubagentsArgs(args: string): SubagentsArgs {
 // never a different session's turn that happened to write more recently
 // [L0-04]. latestCtx stays as a last-resort fallback for the rare case a
 // session id cannot be resolved.
+//
+// Bounded (LRU, touch-on-use): pi emits no session-end event to hang a delete
+// on, so a long-lived host serving many sessions (the parallel-subagent
+// topology this bridge exists for) would otherwise retain one ExtensionContext
+// per session id forever. Cap + LRU eviction mirrors acp-session.ts's session
+// registry (you cannot have more live ACP sessions than that cap anyway).
+// Touch-on-use — including the getter read below — keeps an in-flight session's
+// ctx off the eviction front while its bridge is still making tool calls.
+const MAX_SESSION_CTX = 64;
 const sessionCtxMap = new Map<string, ExtensionContext>();
 let latestCtx: ExtensionContext | undefined;
+
+/** Record/refresh a session's ctx at the most-recently-used end, evicting the
+ * least-recently-used entry once the cap is exceeded. */
+function rememberSessionCtx(sessionId: string, ctx: ExtensionContext): void {
+	sessionCtxMap.delete(sessionId); // re-insert at the MRU end (Map preserves insertion order)
+	sessionCtxMap.set(sessionId, ctx);
+	if (sessionCtxMap.size > MAX_SESSION_CTX) {
+		const lru = sessionCtxMap.keys().next().value; // first key = least-recently-used
+		if (lru !== undefined) sessionCtxMap.delete(lru);
+	}
+}
+
+/** Resolve a session's ctx, counting the read as a touch so an in-flight
+ * session's ctx is not evicted mid-turn under churn from other sessions. */
+function resolveSessionCtx(sessionId: string): ExtensionContext | undefined {
+	const ctx = sessionCtxMap.get(sessionId);
+	if (ctx !== undefined) {
+		sessionCtxMap.delete(sessionId);
+		sessionCtxMap.set(sessionId, ctx); // move to the MRU end
+	}
+	return ctx;
+}
+
+/** Test hook: number of session ctxs currently retained (bound regression). */
+export function _sessionCtxCount(): number {
+	return sessionCtxMap.size;
+}
 
 const deps: {
 	binaryPath: string | undefined;
@@ -171,11 +207,13 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 
 	pi.on("context", (_event, ctx) => {
 		latestCtx = ctx;
-		sessionCtxMap.set(ctx.sessionManager.getSessionId(), ctx);
+		const sessionId = ctx?.sessionManager?.getSessionId();
+		if (sessionId) rememberSessionCtx(sessionId, ctx);
 	});
 	pi.on("before_provider_request", (_event, ctx) => {
 		latestCtx = ctx;
-		sessionCtxMap.set(ctx.sessionManager.getSessionId(), ctx);
+		const sessionId = ctx?.sessionManager?.getSessionId();
+		if (sessionId) rememberSessionCtx(sessionId, ctx);
 		maybeSelfHeal(pi);
 	});
 	// Session starts/reloads (/new, /resume, fork, reload) drop dynamically
@@ -205,10 +243,10 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 		// transport into getBridge(signal) instead of reading the global here
 		// -- an intentionally deferred, larger ripple into both transports'
 		// getBridge(signal) call sites (stream-adapter.ts, acp-transport.ts).
-		const originId = latestCtx?.sessionManager.getSessionId();
+		const originId = latestCtx?.sessionManager?.getSessionId();
 		return serveBridgeHttp(
 			tools,
-			() => (originId ? sessionCtxMap.get(originId) ?? latestCtx : latestCtx),
+			() => (originId ? resolveSessionCtx(originId) ?? latestCtx : latestCtx),
 			signal,
 			getCallSignal,
 		);
