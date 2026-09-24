@@ -38,6 +38,7 @@ import { type KiroAgentProfile, writeAgentProfile } from "./kiro-bridge.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import { createToolUseStreamParser, parseKiroToolUses, synthesizeToolCallBlocks } from "./kiro-tooluse-parser.js";
+import { trace } from "./trace.js";
 import {
 	advanceSession,
 	dropSession,
@@ -54,13 +55,19 @@ const MCP_STARTUP_EXIT_CODE = 3;
 // Up to 3: one turn plus room for an MCP-startup retry and a resume→full fallback.
 const MAX_ATTEMPTS = 3;
 
-/** Id prefix for live-progress toolCall placeholders — shared by the producer
- * (id construction, both stream handlers) and the two strip sites, so they
- * cannot drift apart [L1-03]. */
-const LIVE_TOOL_ID_PREFIX = "kiro-live-";
+/** Id prefix for live-progress toolCall placeholders — shared by every producer
+ * (id construction in both chat stream handlers and the ACP session/update
+ * handler) and every strip site, so they cannot drift apart [L1-03].
+ *
+ * Exported because the ACP transport surfaces the same kind of display-only
+ * block: pi dispatches ANY toolCall block it finds on an assistant message
+ * (agent-loop.ts keys off presence, not stopReason), so a block describing a
+ * call kiro has ALREADY executed must be marked and stripped, or pi runs it a
+ * second time. */
+export const LIVE_TOOL_ID_PREFIX = "kiro-live-";
 
 /** Drop live-progress placeholder toolCall blocks (matched by LIVE_TOOL_ID_PREFIX). */
-function stripLivePlaceholders(content: AssistantMessage["content"]): AssistantMessage["content"] {
+export function stripLivePlaceholders(content: AssistantMessage["content"]): AssistantMessage["content"] {
 	return content.filter(
 		(block) => !(block.type === "toolCall" && String(block.id).startsWith(LIVE_TOOL_ID_PREFIX)),
 	);
@@ -202,7 +209,19 @@ function serializeMessage(message: Message): string | undefined {
 		return `<user_message>\n${contentToText(message.content)}\n</user_message>`;
 	}
 	if (message.role === "assistant") {
-		const text = contentToText(message.content.filter((block) => block.type !== "thinking") as Message["content"]);
+		// toolCall blocks are dropped, not rendered. contentToText would turn them
+		// into `[called tool name({...})]` text, and this history is replayed to
+		// kiro on every full resend alongside a <tool_context> block that tells it
+		// those same tools ARE callable as @pi/<name>. kiro read that as work to
+		// do and re-issued the calls: a user was asked the same
+		// @pi/ask_user_question twice, and each turn re-fired the PRIOR turn's
+		// @pi/steer_subagent / @pi/get_subagent_result at already-reaped agent ids
+		// lifted verbatim out of the replayed text. The paired <tool_result>
+		// already carries what ran and what came back, so nothing is lost by
+		// omitting the call itself -- only the invitation to run it again.
+		const text = contentToText(
+			message.content.filter((block) => block.type !== "thinking" && block.type !== "toolCall") as Message["content"],
+		);
 		return text.length > 0 ? `<assistant_message>\n${text}\n</assistant_message>` : undefined;
 	}
 	if (message.role === "toolResult") {
@@ -558,11 +577,22 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					if (model.id !== "auto") args.push("--model", model.id);
 					const effort = mapEffort(options?.reasoning);
 					if (effort) args.push("--effort", effort);
-					args.push(
-						useResume
-							? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridge?.toolNames, !!workflowServers)
-							: buildPromptFromContext(context, bridge?.toolNames, !!workflowServers),
-					);
+					const promptText = useResume
+						? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridge?.toolNames, !!workflowServers)
+						: buildPromptFromContext(context, bridge?.toolNames, !!workflowServers);
+					args.push(promptText);
+					// attempt is traced explicitly: this loop re-sends the whole prompt on
+					// an MCP-startup retry or a resume fallback, so a bridged tool already
+					// executed on attempt 0 gets asked again on attempt 1. Counting sends
+					// is the only way to tell that apart from a model choosing to re-call.
+					trace("chat.prompt.send", {
+						attempt,
+						mode: useResume ? "resume" : "fresh",
+						deltaStart: plan.deltaStart,
+						messageCount: context.messages.length,
+						promptChars: promptText.length,
+						prompt: promptText,
+					});
 
 					const attemptResult = await runAttempt(args, deps.binaryPath, output, pushThinking, options?.signal);
 					raw = attemptResult.raw;

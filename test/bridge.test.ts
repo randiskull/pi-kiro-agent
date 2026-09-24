@@ -1,16 +1,18 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	allowedToolNames,
 	type CapturedTool,
+	clearBridgeCache,
 	DEFAULT_BRIDGE_TOOLS,
 	isBridgeablePackage,
 	isContainedEntryPath,
 	manifestExtensionEntries,
 	serveBridgeHttp,
 	toJsonSchema,
+	warnOnMissingBridgeTools,
 } from "../src/bridge.js";
 
 const FAKE_CTX = { cwd: "/tmp" } as unknown as ExtensionContext;
@@ -150,5 +152,94 @@ describe("serveBridgeHttp", () => {
 		await expect(
 			fetch(handle.url, { method: "POST", body: "{}" }).then((response) => response.status),
 		).rejects.toThrow();
+	});
+});
+
+describe("warnOnMissingBridgeTools", () => {
+	// A requested tool no loaded extension provides used to fail silently at mount
+	// and opaquely much later: kiro simply never saw the tool, and the only symptom
+	// was the delegated model reaching for something else, or a bare
+	// `Tool <name> not found` from pi's dispatcher with nothing pointing at the
+	// bridge. These tests pin the mount-time warning that names the real cause.
+
+	function spyOnStderr() {
+		return vi.spyOn(console, "error").mockImplementation(() => undefined);
+	}
+
+	beforeEach(() => {
+		// The warning is once-per-process, so the dedupe set has to be reset or
+		// whichever test ran first would silence the rest.
+		clearBridgeCache();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("names a single missing tool in the singular", () => {
+		const spy = spyOnStderr();
+		warnOnMissingBridgeTools(new Set(["todo", "advisor"]), [{ name: "todo" }]);
+		expect(spy).toHaveBeenCalledTimes(1);
+		const message = String(spy.mock.calls[0]?.[0]);
+		expect(message).toContain("`advisor`");
+		expect(message).toContain("tool `advisor` was requested");
+		expect(message).not.toContain("tools `advisor`");
+		// The operator needs to know what DID make it through, to tell "one
+		// extension failed" apart from "nothing loaded at all".
+		expect(message).toContain("Bridged: todo.");
+	});
+
+	it("names several missing tools in the plural", () => {
+		const spy = spyOnStderr();
+		warnOnMissingBridgeTools(new Set(["todo", "advisor", "Agent"]), [{ name: "todo" }]);
+		expect(spy).toHaveBeenCalledTimes(1);
+		const message = String(spy.mock.calls[0]?.[0]);
+		expect(message).toContain("`advisor`");
+		expect(message).toContain("`Agent`");
+		expect(message).toContain("were requested");
+		expect(message).toContain("they will be absent");
+	});
+
+	it("reports (none) when nothing at all was bridged", () => {
+		// The all-missing case is the one worth distinguishing: it means extension
+		// loading itself failed, not that one package is stale.
+		const spy = spyOnStderr();
+		warnOnMissingBridgeTools(new Set(["todo"]), []);
+		expect(String(spy.mock.calls[0]?.[0])).toContain("Bridged: (none).");
+	});
+
+	it("stays silent when every requested tool is present", () => {
+		const spy = spyOnStderr();
+		warnOnMissingBridgeTools(new Set(["todo", "advisor"]), [{ name: "todo" }, { name: "advisor" }]);
+		expect(spy).not.toHaveBeenCalled();
+	});
+
+	it("stays silent when an extra tool is bridged beyond the allow-list", () => {
+		// Bridging MORE than was asked for is not a defect, so it must not warn.
+		const spy = spyOnStderr();
+		warnOnMissingBridgeTools(new Set(["todo"]), [{ name: "todo" }, { name: "advisor" }]);
+		expect(spy).not.toHaveBeenCalled();
+	});
+
+	it("warns once per tool, not once per mount", () => {
+		// Every ACP child mounts its own bridge, so an unguarded warning would
+		// repeat on each spawn and drown the log it is meant to draw attention to.
+		const spy = spyOnStderr();
+		warnOnMissingBridgeTools(new Set(["todo", "advisor"]), [{ name: "todo" }]);
+		warnOnMissingBridgeTools(new Set(["todo", "advisor"]), [{ name: "todo" }]);
+		warnOnMissingBridgeTools(new Set(["todo", "advisor"]), [{ name: "todo" }]);
+		expect(spy).toHaveBeenCalledTimes(1);
+	});
+
+	it("still reports a newly missing tool after an earlier one was reported", () => {
+		// Deduping per NAME rather than per call means a second, different failure
+		// is not swallowed by the first.
+		const spy = spyOnStderr();
+		warnOnMissingBridgeTools(new Set(["advisor"]), []);
+		warnOnMissingBridgeTools(new Set(["advisor", "Agent"]), []);
+		expect(spy).toHaveBeenCalledTimes(2);
+		const second = String(spy.mock.calls[1]?.[0]);
+		expect(second).toContain("`Agent`");
+		expect(second).not.toContain("`advisor`");
 	});
 });

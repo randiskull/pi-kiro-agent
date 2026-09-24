@@ -29,6 +29,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { trace } from "./trace.js";
 
 export const BRIDGE_SERVER_NAME = "pi";
 
@@ -249,12 +250,46 @@ export async function captureBridgeTools(realPi: ExtensionAPI, envOverride?: str
 	})();
 	const captured = await capturePromise;
 	const allowed = allowedToolNames(envOverride);
-	return captured.filter((tool) => allowed.has(tool.name));
+	const bridged = captured.filter((tool) => allowed.has(tool.name));
+	warnOnMissingBridgeTools(allowed, bridged);
+	return bridged;
+}
+
+/** Names already reported missing, so the warning fires once per process. */
+const warnedMissingTools = new Set<string>();
+
+/**
+ * Warn at MOUNT time about a requested tool that no loaded extension provides.
+ *
+ * Without this the failure is deferred and opaque: the tool is simply absent from
+ * the bridge, kiro never learns it exists, and the only symptom is the delegated
+ * model calling something else or (for a tool pi does not register either) a bare
+ * `Tool <name> not found` arriving from pi's own dispatcher with no hint that the
+ * bridge was the missing link. Naming it here points at the real cause -- usually
+ * an extension that failed to load, or a typo in PI_KIRO_BRIDGE_TOOLS.
+ *
+ * Advisory only. A partial bridge is still useful, so this never throws.
+ */
+export function warnOnMissingBridgeTools(allowed: Set<string>, bridged: Array<{ name: string }>): void {
+	const present = new Set(bridged.map((tool) => tool.name));
+	const missing = [...allowed].filter((name) => !present.has(name) && !warnedMissingTools.has(name));
+	if (missing.length === 0) return;
+	for (const name of missing) warnedMissingTools.add(name);
+	console.error(
+		`[pi-kiro] bridge: ${missing.length === 1 ? "tool" : "tools"} ${missing.map((n) => `\`${n}\``).join(", ")} ` +
+		`${missing.length === 1 ? "was" : "were"} requested but no loaded extension provides ${missing.length === 1 ? "it" : "them"}; ` +
+		`${missing.length === 1 ? "it" : "they"} will be absent from the bridge. ` +
+		`Check that the providing extension loaded, or adjust PI_KIRO_BRIDGE_TOOLS. ` +
+		`Bridged: ${[...present].sort().join(", ") || "(none)"}.`,
+	);
 }
 
 /** Test hook: reset the capture cache. */
 export function clearBridgeCache(): void {
 	capturePromise = undefined;
+	inFlightSingleFlight.clear();
+	orphanGraceMs = DEFAULT_ORPHAN_GRACE_MS;
+	warnedMissingTools.clear();
 }
 
 /** Strip TypeBox symbol keys; guarantee an object-typed JSON schema. */
@@ -286,6 +321,48 @@ function toMcpContent(content: Array<Record<string, unknown>>): Array<Record<str
 
 let callCounter = 0;
 
+/**
+ * Tools that block on a human answering. Measured on the wire: kiro's MCP HTTP
+ * client abandons a bridged call at about 126 seconds and reports a transport
+ * error, and nothing here cancelled the queued question -- so kiro's retry
+ * stacked ANOTHER question on the same user. One @pi/ask_user_question was
+ * re-issued at 02:32:44, 02:34:50 and 02:37:07, and all three resolved to a
+ * real answer hours later. Any question a human thought about for longer than
+ * that window was asked again, once per window.
+ */
+const SINGLE_FLIGHT_TOOLS = new Set(["ask_user_question"]);
+
+/** What a single-flight tool is currently holding, and whether its caller left. */
+type InFlightEntry = {
+	callId: string;
+	startedAt: number;
+	/** When the caller abandoned the call; undefined while the caller is still waiting. */
+	abortedAt?: number;
+};
+
+/** In-flight entry per single-flight tool name. Empty when nothing is pending. */
+const inFlightSingleFlight = new Map<string, InFlightEntry>();
+
+/**
+ * How long a call whose caller has left keeps blocking its successors.
+ *
+ * The block itself is correct: the pi-side question is still on screen, so
+ * admitting a second call would stack a second overlay on the same user. But
+ * the slot is released in a finally, and ask_user_question cannot be cancelled
+ * (its execute ignores the signal it is handed), so the finally does not run
+ * until the user answers. A user who never answers would leave the tool
+ * refusing for the rest of the process. Cap the block instead of trusting the
+ * tool to unwind: past the grace window the old overlay is treated as
+ * abandoned and a fresh question is allowed through.
+ */
+const DEFAULT_ORPHAN_GRACE_MS = 5 * 60_000;
+let orphanGraceMs = DEFAULT_ORPHAN_GRACE_MS;
+
+/** Test hook: shorten the orphan grace window so the release path is testable. */
+export function setSingleFlightOrphanGraceMs(ms: number): void {
+	orphanGraceMs = ms;
+}
+
 /** Build a fresh McpServer serving `tools`; one instance per delegated session. */
 export function buildBridgeServer(
 	tools: CapturedTool[],
@@ -296,15 +373,22 @@ export function buildBridgeServer(
 
 	const instance = new McpServer({ name: BRIDGE_SERVER_NAME, version: "1.0.0" }, { capabilities: { tools: {} } });
 
-	instance.server.setRequestHandler(ListToolsRequestSchema, () => ({
-		tools: tools.map((tool) => ({
-			name: tool.name,
-			description: tool.description,
-			inputSchema: toJsonSchema(tool.parameters),
-		})),
-	}));
+	instance.server.setRequestHandler(ListToolsRequestSchema, () => {
+		// Traced because a tools/list is the only moment kiro learns what the
+		// bridge serves: a tool missing HERE explains a later "Tool <name> not
+		// found" that otherwise looks like a call-time failure, and a second
+		// tools/list reveals a second mount of the same bridge.
+		trace("bridge.list", { tools: tools.map((tool) => tool.name) });
+		return {
+			tools: tools.map((tool) => ({
+				name: tool.name,
+				description: tool.description,
+				inputSchema: toJsonSchema(tool.parameters),
+			})),
+		};
+	});
 
-	instance.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+	instance.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 		const tool = tools.find((candidate) => candidate.name === request.params.name);
 		if (!tool) {
 			return {
@@ -324,21 +408,90 @@ export function buildBridgeServer(
 				isError: true,
 			};
 		}
+		// Refuse a second blocking call while one is still pending, rather than
+		// queueing it. The caller cannot see that its earlier call is still live
+		// (its HTTP request already timed out), so left unguarded it retries and
+		// the user is asked again. Arg-hash dedupe would not catch this: kiro
+		// rewords the question on each retry.
+		const singleFlight = SINGLE_FLIGHT_TOOLS.has(tool.name);
+		if (singleFlight) {
+			const pending = inFlightSingleFlight.get(tool.name);
+			if (pending !== undefined) {
+				const orphanedForMs = pending.abortedAt === undefined ? undefined : Date.now() - pending.abortedAt;
+				if (orphanedForMs !== undefined && orphanedForMs >= orphanGraceMs) {
+					// Caller gone, grace spent: stop blocking. The old call may still
+					// resolve later; its finally will not touch this slot (see below).
+					trace("bridge.orphan.release", { tool: tool.name, releasedCallId: pending.callId, orphanedForMs });
+					inFlightSingleFlight.delete(tool.name);
+				} else {
+					trace("bridge.reject.inflight", {
+						tool: tool.name,
+						blockedBy: pending.callId,
+						pendingForMs: Date.now() - pending.startedAt,
+						orphanedForMs,
+					});
+					return {
+						content: [
+							{
+								type: "text",
+								text: `A ${tool.name} call (${pending.callId}) is already on the user's screen. This connection timed out, so its answer cannot be returned to you -- but the question is still displayed and asking again would stack a second one on the same user. Do not retry ${tool.name}; continue without an answer, or state what you need and stop.`,
+							},
+						],
+						isError: true,
+					};
+				}
+			}
+		}
+		callCounter += 1;
+		const callId = `ccbridge-${callCounter}`;
+		const startedAt = Date.now();
+		if (singleFlight) inFlightSingleFlight.set(tool.name, { callId, startedAt });
+		// Trace the invocation, not the narration: a double-executed tool (the
+		// same @pi/ask_user_question asked twice) is only distinguishable from a
+		// model that chose to call it twice by counting the calls that actually
+		// arrived here.
+		trace("bridge.call", { callId, tool: tool.name, args: request.params.arguments ?? {}, singleFlight });
+		// extra.signal fires when the CALLER cancels or drops the connection.
+		// Passing only the bridge-lifetime signal meant a call whose caller had
+		// already given up kept running, holding a question in the user's queue
+		// that nothing would ever collect. Union the two so a bridge shutdown
+		// still cancels as well.
+		const execSignal = extra?.signal ? AbortSignal.any([signal, extra.signal]) : signal;
+		const onAbort = () => {
+			// Stamp the abort rather than releasing the slot now: the question is
+			// still on the user's screen, so an immediate retry must still be
+			// refused. This only starts the clock on the grace window.
+			const entry = inFlightSingleFlight.get(tool.name);
+			if (entry?.callId === callId) entry.abortedAt = Date.now();
+			trace("bridge.abort", {
+				callId,
+				tool: tool.name,
+				ms: Date.now() - startedAt,
+				byCaller: extra?.signal?.aborted === true,
+			});
+		};
+		execSignal.addEventListener("abort", onAbort, { once: true });
 		try {
-			callCounter += 1;
-			const result = await tool.execute(
-				`ccbridge-${callCounter}`,
-				request.params.arguments ?? {},
-				signal,
-				undefined,
-				ctx,
-			);
-			return { content: toMcpContent(result.content ?? []), isError: result.isError === true };
+			const result = await tool.execute(callId, request.params.arguments ?? {}, execSignal, undefined, ctx);
+			const isError = result.isError === true;
+			const content = toMcpContent(result.content ?? []);
+			trace("bridge.result", { callId, tool: tool.name, isError, ms: Date.now() - startedAt, content });
+			return { content, isError };
 		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			trace("bridge.throw", { callId, tool: tool.name, ms: Date.now() - startedAt, message });
 			return {
-				content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+				content: [{ type: "text", text: message }],
 				isError: true,
 			};
+		} finally {
+			execSignal.removeEventListener("abort", onAbort);
+			// Only if the slot is still ours. An orphan released past its grace
+			// window can resolve after a successor has claimed the slot, and
+			// deleting unconditionally would unblock a live question.
+			if (singleFlight && inFlightSingleFlight.get(tool.name)?.callId === callId) {
+				inFlightSingleFlight.delete(tool.name);
+			}
 		}
 	});
 
@@ -357,7 +510,8 @@ export interface HttpBridgeHandle {
 	/** Per-session bearer token required on every request. */
 	token: string;
 	toolNames: string[];
-	close: () => Promise<void>;
+	/** Optional `reason` is diagnostic only; it lands in the `bridge.close` trace. */
+	close: (reason?: string) => Promise<void>;
 }
 
 /**
@@ -370,6 +524,7 @@ export async function serveBridgeHttp(
 	tools: CapturedTool[],
 	getCtx: () => ExtensionContext | undefined,
 	signal: AbortSignal,
+	getCallSignal?: () => AbortSignal,
 ): Promise<HttpBridgeHandle | undefined> {
 	if (tools.length === 0) return undefined;
 	const toolNames = tools.map((tool) => tool.name);
@@ -381,7 +536,16 @@ export async function serveBridgeHttp(
 	// documented stateless pattern). Tool captures are closures — rebuilding
 	// the server per request is cheap and side-effect free.
 	const handleMcp = async (req: IncomingMessage, res: ServerResponse) => {
-		const built = buildBridgeServer(tools, getCtx, signal);
+		// `signal` is the server's LIFETIME; getCallSignal() is the cancellation
+		// signal handed to each bridged tool.execute. Under ACP these differ: the
+		// URL is a property of the kiro CHILD (it learns the port once, at
+		// session/new, and has no way to learn a new one), while cancellation is
+		// per-SESSION, because a session reset has to cancel calls in flight. Before
+		// they were split, a session reset closed the server and opened a new one on
+		// a new ephemeral port, stranding kiro on the closed one for the rest of the
+		// conversation -- see docs/design/acp-transport.md §5e.3. Resolved per
+		// request, not captured, so a reset mid-turn still cancels correctly.
+		const built = buildBridgeServer(tools, getCtx, getCallSignal?.() ?? signal);
 		if (!built) {
 			res.writeHead(500).end();
 			return;
@@ -416,6 +580,11 @@ export async function serveBridgeHttp(
 		httpServer.listen(0, "127.0.0.1", resolve);
 	});
 	const address = httpServer.address() as AddressInfo;
+	// Mount/close are traced because a bridged tool failing with a bare
+	// "error sending request for url" is indistinguishable, from the kiro side,
+	// between a bridge that never came up, one that was torn down early, and a
+	// client still holding a previous session's port. The port is the join key.
+	trace("bridge.serve", { port: address.port, tools: toolNames });
 
 	// Idempotent: the owner closes the handle explicitly AND the signal's own
 	// listener fires on abort, so close() is routinely called twice for one
@@ -423,11 +592,16 @@ export async function serveBridgeHttp(
 	// first instead of issuing a redundant httpServer.close() whose callback
 	// receives ERR_SERVER_NOT_RUNNING.
 	let closed: Promise<void> | undefined;
-	const close = () => {
-		closed ??= new Promise<void>((resolve) => httpServer.close(() => resolve()));
+	// `reason` is diagnostic only and optional, so this still satisfies the
+	// handle's `close: () => Promise<void>` contract for owners that pass nothing.
+	const close = (reason?: string) => {
+		if (!closed) {
+			trace("bridge.close", { port: address.port, reason: reason ?? "owner" });
+			closed = new Promise<void>((resolve) => httpServer.close(() => resolve()));
+		}
 		return closed;
 	};
-	signal.addEventListener("abort", () => void close(), { once: true });
+	signal.addEventListener("abort", () => void close("signal-abort"), { once: true });
 
 	return {
 		url: `http://127.0.0.1:${address.port}/mcp`,

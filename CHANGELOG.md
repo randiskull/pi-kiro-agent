@@ -15,6 +15,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PI_KIRO_RESUME` at all. The README row now says so explicitly and documents the escape hatch for
   users who want to fully disable session continuity under ACP (`PI_KIRO_TRANSPORT=chat` +
   `PI_KIRO_RESUME=off`). A regression test in `acp-session.test.ts` pins this independence.
+
+- **A session reset no longer strands kiro on a closed bridge port.** kiro learns the MCP bridge
+  URL once, from the `mcpServers` array in `session/new`, and has no way to be told a new one. The
+  divergence branch of `resolveSession` closed the bridge and mounted a replacement on a fresh
+  ephemeral port, so kiro accepted the new session but kept the MCP client it had already built for
+  the server named `pi` -- still pointed at the closed port. Every bridged tool call for the rest of
+  the conversation then failed with `error sending request for url (http://127.0.0.1:PORT/...)`,
+  while kiro-native tools kept working. Observed live as `steer_subagent` and `get_subagent_result`
+  failing immediately after a successful `Agent` call. The cause was `serveBridgeHttp` conflating two
+  different lifetimes in one `AbortSignal`: the server's lifetime and the cancellation signal handed
+  to each bridged `tool.execute`. Cancellation really is per-session; lifetime is per-**child**. They
+  are now separate -- `AcpChild.childAbort` owns the server, and a `getCallSignal` accessor supplies
+  the current session's signal per request -- so the bridge is mounted once per child and reused by
+  every session on it, while a reset still cancels in-flight calls.
+
+- **The unit test suite no longer depends on whether the checkout is a GSD project.** 29 of the 43
+  `acp-transport.test.ts` tests were failing with 5-second timeouts, and the file took 146 of the
+  suite's 149 seconds. Cause: `discoverWorkflowMcpServers()` walks up from `process.cwd()` looking
+  for a GSD project, and this repo's own root now has a `.gsd` directory -- so every ACP turn
+  synthesized a `gsdworkflow` MCP server, `startSession` added it to the set it waits on, and every
+  test script that answers `initialize`/`session/new` but never sends
+  `_kiro.dev/mcp/server_initialized` for it hung on the startup gate. `test/test-setup.ts` already
+  existed to stop tests reading the developer's real environment (it redirects `$HOME`); it now
+  pins `PI_KIRO_WORKFLOW_MCP=off` for the same reason. `test/workflow-mcp.test.ts`, the one suite
+  that exercises discovery for real, clears the variable in `beforeEach` as well as `afterEach` --
+  clearing it only on the way out left its first test inheriting the run-wide default. The suite went from
+  29 failures in 149 seconds to fully green in ~3 seconds.
+
+- **Surfaced tool calls stay visible in the mid-turn display instead of vanishing retroactively.**
+  The end-of-turn reconciliation replaced `output.content` in place, but every streamed event
+  carries `partial: output` *by reference* -- so the strip retroactively emptied the tool-by-turn
+  progress display for any consumer that reads a partial after the turn ends, which with an async
+  generator is any consumer the producer outruns. The final `done`/`error` message now gets a
+  filtered **copy** and the partials keep their blocks. Each surfaced block is also paired with a
+  `⚙ <tool>` thinking marker, exactly as the chat transport does (`stream-adapter.ts:404`): pushing
+  onto `output.content` alone emits no event, so nothing carried the update until the next chunk
+  happened to arrive.
+
+### Added
+
+- **A mount-time warning when a requested bridge tool is missing.** A name in the bridge allow-list
+  that no loaded extension provides used to fail silently at mount and opaquely much later: the tool
+  was simply absent from the bridge, kiro never learned it existed, and the only symptom was the
+  delegated model reaching for something else, or -- for a tool pi does not register either -- a bare
+  `Tool <name> not found` from pi's own dispatcher with nothing pointing at the bridge as the missing
+  link. `captureBridgeTools` now names the missing tools on stderr as soon as the bridge is built,
+  along with the ones that did make it through (so "one extension is stale" is distinguishable from
+  "nothing loaded"), and points at the two real causes: an extension that failed to load, or a typo
+  in `PI_KIRO_BRIDGE_TOOLS`. The warning is advisory and deduped per tool name, since every ACP child
+  mounts its own bridge and an unguarded warning would repeat on each spawn.
+
+- **Trace coverage for bridge and child lifetime.** A bridged tool failing with kiro's bare
+  `error sending request for url (http://127.0.0.1:PORT/...)` was previously indistinguishable
+  between a bridge that never came up, one torn down early, and a kiro client still holding a
+  previous session's port. Five new events make the port the join key: `bridge.serve` and
+  `bridge.close` (with a reason), `acp.child.spawn` and `acp.child.teardown` (with a reason, the
+  registry key, the pid and the pending-request count), and `acp.session.new` (the mcpServers URLs
+  actually handed to kiro, which are the only ones it can ever use for that session).
+
+- **The ACP transport no longer makes pi execute tool calls kiro has already run.** Every
+  `session/update` `tool_call` notification was pushed onto the assistant message as a real,
+  executable `toolCall` block. pi dispatches tool calls off the *presence* of those blocks rather
+  than off `stopReason`, so it ran each one a second time. A bridged `ask_user_question` therefore
+  raised a **duplicate questionnaire card that never touched the MCP bridge** -- which is why the
+  single-flight guard could not see it and appeared to be doing nothing -- and a kiro-native tool
+  pi does not register (`shell`, `read`, `glob`, `gsd_exec`) came back as `Tool shell not found`.
+  That error result was then serialised into kiro's next prompt, leaving kiro with a turn made
+  entirely of tool-result noise and no instruction, which it treated as a stray artifact and
+  answered by restarting the whole delegated task. The apparent "five kiro sessions in five
+  minutes" was this loop, not kiro restarting itself: the five were five pi conversations, three
+  of which match their pi session file to the millisecond. These blocks are now tagged with
+  `LIVE_TOOL_ID_PREFIX` and stripped before the final message, the same mechanism the chat
+  transport has always used, so they still drive the mid-turn progress display without being
+  mistaken for work to do. A new `acp.toolcall.surfaced` trace event records each one.
+
 - **`/kiro-subagents on` no longer destroys an agent's existing model routing.** It used to overwrite
   a pre-existing `model:` value with no record of it, so a later `off` had nothing to restore and
   deleted the line outright -- silently discarding routing the user had set by hand. `on` now stashes

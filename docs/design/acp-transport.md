@@ -259,6 +259,265 @@ The roadmap is: probe the three unknowns above, add a stream-json reader beside 
 behind an env flag, run the live suite against both, then make stream-json the default and keep the
 text parser only for kiro-cli versions that lack the flag.
 
+## 5d. Field evidence, 2026-09-20: surfaced tool calls were being executed a second time
+
+The single worst defect found in this transport so far, and it had been mistaken for four
+different bugs. **Every ACP `tool_call` notification was pushed onto the assistant message as a
+real, executable pi `toolCall` block.** kiro had already run the tool; pi ran it again.
+
+### The four symptoms, all one cause
+
+1. **Duplicate `ask_user_question` cards.** A bridged questionnaire appeared, was answered, and a
+   second identical card appeared. The second one never touched the MCP bridge, which is why the
+   single-flight guard in `bridge.ts` never fired and looked useless: there was nothing in flight
+   to collide with.
+2. **`Tool shell not found`.** kiro runs `shell`, `read`, `glob` natively. Surfaced as pi tool
+   calls, pi looked them up in its own registry, found nothing, and produced an error tool result.
+3. **kiro apparently restarting the delegated task.** The error results from (2) were serialised
+   into kiro's next prompt, which then consisted of nothing but tool-result noise. kiro read that
+   as a stray turn with no instruction ("It looks like a stray artifact — there's no actual
+   instruction or task from the user") and re-ran the task from the top.
+4. **"Five kiro sessions in five minutes."** Not restarts at all. Five *pi conversations* (one
+   main, the rest pi-subagents children), each opening its own ACP session. Three of the five
+   match their pi session file to the millisecond.
+
+### Mechanism
+
+pi dispatches tool calls off the **presence** of `toolCall` blocks on an assistant message, not off
+`stopReason`:
+
+```ts
+// pi packages/agent/src/agent-loop.ts
+const toolCalls = message.content.filter((c) => c.type === "toolCall");   // :228
+if (toolCalls.length > 0) { ... }                                        // :232
+```
+
+and an unknown name short-circuits to an error result rather than being ignored:
+
+```ts
+// pi packages/agent/src/agent-loop.ts, prepareToolCall
+const tool = currentContext.tools?.find((t) => t.name === toolCall.name); // :669
+if (!tool) return { kind: "immediate", result: createErrorToolResult(`Tool ${toolCall.name} not found`), isError: true };
+```
+
+So any block this transport left on the final message was a *fresh instruction to pi*, not a record
+of something already done.
+
+### Receipts
+
+A live turn on 2026-09-20 asked for exactly one `ask_user_question` and nothing else. The trace
+recorded **one** bridge call:
+
+```
+08:11:12.611 bridge.call   ask_user_question ccbridge-1
+08:13:12.610 bridge.abort  ask_user_question ccbridge-1 ms=119999 byCaller=true
+08:13:12.611 bridge.result ask_user_question ccbridge-1 ms=120000
+```
+
+...and a second questionnaire card was on screen anyway, with no second `bridge.call` anywhere in
+the trace. That card was pi executing the surfaced block.
+
+pi's own session transcript for the earlier five-session run shows the same thing from the other
+side: one assistant message carrying 15 `toolCall` blocks (the entire smoke-test sequence), each
+with kiro's upstream Bedrock id, each dispatched by pi, with results including
+
+```
+RESULT name=shell    id=toolu_bdrk_014phGyvevDRowjDtdzVP1of ERROR :: Tool shell not found
+RESULT name=gsd_exec id=toolu_bdrk_0139uYgt7xsBSFqzqEEgJer7 ERROR :: Tool gsd_exec not found
+RESULT name=glob     id=toolu_bdrk_01Qgyw7zu2tBfXzcxLq5Rrqy ERROR :: Tool glob not found
+```
+
+The ids are conclusive on two points. They are kiro's own `toolCallId` values passed straight
+through by `id: u.toolCallId ?? ...`, so these blocks provably originate in this handler. And the
+*same* ids reappear in a **subagent's** pi session, where `steer_subagent` and `get_subagent_result`
+are not registered — the child inherited the parent's unresolved blocks verbatim and dispatched them
+too.
+
+### Fix
+
+The chat transport already had the answer and the ACP path had simply never adopted it. Progress
+blocks are tagged with `LIVE_TOOL_ID_PREFIX` and stripped at end of turn, so they drive the
+mid-turn display via `partial` but never reach pi as work to do. `LIVE_TOOL_ID_PREFIX` and
+`stripLivePlaceholders` are now exported from `stream-adapter.ts` and used by the ACP
+`session/update` handler, with the strip applied **before** the final text block is appended so
+`textIndex` still refers to the final content array. kiro's real id is kept as the suffix of the
+placeholder id so traces stay correlatable, and a new `acp.toolcall.surfaced` trace event records
+each one.
+
+### Ruled out along the way
+
+Recorded so the same ground is not re-walked: multi-question questionnaires (the args carried
+exactly one question); `rpiv-todo` and the `pi-subagents` widget (both use `setWidget` into
+`widgetContainerAbove`, not the overlay stack); arg-hash dedupe in the bridge (run 8's two calls
+were an original plus a *reworded* retry, so no hash would have matched); and the toolCall-replay
+defect fixed in `82c591e`, which is a different path (history serialisation) and remains fixed.
+
+Two genuine upstream bugs were found while chasing this and are **not** the cause of the duplicate
+cards, though the first is a real hang and the second makes teardown unpredictable once two
+overlays do stack:
+
+- `rpiv-ask-user-question` ignored its `AbortSignal`, so an abandoned turn left the questionnaire
+  blocking forever. Patched locally; verified by the `bridge.result` at ms=120000 above, which
+  previously never arrived.
+- pi's `showExtensionCustom` tears down with the untargeted `this.ui.hideOverlay()`
+  (`interactive-mode.ts:2841`), which pops the top of the overlay stack rather than its own entry,
+  while already holding a precisely-targeted handle from `showOverlay` (`tui.ts:703-716`). Patched
+  locally.
+
+## 5e. Field evidence, 2026-09-20: the test suite was coupled to `.gsd`, and a session reset strands kiro on a dead bridge port
+
+Two findings from the same debugging session, both made cheap by the trace events
+added alongside them.
+
+### 5e.1 29 of 43 `acp-transport.test.ts` tests were failing on the developer's machine
+
+Symptom: 29 failures, every one a 5000ms timeout inside the `AcpScriptChild`
+harness, including tests nobody had touched. The file accounted for 146 of the
+suite's 149 seconds. Two wrong theories were ruled out first: CPU starvation from
+concurrent live load (the machine was idle and the failures were identical), and
+the `node:child_process` mock exporting only `spawn` while `acp-transport.ts` also
+imports `execSync` (patching the mock to spread the real module changed nothing).
+
+Instrumenting `spawnAcpChild` and `sendRaw` showed the transport getting *further*
+than assumed: `initialize` was written, answered, and `session/new` was written
+too. The stall was after that, in `startSession`'s MCP startup gate.
+
+Root cause: `discoverWorkflowMcpServers()` walks up from `process.cwd()` looking
+for a GSD project, and pi-kiro's own repo root has a `.gsd` directory. So every
+test turn synthesized a `gsdworkflow` server, `startSession` added it to
+`expectedServers`, and each test script -- which answers `initialize` and
+`session/new` but never sends `_kiro.dev/mcp/server_initialized` for a server it
+does not know exists -- waited on the gate until the test timeout. One command
+proved it: `PI_KIRO_WORKFLOW_MCP=off npx vitest run test/acp-transport.test.ts`
+went green instantly.
+
+The suite was therefore silently coupled to whether the checkout happened to be a
+GSD project: correct in CI, broken the day someone ran `gsd init` here. The fix
+belongs in `test/test-setup.ts`, which already exists to stop tests reading the
+developer's real environment (it redirects `$HOME`), and now pins
+`PI_KIRO_WORKFLOW_MCP=off`.
+
+Generalisable: the production code is fine. A workflow MCP server that never
+initializes does stall a turn, but only until the startup timeout, which is
+deliberately longer than 5s. What broke was a **test asserting against ambient
+filesystem state**, and the tell was that untouched tests failed.
+
+### 5e.2 A partial carries `partial: output` by reference, so an in-place strip rewrites history
+
+The §5d fix stripped the display-only blocks with `output.content = strip(output.content)`
+before pushing `done`. Two tests then failed claiming no `toolCall` block ever
+reached a partial -- even though the live TUI visibly rendered them.
+
+Both are right. Every streamed event carries `partial: output`, the same object,
+so reassigning `output.content` retroactively empties the mid-turn view for any
+consumer that reads a partial *after* the turn ends. With an async generator that
+is any consumer the producer outruns; pi's TUI renders promptly and so sees the
+blocks, which is why this never showed up in the live pane.
+
+The final `done` (and `error`) message now gets a filtered **copy** and
+`output.content` is left alone, which makes the mid-turn display deterministic
+instead of dependent on consumer timing. A surfaced block is also now paired with
+a `⚙ <tool>` thinking marker, full parity with `stream-adapter.ts:404`: pushing
+onto `output.content` emits no event by itself, so previously nothing carried the
+update until the next `agent_message_chunk` happened to arrive.
+
+### 5e.3 Open defect: a session reset hands kiro a new bridge port it will never use
+
+Found while re-running the smoke test with the §5d fix in place. `read`, `glob`,
+`todo` and `Agent` all now work. `steer_subagent` and `get_subagent_result` fail
+with kiro's `error sending request for url (http://127.0.0.1:59808/mcp/...)`.
+
+Before the new trace events this had to be guessed at. Now it reads directly
+(run 12, one kiro child, `pid=99684`, one registry key):
+
+```
+08:45:27.081 bridge.serve      port=59808
+08:45:27.082 acp.session.new   servers=[{name:'pi', url:'http://127.0.0.1:59808/mcp/...'}]
+08:45:38.656 bridge.call       tool=Agent  -> bridge.result ms=10          OK
+08:45:40.340 bridge.close      port=59808  reason=signal-abort
+08:45:40.340 bridge.serve      port=59886
+08:45:40.341 acp.session.new   servers=[{name:'pi', url:'http://127.0.0.1:59886/mcp/...'}]
+08:45:45.411 acp.prompt.send   mode=fresh
+08:45:49.439 acp.toolcall.surfaced tool=steer_subagent            FAILS on 59808
+```
+
+Mechanism: the second turn took the divergence branch of `resolveSession`
+(`mode=fresh` on a child that already had a session). That branch aborts
+`sessionAbort`, which closes the bridge, mints a new one on a **new ephemeral
+port**, and calls `session/new` with the new URL. kiro accepts the new session but
+keeps the MCP client it already built for the server named `pi`, still pointed at
+the closed port. Every bridged call for the rest of the conversation then fails.
+Native tools are unaffected, which is exactly the pattern observed.
+
+The bug is a conflation in `serveBridgeHttp(tools, getCtx, signal)`: the single
+`signal` is both the server's **lifetime** and the **cancellation signal** handed
+to each bridged `tool.execute`. Cancellation is genuinely per-session -- that is
+what the divergence branch wants when it retires a controller whose tool calls may
+be in flight. Lifetime is not: from kiro's point of view the bridge URL is a
+property of the **child**, fixed when the child first learns it.
+
+Fix (implemented): separate the two. `serveBridgeHttp` takes the child-scoped
+signal for lifetime plus a `getCallSignal: () => AbortSignal` accessor for
+per-call cancellation, symmetric with the `getCtx` callback it already takes and
+resolved **per request** rather than captured, so a reset mid-turn still cancels
+the calls the retired session had in flight. `AcpChild` gains a `childAbort`
+controller for the server's lifetime, aborted only by `teardownChild`. The bridge
+is mounted once (`acpEntry.bridge ??= ...`) and both the new-session and
+divergence branches reuse it; divergence keeps retiring `sessionAbort` and no
+longer touches the server.
+
+Consequence worth stating: the bridge no longer discriminates which branch a turn
+took, which one test used as its signal. The discriminator is now the session
+controller -- the new-session branch reuses it (that path only ever discards a
+session that never reached `ready`, so nothing can be in flight), the divergence
+branch aborts and replaces it.
+
+Pinned by `keeps one bridge URL across a divergence reset, so kiro never calls a
+dead port`. The mock `getBridge` hands out a distinct port per mount, matching
+`serveBridgeHttp`'s `listen(0)`, so "both sessions saw the same url" is not
+vacuously true. Verified to catch the regression: reverting the source leaves the
+test failing on `expected [ { …(2) }, { …(2) } ] to have a length of 1`.
+
+Confirmed live (run 13, the same five-step bridge smoke test that produced the
+trace above):
+
+```
+08:55:06.855 bridge.serve      port=60696
+08:55:06.855 acp.session.new   servers=[{name:'pi', url:'http://127.0.0.1:60696/mcp/...'}]
+08:55:22.463 bridge.call       tool=Agent               -> ms=11     isError=False
+08:55:24.180 acp.session.new   servers=[{name:'pi', url:'http://127.0.0.1:60696/mcp/...'}]   SAME PORT
+08:55:29.247 acp.prompt.send   mode=fresh                                              divergence branch
+08:55:34.091 bridge.call       tool=steer_subagent      -> ms=2      isError=False
+08:55:37.468 bridge.call       tool=get_subagent_result -> ms=21209  isError=False
+08:56:09.940 bridge.call       tool=todo                -> ms=2      isError=False
+```
+
+One `bridge.serve` for the whole conversation, no `bridge.close` before teardown,
+the second `session/new` carrying the *same* URL, and the two calls that used to
+fail on the dead port now returning cleanly across a `mode=fresh` reset.
+
+### 5e.4 A missing bridge tool failed silently at mount
+
+Symptom class rather than a single incident: a name in the allow-list that no
+loaded extension provides is dropped from the bridge without comment. kiro is
+never told the tool exists, so the failure surfaces much later and somewhere else
+-- the delegated model reaching for a different tool, or, for a name pi does not
+register either, a bare `Tool <name> not found` from pi's own dispatcher with
+nothing in it pointing at the bridge. Debugging starts from the wrong end.
+
+Fix (implemented): `captureBridgeTools` calls `warnOnMissingBridgeTools(allowed,
+bridged)` immediately after filtering. It names the missing tools **and** the ones
+that were bridged, which is what separates "one extension is stale" from "nothing
+loaded at all" (`Bridged: (none).`), and points at the two real causes: an
+extension that failed to load, or a typo in `PI_KIRO_BRIDGE_TOOLS`.
+
+Two deliberate properties. It never throws -- a partial bridge is still useful, so
+this is advisory. And it dedupes per **tool name**, not per call: every ACP child
+mounts its own bridge, so an unguarded warning repeats on each spawn and drowns
+the log it exists to draw attention to, while per-name dedupe still reports a
+*second, different* tool going missing later. `clearBridgeCache()` resets the set
+so test order cannot silence it.
+
 ## 6. Non-goals
 
 - No change to the trust/billing model (kiro-cli owns auth; seat-billed).

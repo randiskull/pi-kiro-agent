@@ -63,7 +63,14 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
 import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
-import { buildDeltaPrompt, buildPromptFromContext, mapEffort } from "./stream-adapter.js";
+import {
+	buildDeltaPrompt,
+	buildPromptFromContext,
+	LIVE_TOOL_ID_PREFIX,
+	mapEffort,
+	stripLivePlaceholders,
+} from "./stream-adapter.js";
+import { trace } from "./trace.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import {
 	advanceAcpSession,
@@ -96,26 +103,21 @@ async function resolveSession(
 		// was cleared). Nothing else owns that handle now that bridge lifetime is
 		// session-scoped, so close it here or its HTTP server leaks for the life
 		// of the child.
-		if (acpEntry.bridge) {
-			await acpEntry.bridge.close().catch(() => undefined);
-			acpEntry.bridge = undefined;
-		}
-		// Session-scoped signal, not turnSignal: the bridge must outlive this
-		// turn and die with the session (see AcpChild.sessionAbort).
+		// The bridge is CHILD-scoped, not session-scoped: kiro learns its URL once,
+		// at session/new, and has no way to learn a new one, so a bridge that dies
+		// with a session leaves the child calling a closed port (§5e.3). It is
+		// therefore mounted once, on the first session, and reused by every
+		// successor session on this child -- including the divergence branch below.
 		//
-		// sessionAbort is deliberately REUSED here, not aborted-and-replaced
-		// the way the divergence branch below does it. The asymmetry tracks
-		// the state, not an oversight: divergence discards a session that
-		// reached `ready`, whose bridge may have tool calls in flight, so its
-		// controller has to be retired to cancel them. This branch only ever
-		// discards a session that never reached `ready` -- no prompt was sent,
-		// so nothing can be in flight -- and the controller was never aborted,
-		// so it is still a valid handle on the child's current session.
-		// Aborting it would also be wrong on the common path, where this is a
-		// brand-new child with no predecessor session at all.
-		const bridge = await deps.getBridge?.(acpEntry.sessionAbort.signal);
-		acpEntry.bridge = bridge;
-		const mcpServers = buildMcpServersConfig(bridge, workflowServers);
+		// The two signals are deliberately different. childAbort.signal is the
+		// server's lifetime; the accessor returns the CURRENT sessionAbort.signal
+		// for per-call cancellation, read per request rather than captured, so a
+		// session reset still cancels the calls the retired session had in flight.
+		acpEntry.bridge ??= await deps.getBridge?.(
+			acpEntry.childAbort.signal,
+			() => acpEntry.sessionAbort.signal,
+		);
+		const mcpServers = buildMcpServersConfig(acpEntry.bridge, workflowServers);
 		await startSession(acpEntry, mcpServers);
 		resetIdleTimer(acpEntry);
 		return acpEntry.acpSessionId!;
@@ -124,15 +126,19 @@ async function resolveSession(
 		dropAcpSession(acpEntry.acpSessionId);
 		acpEntry.acpSessionId = undefined;
 		acpEntry.ready = false;
+		// Retire the session controller: this branch discards a session that reached
+		// `ready`, so bridged tool calls may be in flight and must be cancelled.
 		acpEntry.sessionAbort.abort();
-		await acpEntry.bridge?.close().catch(() => undefined);
-		acpEntry.bridge = undefined;
 		acpEntry.sessionAbort = new AbortController();
-		// The successor session's bridge rides the successor controller -- the
-		// one aborted above is spent.
-		const newBridge = await deps.getBridge?.(acpEntry.sessionAbort.signal);
-		acpEntry.bridge = newBridge;
-		const mcpServers = buildMcpServersConfig(newBridge, workflowServers);
+		// The bridge is NOT touched. It rides childAbort and reads the session
+		// signal through an accessor, so the successor session keeps the same URL --
+		// which is the only URL kiro will ever call. Closing and re-mounting here is
+		// what stranded it on a dead ephemeral port (§5e.3).
+		acpEntry.bridge ??= await deps.getBridge?.(
+			acpEntry.childAbort.signal,
+			() => acpEntry.sessionAbort.signal,
+		);
+		const mcpServers = buildMcpServersConfig(acpEntry.bridge, workflowServers);
 		await startSession(acpEntry, mcpServers);
 		resetIdleTimer(acpEntry);
 		return acpEntry.acpSessionId!;
@@ -151,7 +157,10 @@ interface AcpDeps {
 	 * The chat transport (stream-adapter.ts) mounts a genuinely per-turn bridge
 	 * and correctly passes the caller's turn signal to the same dep.
 	 */
-	getBridge?: (signal: AbortSignal) => Promise<HttpBridgeHandle | undefined>;
+	getBridge?: (
+		signal: AbortSignal,
+		getCallSignal?: () => AbortSignal,
+	) => Promise<HttpBridgeHandle | undefined>;
 }
 
 /** ACP protocol version — pinned to guard against kiro-cli drift (§5 row 1). */
@@ -244,6 +253,14 @@ interface AcpChild {
 	 * can reach it, so it never fires on a normal successful turn.
 	 */
 	sessionAbort: AbortController;
+	/**
+	 * Lifetime of everything that must outlive a SESSION but die with the CHILD --
+	 * currently just the MCP bridge's HTTP server. Distinct from sessionAbort
+	 * because kiro learns the bridge URL once, at session/new, and cannot be told a
+	 * new one: closing the server on a session reset stranded it on a dead port
+	 * (docs/design/acp-transport.md §5e.3). Aborted only by teardownChild.
+	 */
+	childAbort: AbortController;
 	alive: boolean;
 	ready: boolean;
 	idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -307,6 +324,13 @@ interface AcpChildProbe {
 	/** Undefined unless a session reached `ready` — see startSession's finally. */
 	acpSessionId: string | undefined;
 	ready: boolean;
+	/**
+	 * Exposed so tests can tell the new-session branch of resolveSession from the
+	 * divergence branch. The bridge no longer distinguishes them (it is
+	 * child-scoped and both reuse it, see §5e.3), so this controller's identity --
+	 * reused vs aborted-and-replaced -- is the discriminator.
+	 */
+	sessionAbort: AbortController;
 }
 
 /**
@@ -343,12 +367,28 @@ export function _acpRegistryKey(cwd: string, systemPrompt: string | undefined): 
  */
 function teardownChild(entry: AcpChild, reason: string, options: { kill: boolean }): void {
 	if (!entry.alive) return;
+	// Traced before any state changes: a child dying takes its session-scoped
+	// bridge with it (line below), which surfaces to kiro only as an opaque
+	// "error sending request for url" on the NEXT bridged tool call. Without the
+	// reason recorded here that failure has to be inferred from timing.
+	trace("acp.child.teardown", {
+		registryKey: entry.registryKey,
+		pid: entry.child.pid,
+		reason,
+		killed: options.kill,
+		acpSessionId: entry.acpSessionId,
+		pending: entry.pending.size,
+	});
 	entry.alive = false;
 	entry.ready = false;
 	if (entry.idleTimer) { clearTimeout(entry.idleTimer); entry.idleTimer = undefined; }
 	entry.sessionAbort.abort();
-	// Close the per-session bridge
-	void entry.bridge?.close().catch(() => undefined);
+	// childAbort is what the bridge's HTTP server listens on; aborting it is the
+	// only thing that closes a bridge now that one outlives every session on the
+	// child. The explicit close() stays: it is idempotent and makes the shutdown
+	// synchronous with teardown rather than dependent on listener ordering.
+	entry.childAbort.abort();
+	void entry.bridge?.close("child-teardown").catch(() => undefined);
 	entry.bridge = undefined;
 	if (entry.acpSessionId) {
 		dropAcpSession(entry.acpSessionId);
@@ -599,6 +639,15 @@ async function startSession(
 	entry.ready = false;
 	const expectedServers = new Set(mcpServers.map((s) => s.name));
 	const readyServers = new Set<string>();
+	// The URLs handed to kiro here are the ONLY ones it will ever use for this
+	// session: it has no way to learn a new port. Recording them makes a later
+	// "error sending request for url (…:PORT…)" joinable to a bridge.serve /
+	// bridge.close pair on that same port.
+	trace("acp.session.new", {
+		registryKey: entry.registryKey,
+		pid: entry.child.pid,
+		servers: mcpServers.map((s) => ({ name: s.name, url: (s as { url?: string }).url })),
+	});
 
 	// Track server_initialized events
 	let onServersReady: (() => void) | undefined;
@@ -709,6 +758,7 @@ async function spawnAcpChild(
 		pending: new Map(),
 		listeners: new Map(),
 		sessionAbort: new AbortController(),
+		childAbort: new AbortController(),
 		alive: true,
 		ready: false,
 		idleTimer: undefined,
@@ -739,6 +789,7 @@ async function spawnAcpChild(
 	// Register entry in registry BEFORE the initialize handshake so the abort
 	// handler in makeStreamViaAcp can find and kill it even mid-spawn.
 	registry.set(key, entry);
+	trace("acp.child.spawn", { registryKey: key, pid: child.pid, children: registry.size });
 
 	// Handshake: initialize
 	const initResp = await request(entry, "initialize", {
@@ -894,20 +945,51 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 								textAccum += u.content.text;
 							}
 							break;
-						case "tool_call":
+						case "tool_call": {
+							// DISPLAY ONLY. Under ACP, kiro has already EXECUTED this tool by the
+							// time it notifies us: bridged tools ran over the MCP bridge, native
+							// ones (shell, read, glob) ran inside kiro. pi, however, dispatches
+							// every toolCall block it finds on an assistant message — it keys off
+							// presence, not stopReason (pi agent-loop.ts, executeToolCalls). So a
+							// bare block here made pi run the call a SECOND time: a bridged
+							// ask_user_question raised a second questionnaire card that never
+							// touched the bridge (so no single-flight guard could see it), while a
+							// native tool pi does not register failed with "Tool shell not found"
+							// — an error result that then went back to kiro as its next prompt,
+							// which kiro read as a stray turn with no instruction and restarted.
+							// Tagging with LIVE_TOOL_ID_PREFIX keeps the mid-turn progress display
+							// (pushed on `partial`) while stripLivePlaceholders removes the block
+							// from the final message, so pi never dispatches it.
+							const kiroToolName =
+								u._meta?.kiro?.toolName ?? u.title?.replace(/^Running:\s*@[^/]*\//, "") ?? "unknown";
+							// The real kiro id is kept in the suffix: the prefix is what marks the
+							// block display-only, and retaining the id keeps traces correlatable.
+							// randomUUID (not Date.now()): tool_call updates arrive in bursts, so
+							// two fallbacks in the same millisecond would collide inside one
+							// AssistantMessage. The fallback only fires under protocol drift
+							// (toolCallId is normally protocol-supplied).
+							trace("acp.toolcall.surfaced", {
+								sessionId: currentSessionId,
+								tool: kiroToolName,
+								kiroToolCallId: u.toolCallId,
+								displayOnly: true,
+							});
 							output.content.push({
 								type: "toolCall",
-								// randomUUID (not Date.now()): tool_call updates arrive in bursts,
-								// so two fallbacks in the same millisecond would collide inside one
-								// AssistantMessage. The fallback only fires under protocol drift
-								// (toolCallId is normally protocol-supplied).
-								id: u.toolCallId ?? `acp-tool-${randomUUID()}`,
+								id: `${LIVE_TOOL_ID_PREFIX}${u.toolCallId ?? `acp-tool-${randomUUID()}`}`,
 								// u.title can be a "Running: @<server>/<tool>" progress string; strip
 								// that prefix so history carries the bare tool name, not the banner.
-								name: u._meta?.kiro?.toolName ?? u.title?.replace(/^Running:\s*@[^/]*\//, "") ?? "unknown",
+								name: kiroToolName,
 								arguments: (u.rawInput as Record<string, unknown>) ?? {},
 							} as AssistantMessage["content"][number]);
+							// Full parity with the chat transport (stream-adapter.ts:404):
+							// pushing onto output.content alone is invisible to the consumer,
+							// because nothing carries `partial` until the next stream event.
+							// The thinking marker both emits that event and gives the user the
+							// same "⚙ <tool>" progress line the chat transport shows.
+							pushThinking(`\n⚙ ${kiroToolName}\n`);
 							break;
+						}
 						case "tool_call_update":
 							// Update is informational; stopReason stays "stop"
 							break;
@@ -932,6 +1014,15 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				const promptContent = useResume
 					? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridgeToolNames, !!workflowServers, { sentinel: false })
 					: buildPromptFromContext(context, bridgeToolNames, !!workflowServers, { sentinel: false });
+
+				trace("acp.prompt.send", {
+					sessionId: currentSessionId,
+					mode: plan.mode,
+					deltaStart: plan.deltaStart,
+					messageCount: context.messages.length,
+					promptChars: promptContent.length,
+					prompt: promptContent,
+				});
 
 				const promptParams: Record<string, unknown> = {
 					sessionId: currentSessionId,
@@ -998,7 +1089,18 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				}
 
 				resetIdleTimer(acpEntry);
-				stream.push({ type: "done", reason: output.stopReason as "stop" | "length", message: output });
+				// End-of-turn reconciliation, mirroring the chat transport: pi must not
+				// see the display-only progress blocks, or it re-dispatches work kiro
+				// already did. Done as a filtered COPY, not an in-place strip of
+				// output.content: every partial event carries `partial: output` BY
+				// REFERENCE, so mutating it retroactively empties the mid-turn display
+				// for any consumer that reads the partial after the turn ends -- which,
+				// with an async generator, is every consumer the producer outruns.
+				const finalMessage = {
+					...output,
+					content: stripLivePlaceholders(output.content),
+				} as typeof output;
+				stream.push({ type: "done", reason: output.stopReason as "stop" | "length", message: finalMessage });
 				stream.end();
 			} catch (error) {
 				removeUpdateHandler?.();
@@ -1008,10 +1110,14 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				if (/profileArn is required/i.test(output.errorMessage) && !output.errorMessage.includes("kiro-cli profile")) {
 					output.errorMessage += " — run `kiro-cli profile` to select a profile for this IdC seat.";
 				}
+				// Same reconciliation as the success path, and for the same reason a
+				// copy rather than a strip: a turn that failed mid-flight can still
+				// have surfaced progress blocks, and pi dispatches toolCall blocks off
+				// an errored message too once the caller retries.
 				stream.push({
 					type: "error",
 					reason: output.stopReason as "error" | "aborted",
-					error: output,
+					error: { ...output, content: stripLivePlaceholders(output.content) } as typeof output,
 				});
 				stream.end();
 			} finally {

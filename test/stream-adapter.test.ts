@@ -160,6 +160,85 @@ describe("output parsing", () => {
 	});
 });
 
+describe("prior tool calls are not replayed as prompt text", () => {
+	// Regression: assistant toolCall blocks used to serialize as
+	// `[called tool name({...})]` inside <assistant_message>. Replayed to kiro on
+	// every full resend, next to a <tool_context> block advertising those same
+	// tools as @pi/<name>, kiro treated them as work to do and re-ran them --
+	// asking a user the same question twice and re-firing a prior turn's
+	// subagent calls at reaped agent ids.
+	const withToolCall = {
+		systemPrompt: "You are rpiv.",
+		messages: [
+			{ role: "user" as const, content: "is the sky blue?", timestamp: 0 },
+			{
+				role: "assistant" as const,
+				content: [
+					{ type: "text" as const, text: "Let me ask." },
+					{
+						type: "toolCall" as const,
+						toolCallId: "call-1",
+						name: "ask_user_question",
+						arguments: { question: "is the sky blue?" },
+					},
+				],
+				timestamp: 1,
+			},
+			{
+				role: "toolResult" as const,
+				toolName: "ask_user_question",
+				toolCallId: "call-1",
+				content: "Yes",
+				timestamp: 2,
+			},
+		],
+	} as unknown as Parameters<typeof buildPromptFromContext>[0];
+
+	it("omits the call marker, its tool name and its arguments from the replayed history", () => {
+		const prompt = buildPromptFromContext(withToolCall);
+		expect(prompt).not.toContain("[called tool");
+		// the arguments must not survive in any form -- an agent id or question
+		// lifted out of them is exactly what got re-issued
+		expect(prompt).not.toContain('{"question":"is the sky blue?"}');
+		expect(prompt).not.toContain("<assistant_message>\nask_user_question");
+	});
+
+	it("keeps the assistant's own prose and the paired tool_result", () => {
+		const prompt = buildPromptFromContext(withToolCall);
+		expect(prompt).toContain("<assistant_message>\nLet me ask.\n</assistant_message>");
+		expect(prompt).toContain('<tool_result tool="ask_user_question">\nYes\n</tool_result>');
+	});
+
+	it("emits no empty assistant block when the message was nothing but a tool call", () => {
+		const callOnly = {
+			systemPrompt: "You are rpiv.",
+			messages: [
+				{
+					role: "assistant" as const,
+					content: [
+						{
+							type: "toolCall" as const,
+							toolCallId: "call-2",
+							name: "steer_subagent",
+							arguments: { agentId: "16ac182d-c7bf-418" },
+						},
+					],
+					timestamp: 0,
+				},
+			],
+		} as unknown as Parameters<typeof buildPromptFromContext>[0];
+		const prompt = buildPromptFromContext(callOnly);
+		// Assert on identifiers, not on the tag name: the scaffolding prose itself
+		// says "Do not emit <user_message>, <assistant_message>, ..." so a bare
+		// not.toContain("<assistant_message>") would fail on the preamble.
+		// A message that serializes to undefined leaves the history empty, so no
+		// <conversation_history> wrapper is emitted at all.
+		expect(prompt).not.toContain("<conversation_history>");
+		expect(prompt).not.toContain("16ac182d-c7bf-418");
+		expect(prompt).not.toContain("steer_subagent");
+	});
+});
+
 describe("prompt serialization security", () => {
 	it("escapeXmlAttr escapes the four XML special characters", () => {
 		expect(escapeXmlAttr('a&b"c<d>e')).toBe("a&amp;b&quot;c&lt;d&gt;e");
