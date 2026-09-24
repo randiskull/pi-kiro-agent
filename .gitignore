@@ -6,5 +6,12 @@ scans/
 .agents/
 probes/*.json
 .bg-shell/
-.gsd/
-.rpiv/
+# Directory-only patterns (a trailing slash) do NOT match a symlink, because git
+# classifies a symlink as a file regardless of what it points at. Both of these
+# are created as symlinks into the tool's own store -- `.gsd` is a symlink to
+# ~/.gsd/projects/<id> -- so `.gsd/` never matched and `git add -A` swept them
+# into a commit. Slashless patterns match a file, a directory, or a symlink.
+.gsd
+.gsd-id
+.rpiv
+*.bak
