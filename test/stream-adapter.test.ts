@@ -491,11 +491,50 @@ describe("live tool-use streaming + end-of-turn reconciliation", () => {
 		expect(thinking?.thinking).toContain("⚙ gsd_exec");
 	});
 
-	it("R001: done message has zero toolCall blocks (synthesized blocks stripped by stripLivePlaceholders)", async () => {
-		scriptSpawn(out, 0);
+	// R001 was a strict duplicate of R000 -- same fixture, same spawn mock, same
+	// single assertion, and R000 additionally checks the thinking marker. Replaced
+	// with the gap the review named instead: the `error` push site applies the same
+	// stripLivePlaceholders spread as `done` and had no test.
+	//
+	// The fixture matters. A nonzero exit with no tool uses reaches the error path
+	// but has no placeholders to strip, so it would pass whether or not the strip
+	// is there. This one surfaces a tool use and then wedges: the chat ceiling
+	// throws BEFORE reconcileToolCalls runs, so the live placeholders are still on
+	// output.content when the error is pushed, and the strip has real work to do.
+	it("R001: the error push strips live placeholders that are still on the message", async () => {
+		process.env.PI_KIRO_CHAT_TIMEOUT_MS = "30";
+		const child = new FakeChild();
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+			child.emit("exit", 130);
+			return true;
+		});
+		// Streams the tool-use line, then never exits on its own.
+		spawnMock.mockImplementation(() => {
+			queueMicrotask(() => child.stdout.emit("data", Buffer.from(out)));
+			return child;
+		});
 		const events = await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
-		const done = events.find((e) => e.type === "done") as { message: { content: Array<{ type: string; id?: string }> } };
-		const toolCalls = done.message.content.filter((b) => b.type === "toolCall");
+		delete process.env.PI_KIRO_CHAT_TIMEOUT_MS;
+		killSpy.mockRestore();
+
+		const error = events.find((e) => e.type === "error");
+		if (error?.type !== "error") throw new Error("expected error");
+		expect(error.error.errorMessage).toContain("PI_KIRO_CHAT_TIMEOUT_MS");
+
+		// Positive twin, so a silently empty message cannot pass this test: the
+		// placeholder really was synthesized and is still on the live object the
+		// mid-turn partials point at.
+		const thinkingDelta = events.find((e) => e.type === "thinking_delta") as
+			| { partial: { content: Array<{ type: string; id?: string }> } }
+			| undefined;
+		expect(thinkingDelta).toBeDefined();
+		const livePlaceholders = thinkingDelta!.partial.content.filter(
+			(b) => b.type === "toolCall" && b.id?.startsWith(LIVE_TOOL_ID_PREFIX),
+		);
+		expect(livePlaceholders).toHaveLength(1);
+
+		// The assertion under test: pi never sees them, so it cannot redispatch.
+		const toolCalls = (error.error.content as Array<{ type: string }>).filter((b) => b.type === "toolCall");
 		expect(toolCalls).toHaveLength(0);
 	});
 
