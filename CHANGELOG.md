@@ -239,6 +239,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/usr/bin/security` as a command-line argument, where any process on the machine can read it via
   `ps`. That is an upstream defect this package cannot fix.
 
+- **The bridge's single-flight guard could hold its slot for the rest of the process.** The guard
+  released a held slot only when the waiting call's `AbortSignal` fired. A kiro client that drops a
+  bridged request without ever aborting it -- a crash, a closed socket, a client that simply never
+  sends the cancellation -- left the slot occupied indefinitely, and every later
+  `ask_user_question` on that bridge was rejected as already in flight with no way back short of
+  restarting pi. The orphan grace window is now backed by an absolute ceiling
+  (`DEFAULT_SINGLE_FLIGHT_CEILING_MS`, 15 minutes), so a slot is always reclaimable, and
+  `bridge.orphan.release` records `heldForMs` and which of the two reasons fired.
+
+- **A child-scoped bridge no longer answers with the first session's extension context.** The bridge
+  is mounted once per ACP child and reused by every session on it (see the closed-bridge-port
+  entry in this section), but its context accessor closed over the `ExtensionContext` of whichever session happened
+  to mount it. After a reset, a bridged tool therefore ran against the previous session's context --
+  the wrong overlay host, the wrong cancellation scope -- while the port kept working, so nothing
+  failed loudly and the symptom was an overlay appearing against a session the user had left.
+  `serveBridgeHttp` is now handed a rebindable binding, the handle exposes `rebindOrigin()`, and
+  both the reuse and the divergence branch of `resolveSession` call it, so the bridge always
+  resolves the session that is current now. Bridge creation is also memoised on a promise, so two
+  concurrent `session/new` calls cannot each mount one.
+
+- **The trace file is created with restrictive permissions.** `PI_KIRO_TRACE` writes full prompt
+  text and the raw arguments of every bridged tool call, and the file was created with whatever the
+  process umask allowed -- world-readable on a default box. It is now created `0600` inside a `0700`
+  directory, the module header states plainly that the output is sensitive, and `*.jsonl` is
+  gitignored, since `scripts/secret-scan.mjs` only scans tracked files and so would never see a
+  trace dropped in the worktree.
+
+- **A bridge that finishes mounting after its child died is no longer adopted by the dead child.**
+  Mounting a bridge awaits real I/O (the HTTP server has to listen before it can report a port),
+  while child teardown is synchronous -- so an abort, a crash or an idle kill could run teardown
+  start-to-finish inside that window, and the resolved handle was then written back onto an entry
+  teardown had just cleared. The server itself was already closed (it rides the child's
+  `AbortSignal`), which is what made this quiet: the damage was downstream, because the caller
+  advertises `bridge.urlWithToken` in `session/new.mcpServers`, so kiro would have been handed a
+  port nothing was listening on and every bridged tool call on that session would have failed with
+  an opaque `error sending request for url`. The mount now re-checks liveness after the await and
+  closes the orphaned handle instead. Two supporting changes: the handle type the ACP child holds
+  (`ChildScopedHttpBridgeHandle`) requires `rebindOrigin`, so a refactor that drops it from the
+  spread in `index.ts` is a type error rather than a silently skipped optional call that would
+  restore the stale-context bug above; and a request issued to a dead child now answers with the
+  same terminated-child error `teardownChild` uses instead of never settling -- `sendRaw` drops the
+  write when the child is gone, and teardown only settles requests that were *already* pending, so
+  a `session/new` landing just after teardown left the turn hung with nothing bounding the await.
+
 ## 0.2.1 - 2026-09-15
 
 ### Added

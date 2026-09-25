@@ -60,7 +60,7 @@ import type {
 	ThinkingLevel,
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { HttpBridgeHandle } from "./bridge.js";
+import type { ChildScopedHttpBridgeHandle, HttpBridgeHandle } from "./bridge.js";
 import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import {
@@ -90,6 +90,53 @@ import {
  * streamViaAcp's 3-branch session setup [L1-05] -- the notification-handler
  * wiring that follows stays inline in the caller, as specified.
  */
+/**
+ * Mount this child's bridge once, then keep it pointed at the CURRENT session.
+ *
+ * Two things are deliberately split here, and they used to be conflated:
+ *
+ * - LIFETIME is per child. childAbort.signal owns the HTTP server, so the URL
+ *   kiro learned at session/new stays valid for every successor session (§5e.3).
+ * - The SESSION a bridged tool runs against is per session. index.ts captures
+ *   the origin session id when the bridge is mounted, which was exactly right
+ *   while a bridge died with its session -- but a child-scoped bridge outlives
+ *   the session that mounted it, so that capture went stale and every later
+ *   bridged tool call resolved a retired session's ExtensionContext (the LRU
+ *   still holds it, so the latestCtx fallback never fired either). rebindOrigin
+ *   re-points it at each session start, which is why this is called from both
+ *   session-creating branches of resolveSession and not just the first.
+ *
+ * Called at session start, where before_provider_request has already run for
+ * this turn -- the same guarantee the original capture relied on.
+ */
+async function ensureChildBridge(
+	deps: AcpDeps,
+	acpEntry: AcpChild,
+): Promise<ChildScopedHttpBridgeHandle | undefined> {
+	acpEntry.bridgePromise ??=
+		deps.getBridge?.(acpEntry.childAbort.signal, () => acpEntry.sessionAbort.signal) ??
+		Promise.resolve(undefined);
+	const handle = await acpEntry.bridgePromise;
+	// teardownChild is SYNCHRONOUS and may have run start-to-finish while this
+	// function was suspended at the await above -- a real window, because
+	// getBridge does I/O to mount the HTTP server on first call. Teardown sets
+	// alive=false, aborts childAbort (which closes the server through the
+	// listener in serveBridgeHttp) and clears both fields. Assigning the resolved
+	// handle back without re-checking would resurrect a CLOSED bridge onto a dead
+	// child, and the caller advertises `bridge.urlWithToken` in
+	// session/new.mcpServers -- so kiro would be handed a port nothing is
+	// listening on, and would fail every bridged tool call for that session with
+	// an opaque "error sending request for url". Leave the fields cleared.
+	if (!acpEntry.alive) {
+		void handle?.close("child-torn-down-during-mount").catch(() => undefined);
+		return undefined;
+	}
+	acpEntry.bridge = handle;
+	// Not an optional call: ChildScopedHttpBridgeHandle requires rebindOrigin.
+	acpEntry.bridge?.rebindOrigin();
+	return acpEntry.bridge;
+}
+
 async function resolveSession(
 	deps: AcpDeps,
 	acpEntry: AcpChild,
@@ -113,10 +160,7 @@ async function resolveSession(
 		// server's lifetime; the accessor returns the CURRENT sessionAbort.signal
 		// for per-call cancellation, read per request rather than captured, so a
 		// session reset still cancels the calls the retired session had in flight.
-		acpEntry.bridge ??= await deps.getBridge?.(
-			acpEntry.childAbort.signal,
-			() => acpEntry.sessionAbort.signal,
-		);
+		await ensureChildBridge(deps, acpEntry);
 		const mcpServers = buildMcpServersConfig(acpEntry.bridge, workflowServers);
 		await startSession(acpEntry, mcpServers);
 		resetIdleTimer(acpEntry);
@@ -130,14 +174,13 @@ async function resolveSession(
 		// `ready`, so bridged tool calls may be in flight and must be cancelled.
 		acpEntry.sessionAbort.abort();
 		acpEntry.sessionAbort = new AbortController();
-		// The bridge is NOT touched. It rides childAbort and reads the session
-		// signal through an accessor, so the successor session keeps the same URL --
-		// which is the only URL kiro will ever call. Closing and re-mounting here is
-		// what stranded it on a dead ephemeral port (§5e.3).
-		acpEntry.bridge ??= await deps.getBridge?.(
-			acpEntry.childAbort.signal,
-			() => acpEntry.sessionAbort.signal,
-		);
+		// The bridge's SERVER is NOT touched. It rides childAbort and reads the
+		// session signal through an accessor, so the successor session keeps the
+		// same URL -- which is the only URL kiro will ever call. Closing and
+		// re-mounting here is what stranded it on a dead ephemeral port (§5e.3).
+		// Its ctx origin IS re-pointed at the successor session; see
+		// ensureChildBridge.
+		await ensureChildBridge(deps, acpEntry);
 		const mcpServers = buildMcpServersConfig(acpEntry.bridge, workflowServers);
 		await startSession(acpEntry, mcpServers);
 		resetIdleTimer(acpEntry);
@@ -160,7 +203,7 @@ interface AcpDeps {
 	getBridge?: (
 		signal: AbortSignal,
 		getCallSignal?: () => AbortSignal,
-	) => Promise<HttpBridgeHandle | undefined>;
+	) => Promise<ChildScopedHttpBridgeHandle | undefined>;
 }
 
 /** ACP protocol version — pinned to guard against kiro-cli drift (§5 row 1). */
@@ -235,8 +278,21 @@ interface AcpChild {
 	registryKey: string;
 	/** Active ACP session ID (undefined between session/new calls). */
 	acpSessionId: string | undefined;
-	/** Per-session loopback bridge (Option B: lives for the ACP session duration). */
-	bridge: HttpBridgeHandle | undefined;
+	/**
+	 * Loopback MCP bridge, CHILD-scoped: kiro learns its URL once, at session/new,
+	 * and cannot be told a new one, so one bridge serves every session on this
+	 * child and dies only with the child (docs/design/acp-transport.md §5e.3).
+	 */
+	bridge: ChildScopedHttpBridgeHandle | undefined;
+	/**
+	 * The in-flight mount, cached so concurrent turns on one child cannot each
+	 * mount a server. `bridge ??= await getBridge(...)` looked idempotent but is
+	 * not: the check and the assignment sit either side of an await, so two turns
+	 * both saw undefined, both mounted, and the loser's HTTP server leaked until
+	 * childAbort. Caching the PROMISE closes that window because `??=` on it
+	 * completes synchronously.
+	 */
+	bridgePromise: Promise<ChildScopedHttpBridgeHandle | undefined> | undefined;
 	/** Pending request map: id → resolver. */
 	pending: Map<number, (msg: AcpMessage) => void>;
 	/** Notification listeners: method → handlers. */
@@ -390,6 +446,7 @@ function teardownChild(entry: AcpChild, reason: string, options: { kill: boolean
 	entry.childAbort.abort();
 	void entry.bridge?.close("child-teardown").catch(() => undefined);
 	entry.bridge = undefined;
+	entry.bridgePromise = undefined;
 	if (entry.acpSessionId) {
 		dropAcpSession(entry.acpSessionId);
 		entry.acpSessionId = undefined;
@@ -548,6 +605,19 @@ function sendRaw(entry: AcpChild, msg: object): void {
 
 function request(entry: AcpChild, method: string, params: object): Promise<AcpMessage> {
 	entry.lastUsed = Date.now();
+	// A request issued AFTER teardown could never be answered: sendRaw drops the
+	// write on a dead child, and teardownChild only settles the requests that were
+	// already pending, so the promise sat unresolved forever with nothing bounding
+	// the await. Found by the mount-vs-teardown race below: an abort landing during
+	// the first bridge mount left resolveSession -> startSession hung on session/new
+	// instead of failing the turn. Answer with the same terminated-child error shape
+	// teardownChild uses, so every call site handles it on the path it already has.
+	if (!entry.alive) {
+		return Promise.resolve({
+			jsonrpc: "2.0",
+			error: { code: -1, message: `acp child terminated before ${method}` },
+		});
+	}
 	return new Promise((resolve) => {
 		const id = entry.nextId++;
 		if (entry.pending.size === 0) {
@@ -755,6 +825,7 @@ async function spawnAcpChild(
 		registryKey: key,
 		acpSessionId: undefined,
 		bridge: undefined,
+		bridgePromise: undefined,
 		pending: new Map(),
 		listeners: new Map(),
 		sessionAbort: new AbortController(),
@@ -1112,8 +1183,12 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				}
 				// Same reconciliation as the success path, and for the same reason a
 				// copy rather than a strip: a turn that failed mid-flight can still
-				// have surfaced progress blocks, and pi dispatches toolCall blocks off
-				// an errored message too once the caller retries.
+				// have surfaced progress blocks. Defence in depth rather than a live
+				// bug -- pi's agent loop returns on stopReason "error"/"aborted"
+				// BEFORE it filters for toolCall blocks, so it does not dispatch an
+				// errored message today. The strip stays because the guarantee we
+				// depend on is "no display-only block ever leaves this transport",
+				// not "the current consumer happens to ignore them".
 				stream.push({
 					type: "error",
 					reason: output.stopReason as "error" | "aborted",

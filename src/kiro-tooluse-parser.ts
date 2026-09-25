@@ -8,10 +8,13 @@
  * "[tool] Running: @Y/X" with no param block (arguments degrade to {}).
  *
  * synthesizeToolCallBlocks(body): map those uses onto pi `ToolCall` content
- * blocks. Surfaced on the final AssistantMessage (with stopReason "stop", so
- * the host renders/counts but never redispatches — the claude-code-cli
- * pattern), which is exactly what GSD's snapshotUnitActivity counts for the
- * zero-tool-call guard.
+ * blocks, which is what GSD's snapshotUnitActivity counts for the zero-tool-call
+ * guard. stopReason does NOT make them safe: pi's agent loop dispatches on the
+ * PRESENCE of toolCall blocks and only skips a message whose stopReason is
+ * "error" or "aborted", so a block left on a "stop" message is re-executed.
+ * reconcileToolCalls therefore tags every block produced here with
+ * LIVE_TOOL_ID_PREFIX and the done/error push sites send a filtered copy (M001,
+ * docs/design/acp-transport.md §5h).
  *
  * Split out of the original workflow-mcp.ts (L3-03): this half is pure
  * output-parsing with no dependency on GSD's install layout or `.mcp.json`.
@@ -120,9 +123,11 @@ export function createToolUseStreamParser(): { feed(text: string): Array<Pick<Ki
 
 /**
  * Map parsed tool uses onto pi ToolCall content blocks for the final
- * AssistantMessage. Emitted alongside stopReason "stop": the host counts and
- * renders them (GSD's zero-tool-call guard reads exactly these blocks) but
- * never redispatches — execution already happened inside kiro via MCP.
+ * AssistantMessage. The host counts and renders them (GSD's zero-tool-call guard
+ * reads exactly these blocks), but it does NOT treat stopReason "stop" as a
+ * do-not-dispatch marker: execution already happened inside kiro via MCP, so the
+ * caller must tag these with LIVE_TOOL_ID_PREFIX and strip them from the message
+ * pi finally sees, or pi runs every one of them again (M001).
  *
  * The id must be GLOBALLY unique, not merely unique within one response.
  * GSD derives a workflow idempotency key from it

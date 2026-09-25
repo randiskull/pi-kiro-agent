@@ -196,6 +196,55 @@ describe("provider registration lifecycle", () => {
 		// returned ctxB here — a bridged tool call from A's turn misrouted to B.
 		expect(getterA()).toBe(ctxA);
 	});
+
+	it("re-points a child-scoped bridge at the session that is current now [rebindOrigin]", async () => {
+		// The pin above is right for a bridge that dies with its session. An ACP
+		// bridge does not: kiro learns its URL once, at session/new, and cannot be
+		// told a new one, so one bridge serves every session on the child
+		// (docs/design/acp-transport.md SS5e.3). With a one-shot capture, session
+		// two and everything after it kept resolving session ONE's ctx -- and kept
+		// resolving it, because the LRU still holds that entry, so the latestCtx
+		// fallback never fired either. resolveSession therefore calls rebindOrigin
+		// at every session start.
+		const piKiro = await loadExtension();
+		const { bridgeEnabled } = await import("../src/kiro-bridge.js");
+		vi.mocked(bridgeEnabled).mockReturnValue(true);
+		const { serveBridgeHttp } = await import("../src/bridge.js");
+		const serveMock = vi.mocked(serveBridgeHttp);
+		const { makeStreamViaKiro } = await import("../src/stream-adapter.js");
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+
+		const deps = vi.mocked(makeStreamViaKiro).mock.calls[0]?.[0] as {
+			getBridge?: (signal: AbortSignal) => Promise<{ rebindOrigin?: () => void } | undefined>;
+		};
+		// A real handle, so getBridge returns one to rebind. The L0-04 test above
+		// leaves serveBridgeHttp resolving undefined.
+		serveMock.mockResolvedValueOnce({
+			url: "http://127.0.0.1:1/mcp",
+			urlWithToken: "http://127.0.0.1:1/mcp/tok",
+			token: "tok",
+			toolNames: ["todo"],
+			close: async () => undefined,
+		} as never);
+
+		const ctxA = { sessionManager: { getSessionId: () => "session-A" } };
+		const ctxB = { sessionManager: { getSessionId: () => "session-B" } };
+
+		await fake.emit("before_provider_request", {}, ctxA);
+		const handle = await deps.getBridge?.(new AbortController().signal);
+		const getter = serveMock.mock.calls.at(-1)?.[1] as () => unknown;
+		expect(getter).toBeDefined();
+		// Named explicitly: an absent rebindOrigin would make the call below a
+		// silent no-op via optional chaining.
+		expect(typeof handle?.rebindOrigin).toBe("function");
+
+		// A second session starts on the same child.
+		await fake.emit("before_provider_request", {}, ctxB);
+		expect(getter()).toBe(ctxA); // still pinned until the rebind
+		handle?.rebindOrigin?.();
+		expect(getter()).toBe(ctxB);
+	});
 });
 
 
