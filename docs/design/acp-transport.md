@@ -518,6 +518,217 @@ the log it exists to draw attention to, while per-name dedupe still reports a
 *second, different* tool going missing later. `clearBridgeCache()` resets the set
 so test order cannot silence it.
 
+## 5f. Field evidence, 2026-09-20: a bridged tool runs against a SECOND, cold instance of its extension
+
+The largest finding of the session, and the one that changes what the bridge can
+promise. `captureBridgeTools` imports each bridgeable package's entry file and
+calls its `default(shim)` to harvest tool definitions. Its docstring claimed the
+captured definitions are "closures over each package's module-level state, shared
+with the live extension instances". They are not. They close over a **second
+instance** of that package, and pi's live instance is a different one.
+
+Mechanism, pinned in pi's source: the extension loader builds jiti with
+`moduleCache: false`.
+
+```
+coding-agent/src/core/extensions/loader.ts:496
+    const jiti = createJitiImpl(import.meta.url, {
+        moduleCache: false,
+        ...resolutionOptions,
+    });
+```
+
+Every import of an entry file therefore re-evaluates it into a fresh module graph
+with its own bindings. That is deliberate on pi's side (it is what lets `/reload`
+pick up edits, and pi caches the resulting *factory* separately). It also means no
+specifier the bridge could use would reach pi's instance, and `ExtensionAPI` /
+`ExtensionContext` expose no way to enumerate or invoke a registered tool by name
+(`getAllRegisteredTools` and `getToolDefinition` live on `ExtensionRunner`, which
+an extension cannot reach). So the second instance is structural, not a choice.
+
+Proven directly rather than inferred. A globalThis counter plus a per-accessor log
+in `rpiv-advisor/advisor/state.ts`, one pid:
+
+```
+09:05:25.558 pid=36269 instance=1 module-loaded
+09:05:30.053 pid=36269 instance=1 setAdvisorModel(model)     <- /advisor restore
+09:05:55.623 pid=36269 instance=1 getAdvisorModel -> SET
+09:05:56.422 pid=36269 instance=2 module-loaded              <- bridge mount
+09:06:07.326 pid=36269 instance=2 getAdvisorModel -> undefined  <- kiro's call
+```
+
+Two victims found, both silent, both by behaviour rather than by error:
+
+1. **`advisor` never worked from kiro.** pi's UI announced
+   `Advisor restored: amazon-bedrock/us.xai.grok-4.6, high` while the delegated
+   model, on the same turn, got
+   `No advisor model is configured. The user can enable one with the /advisor command.`
+   The selection lived in a module-level `let`, so instance 2's copy was empty and
+   `executeAdvisor`'s `if (!advisor)` guard fired.
+
+2. **`todo` wrote to a store pi could not see.** kiro created and listed
+   `#1 cross-instance-check` successfully through the bridge; `/todos` in the same
+   process reported `No todos yet. Ask the agent to add some!`. The per-session task
+   Map and the foreground render pointer were both module-scoped.
+
+Worth stating plainly: this was invisible for as long as it was because each
+instance is internally consistent. Nothing errors, nothing is logged, and a smoke
+test driven entirely through the bridge passes. Both were only found by comparing
+what the two sides of the process said about the same fact.
+
+Fix (implemented upstream, not here): anchor the state on
+`globalThis[Symbol.for(...)]`. This is already the convention in the rpiv monorepo
+for exactly this hazard -- `rpiv-i18n`, `rpiv-workflow`'s built-ins and
+skill-contracts registries, and `rpiv-advisor`'s own `inventory.ts`, whose docstring
+gives the reason ("so the cache survives module re-import on /new, /fork,
+/resume"). `advisor/state.ts` and `rpiv-todo`'s store were the two outliers.
+Verified live afterwards: the advisor call from kiro returns content, and an item
+kiro creates appears in `/todos`.
+
+What this repo owns: the docstring on `captureBridgeTools` is corrected, and the
+constraint is now stated where a future reader will hit it. **A bridged tool is only
+correct if it is self-contained or keys its cross-instance state globally.** The
+bridge cannot enforce that, and cannot detect a violation -- a cold instance looks
+exactly like a working one.
+
+The general fix belongs upstream in pi: a supported way for an extension to invoke
+a registered tool by name would remove the need to re-import at all. Until then the
+per-package discipline is the only mechanism.
+
+## 5g. Field evidence, 2026-09-20: not redispatching and GSD's tool-call ledger are mutually exclusive
+
+§5d's fix is correct and it has a cost that §7's definition of done rules out. Both cannot hold
+at once with the block types pi has today. Recording it here rather than discovering it a third
+time.
+
+### The conflict
+
+pi decides whether to execute tool calls by looking for `toolCall` blocks on the assistant
+message (`agent-loop.ts:228` filter, `:232` dispatch). GSD decides whether a unit did any work by
+counting `toolCall` blocks on assistant messages in the persisted session
+(`snapshotUnitActivity`, `auto-unit-closeout.ts:56-81`, counting `block?.type === "toolCall"` at
+`:71-73`). **It is the same block on the same message.** Removing it satisfies pi and starves GSD;
+leaving it satisfies GSD and makes pi re-run work kiro already did.
+
+There is one message, not two. `streamAssistantResponse` returns `await response.result()`
+(`agent-loop.ts:401`, `:411`, `:416`, `:424`), `result()` resolves to the `done` event's `message`
+or the `error` event's `error` (`ai/src/utils/event-stream.ts:86-88` and the
+`AssistantMessageEventStream` selector at `:91-105`), and the returned object is both dispatched
+(`agent-loop.ts:228`) and pushed into the persisted `newMessages` (`:219`). So the filtered copy
+built at `acp-transport.ts:1088` (done) and `:1107` (error) is exactly what GSD later counts, and
+under ACP **every** tool call is tagged `LIVE_TOOL_ID_PREFIX` and stripped. GSD sees zero.
+
+### What zero costs
+
+Two guards read that number and they behave differently:
+
+- `isSuspiciousGhostCompletion` (`auto-unit-closeout.ts:83-94`) requires `toolCalls === 0` **and**
+  `assistantMessages === 0`. A delegated turn always produces text, so this one does not fire.
+- The zero tool-call guard (`auto/unit-phase.ts:858-948`, GSD issues #1833 and #2653) tests
+  `lastUnit.toolCalls === 0` **alone**. It marks the unit failed, retries it in a fresh context,
+  and past `MAX_ZERO_TOOL_RETRIES` notifies "context exhaustion" and calls `pauseAuto` with reason
+  `zero-tool-calls-exhausted` (`:932-939`).
+
+So GSD auto-mode on `PI_KIRO_TRANSPORT=acp` retries every unit and then stops, attributing it to
+context exhaustion, while the units were in fact doing the work. That is the same
+false-negative shape as the 2.21 stderr/format regression in §5b, reached by a different route:
+the blocks exist mid-turn and are gone from history.
+
+This is not ACP-only any more. M001/S01/T01 (`48d2ee5`) adopted the same tagging and
+push-site filtering in `stream-adapter.ts`, so after M001 both transports have the property.
+
+### Receipts
+
+Measured, not inferred, and with a matched control arm. Every pi session file for this
+project under `~/.pi/agent/sessions/`, counting `toolCall` blocks on persisted assistant
+messages -- the exact quantity `snapshotUnitActivity` reads:
+
+```
+mtime              assistant msgs   toolCall blocks
+09-20 00:59:20          4                 3
+09-20 01:06:01          5                77
+09-20 01:10:18          9                55
+09-20 01:11:06         14                74
+09-20 01:25:52          8                 3     <- last session before the running pi
+                                                   picked up the 5d fix
+09-20 01:40:09          1                 0
+09-20 01:40:22          2                 0
+09-20 01:46:04          1                 0
+09-20 01:46:11          1                 0
+09-20 01:55:58          2                 0
+09-20 02:02:26          2                 0
+09-20 02:08:16          2                 0
+09-20 02:19:55          2                 0
+09-20 02:20:02          2                 0
+```
+
+53 of the 78 session files persist at least one `toolCall` block; not one of them is after
+the restart, and not one carries a `kiro-live-` id (the strip is working exactly as designed).
+
+The last row is the six-tool bridge verification run. Its trace
+(`pikiro-trace-run15.jsonl`) holds 9 `acp.toolcall.surfaced` events over 9 distinct
+`kiroToolCallId`s and 7 `bridge.call`/`bridge.result` pairs, all `isError: false`. Its
+persisted session holds 2 assistant messages and 0 `toolCall` blocks. So for that unit GSD
+would compute `{ toolCalls: 0, assistantMessages: 2 }`: the ghost-completion guard stays
+quiet exactly as predicted, and the zero tool-call guard fires.
+
+### This repo's own tests asserted the losing side
+
+Worth recording, because it shows the conflict is not a matter of taste. Two tests in
+`test/stream-adapter.test.ts` predate all of this and assert the GSD-ledger property directly
+on the `done` message:
+
+- `:397-400` -- exactly one `toolCall` block, named `gsd_task_complete`, with
+  `stopReason === "stop"`.
+- `:479-482` -- exactly one block, its id `not.toContain("kiro-live-")`, and its `arguments`
+  equal to the parsed `{ cmd: "cargo test" }`.
+
+The second one is explicit: the final message must carry a block that is **not** live-tagged.
+That is the same requirement GSD's counter has, written as an assertion, and it is
+unsatisfiable together with "pi must not redispatch". M001/S01/T01 turned both tests red, and
+correctly so.
+
+The belief that let the two coexist on paper is in the comment M001 deleted: the synthesized
+blocks are "surfaced with stopReason `stop` -- the host counts/renders these but never
+redispatches them". The first half is true and the second half is false, for the same reason
+§5d gives. It is the chat transport's copy of the mistake §5f found in the bridge docstring:
+an assumption about what the host does with what we hand it, never checked against the host.
+
+### Why there is no fix inside this package
+
+Anything countable is dispatchable. pi's `ToolCall` (`ai/src/types.ts:385-393`) carries `type`,
+`id`, `name`, `arguments`, `thoughtSignature` and `namespace` -- no way to say "already executed
+by the provider". A block that GSD counts is a block pi runs.
+
+Two upstream fixes in pi, both using machinery that already exists:
+
+1. **Gate dispatch on `stopReason`.** `"toolUse"` is already a `StopReason`
+   (`ai/src/types.ts:418`), and it is what the enum is for. pi-kiro sets `"stop"` on a completed
+   delegated turn, so a `stopReason`-gated loop would leave real blocks on the message, count
+   correctly in GSD, and never redispatch. Note `:236-239` already reads `stopReason` -- but only
+   to fail a batch on `"length"`, after deciding to dispatch.
+2. **Honour `endTurn`.** `AssistantMessage.endTurn?: boolean` exists, and its own docstring says
+   it is "preserved for debugging and does not currently affect agent control flow"
+   (`ai/src/types.ts:530-534`).
+
+A GSD-side mitigation would be to make the zero tool-call guard provider-aware and skip it for a
+provider advertising `authMode: "externalCli"`, since such a provider's tool calls happen outside
+pi by construction. That is a weaker fix: it restores auto-mode but leaves the ledger wrong.
+
+Until one of those lands, §7's "tool-call counts matching GSD's ledger" is unreachable, and the
+honest reading of the definition of done is that the *no-redispatch* half ships and the *ledger*
+half is blocked on pi.
+
+### How this was found, and how it was nearly missed
+
+Not by a failing test: by reading what the consumer counts after changing what the producer
+emits. The GSD run in progress when this was written is unaffected, because GSD's own agent
+(`~/.gsd/agent/settings.json`) runs a Bedrock model with `packages: []` and so never loads
+pi-kiro. A green `gsd headless auto` in this repo therefore says nothing about this defect. The
+test that would expose it is the documented pattern in
+`docs/integrations/gsd-workflow-mcp.md` -- pi with `/model kiro/auto` inside a GSD project,
+driving auto-mode itself.
+
 ## 6. Non-goals
 
 - No change to the trust/billing model (kiro-cli owns auth; seat-billed).
@@ -529,5 +740,35 @@ so test order cannot silence it.
 - All six probes green with captured fixtures; parity suite green on both transports.
 - A full GSD milestone slice completes on `PI_KIRO_TRANSPORT=acp` with **zero** salvage
   events, **zero** synthesized tool calls (all event-sourced), and tool-call counts
-  matching GSD's ledger.
+  matching GSD's ledger. **Blocked on pi, see §5g:** the ledger clause and §5d's
+  no-redispatch fix are mutually exclusive with the block types pi has today, so the
+  ledger reads zero and GSD's zero tool-call guard pauses auto-mode. The no-redispatch
+  half ships; this half needs pi to gate dispatch on `stopReason` or honour `endTurn`.
 - Sentinel, salvage heuristic, and list-sessions snapshot-diff code paths deleted.
+
+## 5h. Chat transport carries the same no-redispatch defect (2026-09-20)
+
+### The defect
+
+`reconcileToolCalls` in `stream-adapter.ts` synthesized end-of-turn `toolCall`
+blocks and pushed them onto `output.content` with plain `kiro-mcp-<hash>-N-<name>`
+IDs. pi's agent loop (`agent-loop.ts:228`) dispatches on the **presence** of
+`toolCall` blocks regardless of `stopReason`. A false docstring claimed `"stop"`
+prevented redispatch; it did not.
+
+### Mechanism
+
+Identical to §5d. The chat path had the same structural gap as ACP before
+`318e6c5`/`4fae29c`: synthesized blocks with non-LIVE IDs survive
+`stripLivePlaceholders` and reach pi's dispatch logic.
+
+### Fix (M001/S01–S02)
+
+`reconcileToolCalls` now tags every synthesized block with `LIVE_TOOL_ID_PREFIX`
+before pushing. The `done` and `error` push sites build filtered spread copies
+(`{ ...output, content: stripLivePlaceholders(output.content) }`) instead of
+passing `output` directly, preserving mid-turn `partial: output` events from
+retroactive mutation (§5e.2 applies identically here). `pushThinking` is called
+once per block emitting `⚙ <toolname>` markers, and `trace("chat.toolcall.surfaced",
+{ tool, displayOnly: true })` is emitted per block for `PI_KIRO_TRACE` parity
+with the ACP path.

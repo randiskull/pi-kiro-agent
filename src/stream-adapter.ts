@@ -466,17 +466,25 @@ function salvageOrThrow(exitCode: number, body: string, stderrText: string, tool
 }
 
 /**
- * Replace live placeholder toolCall blocks (pushed mid-turn by runAttempt)
- * with the authoritative end-of-turn parse of kiro's tool-use transcript:
- * full arguments, stable ids, no duplicates. Surfaced with stopReason
- * "stop" -- the host counts/renders these but never redispatches them,
- * since execution already happened inside kiro via MCP. Named as part of
- * the streamViaKiro post-loop tail [L1-01].
+ * Tag synthesized end-of-turn toolCall blocks with LIVE_TOOL_ID_PREFIX so
+ * stripLivePlaceholders removes them from the final done/error message before
+ * pi sees it. pi's agent loop (agent-loop.ts:228) dispatches on the PRESENCE
+ * of toolCall blocks, not on stopReason; any block without the prefix
+ * triggers redispatch of work kiro already executed.
  */
-function reconcileToolCalls(output: AssistantMessage, toolTranscript: string): void {
+function reconcileToolCalls(
+	output: AssistantMessage,
+	toolTranscript: string,
+	pushThinking: (delta: string) => void,
+): void {
 	output.content = stripLivePlaceholders(output.content);
 	for (const block of synthesizeToolCallBlocks(toolTranscript)) {
-		output.content.push(block);
+		output.content.push({
+			...block,
+			id: `${LIVE_TOOL_ID_PREFIX}${block.id}`,
+		});
+		pushThinking(`\n⚙ ${block.name}\n`);
+		trace("chat.toolcall.surfaced", { tool: block.name, displayOnly: true });
 	}
 }
 
@@ -641,7 +649,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				salvageOrThrow(exitCode, body, stderrText, toolTranscript, pushThinking);
 
 				const { final } = extractFinal(body);
-				reconcileToolCalls(output, toolTranscript);
+				reconcileToolCalls(output, toolTranscript, pushThinking);
 				output.content.push({ type: "text", text: "" });
 				const textIndex = output.content.length - 1;
 				stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
@@ -658,7 +666,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				await recordSession(useResume, plan.resumeId, cwd, context.messages, preSnapshot, listSessions);
 
 				output.stopReason = "stop";
-				stream.push({ type: "done", reason: "stop", message: output });
+				stream.push({ type: "done", reason: "stop", message: { ...output, content: stripLivePlaceholders(output.content) } });
 				stream.end();
 			} catch (error) {
 				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
@@ -669,7 +677,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				stream.push({
 					type: "error",
 					reason: output.stopReason as "error" | "aborted",
-					error: output,
+					error: { ...output, content: stripLivePlaceholders(output.content) } as typeof output,
 				});
 				stream.end();
 			} finally {

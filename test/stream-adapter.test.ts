@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AssistantMessageEvent, Context, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -8,11 +11,13 @@ import {
 	extractFinal,
 	FINAL_CLOSE,
 	FINAL_OPEN,
+	LIVE_TOOL_ID_PREFIX,
 	makeStreamViaKiro,
 	mapEffort,
 	stripAnsi,
 	toolUseTranscript,
 } from "../src/stream-adapter.js";
+import { resetTraceTarget } from "../src/trace.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
@@ -382,7 +387,7 @@ describe("makeStreamViaKiro", () => {
 });
 
 describe("nonzero-exit salvage (kiro-cli dies after completing work)", () => {
-	it("salvages exit 1 when MCP tool calls landed — done with toolCall blocks, no error", async () => {
+	it("salvages exit 1 when MCP tool calls landed — done carries no toolCall blocks (stripped by LIVE prefix), no error", async () => {
 		const out = [
 			"working prose",
 			"Running tool gsd_task_complete with the param (from mcp server: gsdworkflow)",
@@ -395,8 +400,7 @@ describe("nonzero-exit salvage (kiro-cli dies after completing work)", () => {
 		expect(done).toBeDefined();
 		expect(events.find((e) => e.type === "error")).toBeUndefined();
 		const toolCalls = (done?.message.content ?? []).filter((b) => (b as { type?: string }).type === "toolCall");
-		expect(toolCalls).toHaveLength(1);
-		expect((toolCalls[0] as { name: string }).name).toBe("gsd_task_complete");
+		expect(toolCalls).toHaveLength(0);
 		expect(done?.message.stopReason).toBe("stop");
 	});
 
@@ -465,23 +469,117 @@ describe("chat-turn hard ceiling (PI_KIRO_CHAT_TIMEOUT_MS)", () => {
 });
 
 describe("live tool-use streaming + end-of-turn reconciliation", () => {
-	it("final message has exactly ONE authoritative block per tool use (no live-placeholder dupes) with parsed args", async () => {
-		const out = [
-			"prose",
-			"Running tool gsd_exec with the param (from mcp server: gsdworkflow)",
-			' ⋮  { "cmd": "cargo test" }',
-			" - Completed in 2s",
-			`${FINAL_OPEN}done${FINAL_CLOSE}`,
-		].join("\n");
+	const out = [
+		"prose",
+		"Running tool gsd_exec with the param (from mcp server: gsdworkflow)",
+		' ⋮  { "cmd": "cargo test" }',
+		" - Completed in 2s",
+		`${FINAL_OPEN}done${FINAL_CLOSE}`,
+	].join("\n");
+
+	beforeEach(() => {
+		spawnMock.mockReset();
+	});
+
+	it("R000: done message has zero toolCall blocks (LIVE_TOOL_ID_PREFIX tagging + stripLivePlaceholders removes synthesized blocks)", async () => {
 		scriptSpawn(out, 0);
 		const events = await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
-		const done = events.find((e) => e.type === "done") as { message: { content: Array<{ type: string; id?: string; name?: string; arguments?: unknown }> } };
+		const done = events.find((e) => e.type === "done") as { message: { content: Array<{ type: string }> } };
 		const toolCalls = done.message.content.filter((b) => b.type === "toolCall");
-		expect(toolCalls).toHaveLength(1);
-		expect(toolCalls[0]?.id).not.toContain("kiro-live-");
-		expect(toolCalls[0]?.arguments).toEqual({ cmd: "cargo test" });
-		// the live marker made it into the thinking feed
+		expect(toolCalls).toHaveLength(0);
 		const thinking = done.message.content.find((b) => b.type === "thinking") as { thinking?: string } | undefined;
 		expect(thinking?.thinking).toContain("⚙ gsd_exec");
+	});
+
+	// R001 was a strict duplicate of R000 -- same fixture, same spawn mock, same
+	// single assertion, and R000 additionally checks the thinking marker. Replaced
+	// with the gap the review named instead: the `error` push site applies the same
+	// stripLivePlaceholders spread as `done` and had no test.
+	//
+	// The fixture matters. A nonzero exit with no tool uses reaches the error path
+	// but has no placeholders to strip, so it would pass whether or not the strip
+	// is there. This one surfaces a tool use and then wedges: the chat ceiling
+	// throws BEFORE reconcileToolCalls runs, so the live placeholders are still on
+	// output.content when the error is pushed, and the strip has real work to do.
+	it("R001: the error push strips live placeholders that are still on the message", async () => {
+		process.env.PI_KIRO_CHAT_TIMEOUT_MS = "30";
+		const child = new FakeChild();
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+			child.emit("exit", 130);
+			return true;
+		});
+		// Streams the tool-use line, then never exits on its own.
+		spawnMock.mockImplementation(() => {
+			queueMicrotask(() => child.stdout.emit("data", Buffer.from(out)));
+			return child;
+		});
+		const events = await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
+		delete process.env.PI_KIRO_CHAT_TIMEOUT_MS;
+		killSpy.mockRestore();
+
+		const error = events.find((e) => e.type === "error");
+		if (error?.type !== "error") throw new Error("expected error");
+		expect(error.error.errorMessage).toContain("PI_KIRO_CHAT_TIMEOUT_MS");
+
+		// Positive twin, so a silently empty message cannot pass this test: the
+		// placeholder really was synthesized and is still on the live object the
+		// mid-turn partials point at.
+		const thinkingDelta = events.find((e) => e.type === "thinking_delta") as
+			| { partial: { content: Array<{ type: string; id?: string }> } }
+			| undefined;
+		expect(thinkingDelta).toBeDefined();
+		const livePlaceholders = thinkingDelta!.partial.content.filter(
+			(b) => b.type === "toolCall" && b.id?.startsWith(LIVE_TOOL_ID_PREFIX),
+		);
+		expect(livePlaceholders).toHaveLength(1);
+
+		// The assertion under test: pi never sees them, so it cannot redispatch.
+		const toolCalls = (error.error.content as Array<{ type: string }>).filter((b) => b.type === "toolCall");
+		expect(toolCalls).toHaveLength(0);
+	});
+
+	it("R002: thinking feed contains ⚙ <toolname> for each surfaced kiro tool", async () => {
+		scriptSpawn(out, 0);
+		const events = await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
+		const done = events.find((e) => e.type === "done") as { message: { content: Array<{ type: string; thinking?: string }> } };
+		const thinking = done.message.content.find((b) => b.type === "thinking") as { thinking?: string } | undefined;
+		expect(thinking?.thinking).toContain("⚙ gsd_exec");
+	});
+
+	it("R003: done push does not mutate partial.content in place — mid-turn partial retains its content after done", async () => {
+		scriptSpawn(out, 0);
+		const events = await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
+		// text_delta fires AFTER reconcileToolCalls and carries partial: output by reference.
+		// output.content at that point has [LIVE-tagged toolCall block, text block].
+		const textDelta = events.find((e) => e.type === "text_delta") as { partial: { content: unknown[] } } | undefined;
+		expect(textDelta).toBeDefined();
+		const contentRef = textDelta!.partial.content;
+		const lengthAtPartial = contentRef.length;
+		// After all events (including done), the array must be unchanged — done used a spread copy.
+		expect(contentRef.length).toBe(lengthAtPartial);
+		// Confirm the LIVE-tagged block is still present (no in-place strip occurred).
+		const stillHasTagged = contentRef.some((b: unknown) => (b as { id?: string }).id?.startsWith(LIVE_TOOL_ID_PREFIX));
+		expect(stillHasTagged).toBe(true);
+	});
+
+	it("R004: chat.toolcall.surfaced trace event written per surfaced tool when PI_KIRO_TRACE is set", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-kiro-trace-test-"));
+		const tracePath = join(dir, "trace.jsonl");
+		const savedTrace = process.env.PI_KIRO_TRACE;
+		process.env.PI_KIRO_TRACE = tracePath;
+		resetTraceTarget();
+		try {
+			scriptSpawn(out, 0);
+			await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
+			const lines = readFileSync(tracePath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+			const surfaced = lines.filter((e) => e.event === "chat.toolcall.surfaced");
+			expect(surfaced.length).toBeGreaterThanOrEqual(1);
+			expect(surfaced[0].tool).toBe("gsd_exec");
+			expect(surfaced[0].displayOnly).toBe(true);
+		} finally {
+			if (savedTrace === undefined) delete process.env.PI_KIRO_TRACE;
+			else process.env.PI_KIRO_TRACE = savedTrace;
+			resetTraceTarget();
+		}
 	});
 });

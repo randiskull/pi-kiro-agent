@@ -33,3 +33,18 @@ process.env.USERPROFILE = TEST_HOME;
 // test/workflow-mcp.test.ts is unaffected -- it deletes this variable in its own
 // beforeEach and drives discovery against explicit fixture directories.
 process.env.PI_KIRO_WORKFLOW_MCP = "off";
+
+// index.ts reads PI_KIRO_TRANSPORT directly ('src/index.ts:139') to choose
+// makeStreamViaKiro vs makeStreamViaAcp, so a test process launched from a shell
+// that exports PI_KIRO_TRANSPORT=acp -- for example, a GSD auto-mode run started
+// with that variable set for the ACP transport -- silently swaps the wired
+// implementation for every test in the file. test/index.test.ts's L0-04 mocks
+// makeStreamViaKiro and asserts on its first call's arguments; under an
+// inherited acp value that mock is never called, mock.calls is empty, and the
+// destructure of calls[0] throws "Cannot read properties of undefined (reading
+// 'getBridge')". Deterministic given the ambient env, not a flake -- same
+// coupling class as PI_KIRO_WORKFLOW_MCP above, different variable.
+//
+// test/command-coverage-live.test.ts is unaffected -- it saves, sets, and
+// restores this variable itself around the one test that needs acp.
+delete process.env.PI_KIRO_TRANSPORT;
