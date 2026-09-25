@@ -66,6 +66,23 @@ describe("env-gated trace", () => {
 		expect(statSync(join(dir, "nested")).mode & 0o777).toBe(0o700);
 	});
 
+	// Kiro's review of PR #18 claimed mkdirSync's `mode` applies only to the LEAF
+	// and leaves intermediate ancestors at 0666 & ~umask, i.e. world-readable. That
+	// is not what node does: MKDirpSync in node_file.cc re-invokes uv_fs_mkdir with
+	// the SAME mode for every missing component. Verified by hand at v24 on macOS
+	// and v22 on Linux (umask 022, all four levels 0700) before rejecting the
+	// finding; this pins it so the claim cannot be re-raised from reading alone.
+	// Deliberately MULTI-level: the test above only creates one new component.
+	it.skipIf(process.platform === "win32")("creates every new ancestor 0700, not just the leaf", () => {
+		const path = join(dir, "a", "b", "c", "trace.jsonl");
+		process.env.PI_KIRO_TRACE = path;
+		resetTraceTarget();
+		trace("acp.prompt.send", { prompt: "a prompt that could contain anything" });
+		for (const created of [join(dir, "a"), join(dir, "a", "b"), join(dir, "a", "b", "c")]) {
+			expect(statSync(created).mode & 0o777).toBe(0o700);
+		}
+	});
+
 	it("swallows an unwritable target instead of throwing", () => {
 		// Parent is an existing FILE, so mkdirSync fails with ENOTDIR on every
 		// platform. The previous version used a path under /proc, which does not

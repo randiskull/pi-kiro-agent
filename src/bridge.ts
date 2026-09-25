@@ -586,6 +586,21 @@ export interface HttpBridgeHandle {
 }
 
 /**
+ * A bridge that OUTLIVES the session which mounted it, so rebinding is not
+ * optional. Used for the child-scoped ACP bridge.
+ *
+ * The base type leaves `rebindOrigin` optional for the per-turn chat-transport
+ * bridge, which has nothing to rebind. That optionality is a hazard on the ACP
+ * path: every call site there reads `bridge?.rebindOrigin?.()`, so a refactor
+ * that dropped the field from the handle would compile, run, emit no warning,
+ * and silently restore the stale-ctx defect this type exists to prevent. Making
+ * it required here turns that regression into a type error.
+ */
+export interface ChildScopedHttpBridgeHandle extends HttpBridgeHandle {
+	rebindOrigin: () => void;
+}
+
+/**
  * Serve the bridged tools over Streamable-HTTP MCP on a loopback ephemeral
  * port, for subprocess runtimes that can't hold an in-process instance.
  * Stateless transport: every POST is handled independently, which suits

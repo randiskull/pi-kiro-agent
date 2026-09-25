@@ -19,7 +19,11 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
-import { captureBridgeTools, type HttpBridgeHandle, serveBridgeHttp } from "./bridge.js";
+import {
+	captureBridgeTools,
+	type ChildScopedHttpBridgeHandle,
+	serveBridgeHttp,
+} from "./bridge.js";
 import { bridgeEnabled } from "./kiro-bridge.js";
 import { DEFAULT_SUBAGENT_MODEL, FALLBACK_MODELS, fetchKiroModels, KIRO_PROVIDER } from "./models.js";
 import { checkKiroReadiness, clearKiroReadinessCache } from "./readiness.js";
@@ -140,7 +144,7 @@ const deps: {
 	getBridge?: (
 		signal: AbortSignal,
 		getCallSignal?: () => AbortSignal,
-	) => Promise<HttpBridgeHandle | undefined>;
+	) => Promise<ChildScopedHttpBridgeHandle | undefined>;
 } = { binaryPath: undefined };
 let registered = false;
 

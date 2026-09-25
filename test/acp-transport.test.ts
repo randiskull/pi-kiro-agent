@@ -816,6 +816,75 @@ describe("makeStreamViaAcp", () => {
 		});
 	});
 
+	describe("bridge mount racing child teardown (Kiro review of the F1 fix)", () => {
+		// ensureChildBridge awaits getBridge, and the first mount does real I/O
+		// (serveBridgeHttp has to listen before it can report a port). teardownChild
+		// is SYNCHRONOUS and clears entry.bridge / entry.bridgePromise, so it can run
+		// start-to-finish inside that await window -- and the code then assigned the
+		// resolved handle back onto a child that is already dead.
+		//
+		// The damage is not a leaked HTTP server: serveBridgeHttp closes on
+		// childAbort, which teardown aborts. It is downstream. The caller advertises
+		// bridge.urlWithToken in session/new.mcpServers, so kiro would be handed a
+		// port nothing is listening on and every bridged tool call on that session
+		// would fail with an opaque "error sending request for url".
+		it("closes a bridge that resolved after teardown instead of adopting it", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			const controller = new AbortController();
+
+			const close = makeCloseSpy();
+			const rebindOrigin = vi.fn();
+			let releaseMount: (() => void) | undefined;
+			let mountStarted: (() => void) | undefined;
+			const mountCalled = new Promise<void>((resolve) => { mountStarted = resolve; });
+			// A getBridge the test can hold open, which is the whole race: the real one
+			// is suspended in serveBridgeHttp's listen() for exactly this window.
+			const deps: AcpDeps = {
+				binaryPath: "kiro-cli",
+				getBridge: async () => {
+					mountStarted?.();
+					await new Promise<void>((resolve) => { releaseMount = resolve; });
+					return {
+						url: "http://127.0.0.1:41000/mcp",
+						urlWithToken: "http://127.0.0.1:41000/mcp/fake-token",
+						token: "fake-token",
+						toolNames: ["todo"],
+						close,
+						rebindOrigin,
+					} as never;
+				},
+			};
+
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: {
+					protocolVersion: 1,
+					agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} },
+					authMethods: [],
+					agentInfo: { name: "Kiro CLI Agent", version: "test" },
+				}});
+				// Ordering is the test: the mount is in flight and session/new has NOT
+				// been sent, so nothing has learned the URL yet when the child dies.
+				await mountCalled;
+				controller.abort(); // host ESC -> onAbort -> killChild -> teardownChild
+				releaseMount?.();
+			})();
+
+			const events = await collect({ messages: [user("hi")] }, { signal: controller.signal }, deps);
+			const error = events.find((e) => e.type === "error");
+			expect(error?.type === "error" && error.error.stopReason).toBe("aborted");
+			await settle();
+
+			// The handle is disowned, not adopted...
+			expect(close).toHaveBeenCalledWith("child-torn-down-during-mount");
+			// ...and its ctx origin is never re-pointed at a session that will never
+			// exist. rebindOrigin firing here is the tell that the dead entry adopted
+			// it: teardown had already cleared entry.bridge.
+			expect(rebindOrigin).not.toHaveBeenCalled();
+		});
+	});
+
 	describe("startSession startup-gate timeout (Kiro review F2)", () => {
 		let savedTimeout: string | undefined;
 		beforeEach(() => {

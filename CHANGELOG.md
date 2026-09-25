@@ -266,6 +266,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gitignored, since `scripts/secret-scan.mjs` only scans tracked files and so would never see a
   trace dropped in the worktree.
 
+- **A bridge that finishes mounting after its child died is no longer adopted by the dead child.**
+  Mounting a bridge awaits real I/O (the HTTP server has to listen before it can report a port),
+  while child teardown is synchronous -- so an abort, a crash or an idle kill could run teardown
+  start-to-finish inside that window, and the resolved handle was then written back onto an entry
+  teardown had just cleared. The server itself was already closed (it rides the child's
+  `AbortSignal`), which is what made this quiet: the damage was downstream, because the caller
+  advertises `bridge.urlWithToken` in `session/new.mcpServers`, so kiro would have been handed a
+  port nothing was listening on and every bridged tool call on that session would have failed with
+  an opaque `error sending request for url`. The mount now re-checks liveness after the await and
+  closes the orphaned handle instead. Two supporting changes: the handle type the ACP child holds
+  (`ChildScopedHttpBridgeHandle`) requires `rebindOrigin`, so a refactor that drops it from the
+  spread in `index.ts` is a type error rather than a silently skipped optional call that would
+  restore the stale-context bug above; and a request issued to a dead child now answers with the
+  same terminated-child error `teardownChild` uses instead of never settling -- `sendRaw` drops the
+  write when the child is gone, and teardown only settles requests that were *already* pending, so
+  a `session/new` landing just after teardown left the turn hung with nothing bounding the await.
+
 ## 0.2.1 - 2026-09-15
 
 ### Added

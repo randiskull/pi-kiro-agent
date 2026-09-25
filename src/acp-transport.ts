@@ -60,7 +60,7 @@ import type {
 	ThinkingLevel,
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { HttpBridgeHandle } from "./bridge.js";
+import type { ChildScopedHttpBridgeHandle, HttpBridgeHandle } from "./bridge.js";
 import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import {
@@ -109,12 +109,31 @@ import {
  * Called at session start, where before_provider_request has already run for
  * this turn -- the same guarantee the original capture relied on.
  */
-async function ensureChildBridge(deps: AcpDeps, acpEntry: AcpChild): Promise<HttpBridgeHandle | undefined> {
+async function ensureChildBridge(
+	deps: AcpDeps,
+	acpEntry: AcpChild,
+): Promise<ChildScopedHttpBridgeHandle | undefined> {
 	acpEntry.bridgePromise ??=
 		deps.getBridge?.(acpEntry.childAbort.signal, () => acpEntry.sessionAbort.signal) ??
 		Promise.resolve(undefined);
-	acpEntry.bridge = await acpEntry.bridgePromise;
-	acpEntry.bridge?.rebindOrigin?.();
+	const handle = await acpEntry.bridgePromise;
+	// teardownChild is SYNCHRONOUS and may have run start-to-finish while this
+	// function was suspended at the await above -- a real window, because
+	// getBridge does I/O to mount the HTTP server on first call. Teardown sets
+	// alive=false, aborts childAbort (which closes the server through the
+	// listener in serveBridgeHttp) and clears both fields. Assigning the resolved
+	// handle back without re-checking would resurrect a CLOSED bridge onto a dead
+	// child, and the caller advertises `bridge.urlWithToken` in
+	// session/new.mcpServers -- so kiro would be handed a port nothing is
+	// listening on, and would fail every bridged tool call for that session with
+	// an opaque "error sending request for url". Leave the fields cleared.
+	if (!acpEntry.alive) {
+		void handle?.close("child-torn-down-during-mount").catch(() => undefined);
+		return undefined;
+	}
+	acpEntry.bridge = handle;
+	// Not an optional call: ChildScopedHttpBridgeHandle requires rebindOrigin.
+	acpEntry.bridge?.rebindOrigin();
 	return acpEntry.bridge;
 }
 
@@ -184,7 +203,7 @@ interface AcpDeps {
 	getBridge?: (
 		signal: AbortSignal,
 		getCallSignal?: () => AbortSignal,
-	) => Promise<HttpBridgeHandle | undefined>;
+	) => Promise<ChildScopedHttpBridgeHandle | undefined>;
 }
 
 /** ACP protocol version — pinned to guard against kiro-cli drift (§5 row 1). */
@@ -264,7 +283,7 @@ interface AcpChild {
 	 * and cannot be told a new one, so one bridge serves every session on this
 	 * child and dies only with the child (docs/design/acp-transport.md §5e.3).
 	 */
-	bridge: HttpBridgeHandle | undefined;
+	bridge: ChildScopedHttpBridgeHandle | undefined;
 	/**
 	 * The in-flight mount, cached so concurrent turns on one child cannot each
 	 * mount a server. `bridge ??= await getBridge(...)` looked idempotent but is
@@ -273,7 +292,7 @@ interface AcpChild {
 	 * childAbort. Caching the PROMISE closes that window because `??=` on it
 	 * completes synchronously.
 	 */
-	bridgePromise: Promise<HttpBridgeHandle | undefined> | undefined;
+	bridgePromise: Promise<ChildScopedHttpBridgeHandle | undefined> | undefined;
 	/** Pending request map: id → resolver. */
 	pending: Map<number, (msg: AcpMessage) => void>;
 	/** Notification listeners: method → handlers. */
@@ -586,6 +605,19 @@ function sendRaw(entry: AcpChild, msg: object): void {
 
 function request(entry: AcpChild, method: string, params: object): Promise<AcpMessage> {
 	entry.lastUsed = Date.now();
+	// A request issued AFTER teardown could never be answered: sendRaw drops the
+	// write on a dead child, and teardownChild only settles the requests that were
+	// already pending, so the promise sat unresolved forever with nothing bounding
+	// the await. Found by the mount-vs-teardown race below: an abort landing during
+	// the first bridge mount left resolveSession -> startSession hung on session/new
+	// instead of failing the turn. Answer with the same terminated-child error shape
+	// teardownChild uses, so every call site handles it on the path it already has.
+	if (!entry.alive) {
+		return Promise.resolve({
+			jsonrpc: "2.0",
+			error: { code: -1, message: `acp child terminated before ${method}` },
+		});
+	}
 	return new Promise((resolve) => {
 		const id = entry.nextId++;
 		if (entry.pending.size === 0) {
