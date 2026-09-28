@@ -122,6 +122,20 @@ describe("output parsing", () => {
 		expect(extractFinal("no markers here")).toEqual({ working: "", final: "no markers here" });
 	});
 
+	it("extracts the LAST sentinel span when the model emits multiple <pi_final> spans", () => {
+		// A model that echoes the sentinel instruction in its reasoning before the real answer
+		// produces two spans: the first is draft content, the second is the actual answer.
+		// extractFinal must return the LAST span and strip all draft content from working.
+		const body = `working notes ${FINAL_OPEN}draft answer${FINAL_CLOSE} more notes ${FINAL_OPEN}real answer${FINAL_CLOSE}`;
+		const result = extractFinal(body);
+		expect(result.final).toBe("real answer");
+		expect(result.working).not.toContain("draft answer");
+		expect(result.working).not.toContain(FINAL_OPEN);
+		expect(result.working).not.toContain(FINAL_CLOSE);
+		expect(result.working).toContain("working notes");
+		expect(result.working).toContain("more notes");
+	});
+
 	it("maps Pi thinking levels to kiro effort", () => {
 		expect(mapEffort("minimal")).toBe("low");
 		expect(mapEffort("medium")).toBe("medium");

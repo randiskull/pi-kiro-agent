@@ -165,12 +165,21 @@ export function toolUseTranscript(body: string, rawStderr: string): string {
 
 /** Split the cleaned body into (working, final) via the sentinel protocol. */
 export function extractFinal(body: string): { working: string; final: string } {
-	const open = body.indexOf(FINAL_OPEN);
+	const open = body.lastIndexOf(FINAL_OPEN);
 	const close = body.lastIndexOf(FINAL_CLOSE);
 	if (open !== -1 && close > open) {
 		const final = body.slice(open + FINAL_OPEN.length, close).trim();
-		const working = `${body.slice(0, open)}${body.slice(close + FINAL_CLOSE.length)}`.trim();
-		return { working, final };
+		// Strip ALL <pi_final>…</pi_final> spans from the working text so no raw
+		// sentinel tags or intermediate draft content leak into the display output.
+		let working = body;
+		let spanOpen = working.indexOf(FINAL_OPEN);
+		while (spanOpen !== -1) {
+			const spanClose = working.indexOf(FINAL_CLOSE, spanOpen);
+			if (spanClose === -1) break;
+			working = working.slice(0, spanOpen) + working.slice(spanClose + FINAL_CLOSE.length);
+			spanOpen = working.indexOf(FINAL_OPEN);
+		}
+		return { working: working.trim(), final };
 	}
 	return { working: "", final: body };
 }
