@@ -13,8 +13,15 @@ probes/*.json
 # into a commit. Slashless patterns match a file, a directory, or a symlink.
 .gsd
 .gsd-id
+.gsd-worktrees
 .rpiv
 *.bak
+
+# Credential and config files. scripts/secret-scan.mjs only scans tracked files
+# (git ls-files), so these must be ignored before they can be staged.
+.mcp.json
+.env*
+!.env.example
 
 # Trace output. PI_KIRO_TRACE records full prompt text and the raw arguments of
 # every bridged tool call, so a stray trace in the worktree is a secret leak that
