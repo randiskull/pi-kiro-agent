@@ -81,6 +81,7 @@ fails quietly — see the transport section of the
 | `PI_KIRO_CREDIT_USD` | `0` | USD per Kiro credit, for cost tracking in Pi |
 | `PI_KIRO_BRIDGE` | `on` | Set `off` to disable the MCP tool bridge |
 | `PI_KIRO_BRIDGE_TOOLS` | built-in allowlist | Comma-separated override of bridged tools |
+| `PI_KIRO_BRIDGE_MAX_BODY_BYTES` | `33554432` (32 MiB) | Largest single request kiro may send a bridged tool (its arguments, as JSON). MCP carries binary as base64, so the usable payload is about three quarters of this. A larger request is refused before the tool runs, with a one-time warning on stderr. Read when a bridge mounts. Does not limit tool results. |
 | `PI_KIRO_WORKFLOW_MCP` | `on` | Set `off` to disable auto-mounting the GSD workflow-MCP server in delegated turns |
 | `PI_KIRO_RESUME` | (enabled) | **Chat transport only.** Set `off` to disable incremental context / session resume (forces full-context re-send every turn). The ACP transport has its own built-in divergence detection: it always creates a fresh session when the context prefix changes and resumes on a pure-append; `PI_KIRO_RESUME` has no effect on it. To fully disable session continuity under ACP, switch to the chat transport (`PI_KIRO_TRANSPORT=chat`) and set `PI_KIRO_RESUME=off`. |
 | `PI_KIRO_TRANSPORT` | `chat` | Set `acp` to use the persistent ACP transport instead of the per-turn chat transport |

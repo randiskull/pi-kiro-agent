@@ -8,10 +8,15 @@
 
 import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
 
-/** Parse a positive-integer millisecond override from the environment. */
-export function envMs(name: string, fallback: number): number {
+/** Parse a positive-integer override from the environment; anything else is the fallback. */
+export function envPositiveInt(name: string, fallback: number): number {
 	const raw = Number.parseInt(process.env[name] ?? "", 10);
 	return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+/** Parse a positive-integer millisecond override from the environment. */
+export function envMs(name: string, fallback: number): number {
+	return envPositiveInt(name, fallback);
 }
 
 export function emptyAssistantMessage(model: Model<any>): AssistantMessage {
