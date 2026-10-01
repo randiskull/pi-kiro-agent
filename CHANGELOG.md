@@ -145,6 +145,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The chat transport no longer garbles the answer when the reply holds more than one
+  `<pi_final>` tag.** `extractFinal` took the span from the FIRST opening tag to the LAST closing
+  tag, so a model that wrote an earlier span, or mentioned the tag in its notes, had those notes and
+  their raw tags returned as the answer. #23 proposed taking the LAST opening tag instead; that fixes
+  those cases but cuts any answer that quotes both tags (routine when kiro works on this repo) down
+  to its tail. The opening tag is now the one that balances the last closing tag, which handles all
+  of them; unbalanced tags fall back to the old rule. The one shape still misread is an answer
+  quoting a lone opening tag. Supersedes #23.
+
 - **Docs accuracy: `PI_KIRO_RESUME` applies to the chat transport only.** The README env table
   previously implied the flag applied to all transports. The ACP transport (`PI_KIRO_TRANSPORT=acp`)
   has its own built-in divergence detection in `acp-session.ts` (`planAcpTurn`) and is not gated on

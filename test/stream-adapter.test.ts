@@ -122,6 +122,49 @@ describe("output parsing", () => {
 		expect(extractFinal("no markers here")).toEqual({ working: "", final: "no markers here" });
 	});
 
+	describe("extractFinal with more than one tag in the body", () => {
+		// The answer is the span ending at the last closing tag, opened by the tag
+		// that balances it. Each case below breaks one of the two simpler rules:
+		// "first open" (the original) or "last open" (proposed in #23).
+		const O = FINAL_OPEN;
+		const C = FINAL_CLOSE;
+
+		it("takes the last span when the notes hold an earlier one", () => {
+			// Breaks "first open": the answer used to swallow the draft and raw tags.
+			const result = extractFinal(`notes ${O}draft${C} more ${O}real answer${C}`);
+			expect(result.final).toBe("real answer");
+			expect(result.working).toContain("notes");
+		});
+
+		it("ignores a lone opening tag mentioned in the notes", () => {
+			// Breaks "first open" too: the mention became the start of the answer.
+			expect(extractFinal(`I will wrap it in ${O} tags.\n${O}real answer${C}`).final).toBe("real answer");
+		});
+
+		it("keeps an answer that quotes both tags intact", () => {
+			// Breaks "last open": the answer was cut to its tail after the quoted
+			// open tag. Routine when kiro is asked about this adapter.
+			const answer = `The adapter looks for \`${O}\` and \`${C}\`.`;
+			expect(extractFinal(`notes ${O}${answer}${C}`)).toEqual({ working: "notes", final: answer });
+		});
+
+		it("keeps an answer that quotes both tags, after an earlier span", () => {
+			const answer = `Use \`${O}x${C}\` to mark it.`;
+			expect(extractFinal(`${O}draft${C} then ${O}${answer}${C}`).final).toBe(answer);
+		});
+
+		it("falls back to the first opening tag when the tags do not balance", () => {
+			// An answer quoting a lone CLOSING tag leaves one open short; the
+			// original first-open rule still reads it correctly.
+			const answer = `End it with \`${C}\`.`;
+			expect(extractFinal(`notes ${O}${answer}${C}`).final).toBe(answer);
+		});
+
+		it("does not mistake a closing tag at the very start for a span", () => {
+			expect(extractFinal(`${C} stray, no answer`)).toEqual({ working: "", final: `${C} stray, no answer` });
+		});
+	});
+
 	it("maps Pi thinking levels to kiro effort", () => {
 		expect(mapEffort("minimal")).toBe("low");
 		expect(mapEffort("medium")).toBe("medium");
