@@ -20,3 +20,18 @@ probes/*.json
 # every bridged tool call, so a stray trace in the worktree is a secret leak that
 # scripts/secret-scan.mjs cannot catch (it only scans tracked files).
 *.jsonl
+
+# Local MCP wiring and env files. `.mcp.json` records server commands and often a
+# token; `.env*` is where a kiro credential ends up. `scripts/secret-scan.mjs` only
+# scans TRACKED files, so the ignore is what keeps `git add -A` from making one
+# trackable in the first place -- the scan cannot be the backstop here.
+# Deliberately NO `!.env.example` exception: no template exists, and a negation
+# for a file that does not exist is just a hole in a credential rule. Add the
+# exception in the same change that adds the file.
+.mcp.json
+.env*
+
+# GSD worktrees. Slashless for the reason given above: it is a real directory today,
+# but a directory-only pattern would silently stop matching if it ever became a
+# symlink into gsd's own store, which is exactly how `.gsd` got swept into a commit.
+.gsd-worktrees

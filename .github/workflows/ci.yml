@@ -9,6 +9,11 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The suite finishes in well under a minute; anything past 15 is a hang, not
+    # slowness. Without this a hung vitest burns the 6h job ceiling and the runner
+    # discards the step's output when it kills it, so the log shows the command
+    # starting and nothing else. Fail fast and keep the diagnosis.
+    timeout-minutes: 15
     strategy:
       matrix:
         node: ["22", "24"]
@@ -24,6 +29,7 @@ jobs:
   secret-scan:
     name: secret scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
