@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An explicit, larger request-body ceiling for the bridge (32 MiB).** MCP SDK 1.30.1 (#22)
+  began reading request bodies with a 4 MiB limit and answering 413 past it, before any bridge code
+  runs; verified against `serveBridgeHttp`, a 5 MiB `tools/call` that 1.30.0 delivered is refused by
+  1.30.1 and the tool is never entered. That default suits a public endpoint, but the bridge is
+  loopback-only and token-gated, and a bridged tool that takes a binary loses a third of the budget
+  to base64, so 4 MiB is only ~3 MiB of payload. The transport now gets
+  `maxRequestBodySize` explicitly (default 32 MiB, override `PI_KIRO_BRIDGE_MAX_BODY_BYTES`), so an
+  SDK default change can no longer move it silently. A refusal used to be invisible on our side; it
+  is now traced as `bridge.reject.too-large` every time and warned on stderr once per process,
+  naming the variable. The limit covers requests only, not tool results; the SDK's 100-message
+  batch cap is separate. Pinned by tests that fail if either the option or the 413 hook is removed.
 - **Documented: a bridged tool runs against a second, cold instance of its extension.** Not a code
   change here, but the most consequential thing learned about the bridge, and previously documented
   backwards. `captureBridgeTools` imports each package's entry file to harvest tool definitions, and

@@ -30,6 +30,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { trace } from "./trace.js";
+import { envPositiveInt } from "./transport-utils.js";
 
 export const BRIDGE_SERVER_NAME = "pi";
 
@@ -306,6 +307,7 @@ export function clearBridgeCache(): void {
 	orphanGraceMs = DEFAULT_ORPHAN_GRACE_MS;
 	singleFlightCeilingMs = DEFAULT_SINGLE_FLIGHT_CEILING_MS;
 	warnedMissingTools.clear();
+	warnedOversizeBody = false;
 }
 
 /** Strip TypeBox symbol keys; guarantee an object-typed JSON schema. */
@@ -601,6 +603,53 @@ export interface ChildScopedHttpBridgeHandle extends HttpBridgeHandle {
 }
 
 /**
+ * Ceiling on ONE bridged request body, i.e. the JSON-RPC message kiro POSTs,
+ * which for `tools/call` is dominated by the tool's arguments.
+ *
+ * MCP SDK 1.30.1 started reading request bodies with a limit (4 MiB default)
+ * and answering 413 past it, before any of our code runs. That default suits a
+ * public endpoint; this one is loopback-only and token-gated, so the
+ * denial-of-service case it guards against barely applies here, and 4 MiB is
+ * small for a tool that takes a binary: MCP carries binary as base64, which
+ * inflates it by a third, so 4 MiB on the wire is only ~3 MiB of payload.
+ * 32 MiB leaves ~24 MiB of payload. The cost is memory -- the SDK buffers the
+ * whole body -- which is why this is a ceiling and not unlimited.
+ *
+ * Applies to REQUESTS only (kiro -> bridge). A tool RESULT (bridge -> kiro, e.g.
+ * a screenshot) is not bounded by this; whatever limit applies to it is kiro's.
+ * The SDK's 100-message JSON-RPC batch cap is separate and not configurable.
+ *
+ * Override with PI_KIRO_BRIDGE_MAX_BODY_BYTES (positive integer, bytes). Read at
+ * mount, so it is fixed for the life of a bridge.
+ */
+export const DEFAULT_BRIDGE_MAX_BODY_BYTES = 32 * 1024 * 1024;
+
+/** The effective per-request body ceiling for a bridge mounted now. */
+export function bridgeMaxBodyBytes(): number {
+	return envPositiveInt("PI_KIRO_BRIDGE_MAX_BODY_BYTES", DEFAULT_BRIDGE_MAX_BODY_BYTES);
+}
+
+/** The oversize warning fires once per process; the trace fires every time. */
+let warnedOversizeBody = false;
+
+/**
+ * Record a request the SDK refused for size. Without this the failure is
+ * invisible on our side: the SDK answers 413 before buildBridgeServer's handler
+ * runs, so the tool is never entered, nothing is traced, and kiro reports only
+ * an opaque error to the delegated model.
+ */
+function noteOversizeBody(port: number, limit: number, contentLength: string | undefined): void {
+	trace("bridge.reject.too-large", { port, limit, contentLength: contentLength ?? null });
+	if (warnedOversizeBody) return;
+	warnedOversizeBody = true;
+	console.error(
+		`[pi-kiro] bridge: refused a request larger than ${limit} bytes ` +
+		`(Content-Length: ${contentLength ?? "not declared"}); the bridged tool was not called. ` +
+		`Raise PI_KIRO_BRIDGE_MAX_BODY_BYTES if a bridged tool legitimately takes payloads this large.`,
+	);
+}
+
+/**
  * Serve the bridged tools over Streamable-HTTP MCP on a loopback ephemeral
  * port, for subprocess runtimes that can't hold an in-process instance.
  * Stateless transport: every POST is handled independently, which suits
@@ -616,6 +665,9 @@ export async function serveBridgeHttp(
 	const toolNames = tools.map((tool) => tool.name);
 
 	const token = randomBytes(24).toString("hex");
+	const maxBodyBytes = bridgeMaxBodyBytes();
+	// Assigned once listen() resolves; no request can arrive before that.
+	let port = 0;
 
 	// Stateless Streamable-HTTP: a transport instance serves exactly one
 	// request, so build a fresh McpServer + transport per POST (the MCP SDK's
@@ -639,12 +691,14 @@ export async function serveBridgeHttp(
 		const transport = new StreamableHTTPServerTransport({
 			sessionIdGenerator: undefined,
 			enableJsonResponse: true,
+			maxRequestBodySize: maxBodyBytes,
 		});
 		res.on("close", () => {
 			void transport.close().catch(() => undefined);
 		});
 		await built.instance.connect(transport);
 		await transport.handleRequest(req, res);
+		if (res.statusCode === 413) noteOversizeBody(port, maxBodyBytes, req.headers["content-length"]);
 	};
 
 	const httpServer: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -666,11 +720,12 @@ export async function serveBridgeHttp(
 		httpServer.listen(0, "127.0.0.1", resolve);
 	});
 	const address = httpServer.address() as AddressInfo;
+	port = address.port;
 	// Mount/close are traced because a bridged tool failing with a bare
 	// "error sending request for url" is indistinguishable, from the kiro side,
 	// between a bridge that never came up, one that was torn down early, and a
 	// client still holding a previous session's port. The port is the join key.
-	trace("bridge.serve", { port: address.port, tools: toolNames });
+	trace("bridge.serve", { port: address.port, tools: toolNames, maxBodyBytes });
 
 	// Idempotent: the owner closes the handle explicitly AND the signal's own
 	// listener fires on abort, so close() is routinely called twice for one

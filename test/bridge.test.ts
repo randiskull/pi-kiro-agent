@@ -4,8 +4,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	allowedToolNames,
+	bridgeMaxBodyBytes,
 	type CapturedTool,
 	clearBridgeCache,
+	DEFAULT_BRIDGE_MAX_BODY_BYTES,
 	DEFAULT_BRIDGE_TOOLS,
 	isBridgeablePackage,
 	isContainedEntryPath,
@@ -152,6 +154,112 @@ describe("serveBridgeHttp", () => {
 		await expect(
 			fetch(handle.url, { method: "POST", body: "{}" }).then((response) => response.status),
 		).rejects.toThrow();
+	});
+});
+
+describe("bridge request body limit", () => {
+	// MCP SDK 1.30.1 began refusing request bodies over 4 MiB with a 413, before
+	// any bridge code runs. A bridged tool that takes a binary (base64, so 4/3
+	// inflation) hits that at ~3 MiB of payload. These tests pin the explicit,
+	// larger ceiling and the warning that makes a refusal visible on our side.
+	const ENV = "PI_KIRO_BRIDGE_MAX_BODY_BYTES";
+	const MIB = 1024 * 1024;
+	let savedEnv: string | undefined;
+
+	beforeEach(() => {
+		savedEnv = process.env[ENV];
+		delete process.env[ENV];
+		clearBridgeCache();
+	});
+
+	afterEach(() => {
+		if (savedEnv === undefined) delete process.env[ENV];
+		else process.env[ENV] = savedEnv;
+		clearBridgeCache();
+		vi.restoreAllMocks();
+	});
+
+	function rawToolsCall(url: string, token: string, op: string): Promise<Response> {
+		return fetch(url, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				accept: "application/json, text/event-stream",
+				authorization: `Bearer ${token}`,
+			},
+			body: JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: { name: "todo", arguments: { op } },
+			}),
+		});
+	}
+
+	it("defaults well above the SDK's 4 MiB and honours a valid override", () => {
+		expect(DEFAULT_BRIDGE_MAX_BODY_BYTES).toBeGreaterThan(4 * MIB);
+		expect(bridgeMaxBodyBytes()).toBe(DEFAULT_BRIDGE_MAX_BODY_BYTES);
+		process.env[ENV] = "2048";
+		expect(bridgeMaxBodyBytes()).toBe(2048);
+	});
+
+	it("falls back to the default on an unusable override", () => {
+		for (const bad of ["", "0", "-5", "abc"]) {
+			process.env[ENV] = bad;
+			expect(bridgeMaxBodyBytes()).toBe(DEFAULT_BRIDGE_MAX_BODY_BYTES);
+		}
+	});
+
+	it("delivers a tools/call larger than the SDK's 4 MiB default to the tool", async () => {
+		// Fails if maxRequestBodySize is dropped from the transport: the SDK's own
+		// 4 MiB default would refuse this body before the tool is entered.
+		const tool = makeTool();
+		const handle = await serveBridgeHttp([tool], () => FAKE_CTX, new AbortController().signal);
+		if (!handle) throw new Error("expected handle");
+		const client = new Client({ name: "test-client", version: "1.0.0" });
+		try {
+			await client.connect(
+				new StreamableHTTPClientTransport(new URL(handle.url), {
+					requestInit: { headers: { Authorization: `Bearer ${handle.token}` } },
+				}),
+			);
+			const big = "A".repeat(5 * MIB);
+			const result = await client.callTool({ name: "todo", arguments: { op: big } });
+			expect(result.isError ?? false).toBe(false);
+			const execute = tool.execute as ReturnType<typeof vi.fn>;
+			expect(execute).toHaveBeenCalledTimes(1);
+			expect((execute.mock.calls[0]?.[1] as { op: string }).op.length).toBe(big.length);
+		} finally {
+			await client.close();
+			await handle.close();
+		}
+	});
+
+	it("refuses a body over the configured ceiling without entering the tool, and warns once", async () => {
+		process.env[ENV] = "1024";
+		const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const tool = makeTool();
+		const handle = await serveBridgeHttp([tool], () => FAKE_CTX, new AbortController().signal);
+		if (!handle) throw new Error("expected handle");
+		try {
+			const first = await rawToolsCall(handle.url, handle.token, "B".repeat(4096));
+			expect(first.status).toBe(413);
+			const second = await rawToolsCall(handle.url, handle.token, "B".repeat(4096));
+			expect(second.status).toBe(413);
+			expect(tool.execute).not.toHaveBeenCalled();
+
+			// Once per process, not once per refusal: a retrying client must not
+			// flood the log the warning is meant to draw attention to.
+			const warnings = spy.mock.calls.map((call) => String(call[0])).filter((m) => m.includes(ENV));
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain("larger than 1024 bytes");
+
+			// A body under the ceiling still goes through on the same bridge.
+			const small = await rawToolsCall(handle.url, handle.token, "ok");
+			expect(small.status).toBe(200);
+		} finally {
+			await handle.close();
+		}
 	});
 });
 
