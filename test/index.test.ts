@@ -69,6 +69,9 @@ function makeFakePi() {
 			await commands.get(name)?.handler(args, ctx);
 			return ctx;
 		},
+		runCommandWith: async (name: string, ctx: unknown, args = "") => {
+			await commands.get(name)?.handler(args, ctx);
+		},
 		registerProvider,
 	};
 }
@@ -325,5 +328,55 @@ describe("session ctx map is bounded [L0-04 leak]", () => {
 		// longer A, because the read above touched it.
 		await fake.emit("before_provider_request", {}, ctxFor("overflow"));
 		expect(getterA()).toBe(ctxA);
+	});
+});
+
+describe("identity Layer 1: status bar, /kiro, deps.kiroVersion", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	const kiroCtx = (setStatus: ReturnType<typeof vi.fn>, model: { provider: string; id: string } | undefined) => ({
+		hasUI: true,
+		model,
+		ui: { setStatus, notify: vi.fn() },
+		sessionManager: { getSessionId: () => "identity-session" },
+	});
+
+	it("hands the transport the parsed kiro-cli version from readiness", async () => {
+		const piKiro = await loadExtension();
+		const { makeStreamViaKiro } = await import("../src/stream-adapter.js");
+		await piKiro(makeFakePi().pi);
+		const deps = vi.mocked(makeStreamViaKiro).mock.calls[0]?.[0] as { kiroVersion?: string };
+		expect(deps.kiroVersion).toBe("0.0.0-test");
+	});
+
+	it("shows the identity line in the status bar for a kiro model, clears it for any other", async () => {
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const setStatus = vi.fn();
+		await fake.emit("before_provider_request", {}, kiroCtx(setStatus, { provider: "kiro", id: "claude-sonnet-4.5" }));
+		await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
+		const [key, text] = setStatus.mock.calls.at(-1) as [string, string];
+		expect(key).toBe("kiro");
+		expect(text).toMatch(/^pi \S+ via Kiro \(kiro-cli 0\.0\.0-test, engine v2\) on claude-sonnet-4\.5$/);
+
+		setStatus.mockClear();
+		await fake.emit("before_provider_request", {}, kiroCtx(setStatus, { provider: "anthropic", id: "claude" }));
+		expect(setStatus).toHaveBeenCalledWith("kiro", undefined);
+	});
+
+	it("/kiro reports plugin version, auth method and the identity line", async () => {
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const { pluginName, pluginVersion } = await import("../src/identity.js");
+		const notify = vi.fn();
+		const ctx = { ...kiroCtx(vi.fn(), { provider: "kiro", id: "auto" }), ui: { setStatus: vi.fn(), notify } };
+		await fake.runCommandWith("kiro", ctx);
+		const message = notify.mock.calls[0]?.[0] as string;
+		expect(message).toContain(`${pluginName()} ${pluginVersion()}, auth: login`);
+		expect(message).toMatch(/identity: pi \S+ via Kiro \(kiro-cli 0\.0\.0-test, engine v2\) on auto \(selected by kiro\)/);
 	});
 });

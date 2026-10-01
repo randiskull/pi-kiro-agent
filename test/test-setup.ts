@@ -48,3 +48,8 @@ process.env.PI_KIRO_WORKFLOW_MCP = "off";
 // test/command-coverage-live.test.ts is unaffected -- it saves, sets, and
 // restores this variable itself around the one test that needs acp.
 delete process.env.PI_KIRO_TRANSPORT;
+
+// KIRO_API_KEY switches authMethod() to "api-key" and changes readiness (a
+// logged-out whoami no longer means not-ready). A developer shell that exports
+// it would silently flip those tests; tests that need it set it themselves.
+delete process.env.KIRO_API_KEY;

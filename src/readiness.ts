@@ -12,6 +12,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { authMethod } from "./identity.js";
 
 const VERSION_TIMEOUT_MS = 5_000;
 const WHOAMI_TIMEOUT_MS = 15_000;
@@ -105,7 +106,11 @@ export async function checkKiroReadiness(force = false): Promise<KiroReadiness> 
 	let value: KiroReadiness;
 	if (binary) {
 		const whoami = await run(binary.path, ["whoami"], WHOAMI_TIMEOUT_MS);
-		const authed = parseWhoami(whoami.stdout, whoami.stderr);
+		const apiKey = authMethod() === "api-key";
+		let authed = parseWhoami(whoami.stdout, whoami.stderr);
+		// KIRO_API_KEY authenticates without a login (kiro checks it first), so a
+		// "not logged in" whoami does not prove the CLI cannot serve a turn.
+		if (authed === false && apiKey) authed = undefined;
 		const ready = authed !== false;
 		value = {
 			ready,
@@ -113,7 +118,7 @@ export async function checkKiroReadiness(force = false): Promise<KiroReadiness> 
 			version: binary.version,
 			authed,
 			detail: ready
-				? `Kiro CLI ${binary.version}${authed === undefined ? " (auth state indeterminate — proceeding)" : ""}`
+				? `Kiro CLI ${binary.version}${apiKey ? " (auth: KIRO_API_KEY)" : authed === undefined ? " (auth state indeterminate — proceeding)" : ""}`
 				: "Kiro CLI found but not logged in. Run `kiro-cli login` (and `kiro-cli profile` on IdC seats).",
 		};
 	} else if (versionTimedOut) {
