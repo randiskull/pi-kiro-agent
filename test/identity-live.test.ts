@@ -19,7 +19,7 @@
  *
  *   PI_KIRO_LIVE=1 npx vitest run test/identity-live.test.ts
  *   PI_KIRO_LIVE=1 PI_KIRO_IDENTITY_MODELS=claude-sonnet-4.6,gpt-5.6-terra npx vitest run test/identity-live.test.ts
- *   PI_KIRO_LIVE=1 PI_KIRO_TRANSPORT=acp npx vitest run test/identity-live.test.ts
+ *   PI_KIRO_LIVE=1 PI_KIRO_IDENTITY_TRANSPORT=acp npx vitest run test/identity-live.test.ts
  *
  * Cost: questions x repeats real turns per model (9 by default).
  */
@@ -44,7 +44,9 @@ const MODELS = (process.env.PI_KIRO_IDENTITY_MODELS ?? LIVE_MODEL.id)
 	.filter(Boolean);
 const REPEATS = Math.max(1, Number(process.env.PI_KIRO_IDENTITY_REPEATS ?? 3) || 3);
 const FRESH = process.env.PI_KIRO_IDENTITY_FRESH === "1";
-const USE_ACP = process.env.PI_KIRO_TRANSPORT === "acp";
+// Its own variable: test-setup.ts deletes PI_KIRO_TRANSPORT before any test
+// runs, so reading that here would silently measure the chat transport.
+const USE_ACP = process.env.PI_KIRO_IDENTITY_TRANSPORT === "acp";
 const ENGINE: KiroEngine = USE_ACP ? ACP_ENGINE : CHAT_ENGINE;
 const RESULTS_PATH =
 	process.env.PI_KIRO_IDENTITY_RESULTS ??
@@ -53,7 +55,16 @@ const RESULTS_PATH =
 const TURN_BUDGET_MS = 120_000;
 
 type Expectation = "pass" | "record";
-const expectationFor = (model: string): Expectation => (/^claude-/.test(model) ? "pass" : "record");
+/**
+ * Models MEASURED as pi on engine v2 (kiro-cli 2.26.1, chat, 3 questions x 3
+ * repeats, 2026-10-01): claude-sonnet-4.6, claude-opus-4.8, gpt-5.6-terra and
+ * auto all 9/9. Those are asserted; any other model is recorded only until it
+ * has been measured. claude-* stays asserted as a family (haiku-4.5 passed on
+ * ACP; on chat it fails only when global steering overflows its 200K window).
+ */
+const ASSERTED_MODELS = new Set(["gpt-5.6-terra", "auto"]);
+const expectationFor = (model: string): Expectation =>
+	/^claude-/.test(model) || ASSERTED_MODELS.has(model) ? "pass" : "record";
 
 interface AnswerRecord extends IdentityScore {
 	question: string;

@@ -367,6 +367,35 @@ describe("identity Layer 1: status bar, /kiro, deps.kiroVersion", () => {
 		expect(setStatus).toHaveBeenCalledWith("kiro", undefined);
 	});
 
+	it("updates the status bar on /model, from the selected model, before any provider request", async () => {
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const setStatus = vi.fn();
+		// ctx.model still names the OLD model: the handler must use event.model.
+		const ctx = kiroCtx(setStatus, { provider: "anthropic", id: "claude" });
+		await fake.emit("model_select", { type: "model_select", model: { provider: "kiro", id: "claude-opus-4.8" }, source: "set" }, ctx);
+		await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
+		expect(setStatus.mock.calls.at(-1)?.[1]).toMatch(/ on claude-opus-4\.8$/);
+
+		await fake.emit("model_select", { type: "model_select", model: { provider: "anthropic", id: "claude" }, source: "set" }, ctx);
+		expect(setStatus).toHaveBeenLastCalledWith("kiro", undefined);
+	});
+
+	it("a slow identity line for an earlier kiro model never overwrites a later switch away", async () => {
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const setStatus = vi.fn();
+		const ctx = kiroCtx(setStatus, undefined);
+		// Both fire before the first line resolves (it awaits resolvePiVersion).
+		void fake.emit("model_select", { type: "model_select", model: { provider: "kiro", id: "auto" }, source: "set" }, ctx);
+		void fake.emit("model_select", { type: "model_select", model: { provider: "anthropic", id: "claude" }, source: "set" }, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(setStatus).toHaveBeenCalledTimes(1);
+		expect(setStatus).toHaveBeenLastCalledWith("kiro", undefined);
+	});
+
 	it("/kiro reports plugin version, auth method and the identity line", async () => {
 		const piKiro = await loadExtension();
 		const fake = makeFakePi();

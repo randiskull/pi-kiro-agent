@@ -637,7 +637,10 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				const pushThinking = thinkingWriter.push;
 
 				for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-					const args = ["chat", "--no-interactive", "--trust-all-tools"];
+					// Engine pinned, never left to kiro's default: kiro-cli 2.26 documents v2 as
+					// "the pre-3.0 default", so a kiro upgrade would otherwise switch engines
+					// silently and make the identity line (engine CHAT_ENGINE) wrong.
+					const args = ["chat", "--no-interactive", "--trust-all-tools", "--agent-engine", CHAT_ENGINE];
 					if (useResume && plan.resumeId) args.push("--resume-id", plan.resumeId);
 					if (profile) args.push("--agent", profile.name, "--require-mcp-startup");
 					if (model.id !== "auto") args.push("--model", model.id);

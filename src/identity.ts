@@ -18,7 +18,7 @@ import { createRequire } from "node:module";
 export type KiroEngine = "v2" | "v3";
 export type KiroAuth = "login" | "api-key";
 
-/** kiro-cli chat is spawned without --agent-engine, so it runs kiro's default (v2). */
+/** stream-adapter.ts spawns `kiro-cli chat --agent-engine v2`. Keep in sync with that argv. */
 export const CHAT_ENGINE: KiroEngine = "v2";
 /** acp-transport.ts spawns `kiro-cli acp --agent-engine v2`. Keep in sync with that argv. */
 export const ACP_ENGINE: KiroEngine = "v2";
@@ -106,6 +106,10 @@ let piVersionPromise: Promise<string | undefined> | undefined;
  * Resolve the host pi's VERSION once. Dynamic import so a host without the
  * export (or a test harness without pi installed) degrades to "unknown"
  * instead of failing activation.
+ *
+ * This reports the HOST, not a copy in our node_modules: the package is a peer
+ * dependency, and pi's extension loader aliases @earendil-works/pi-coding-agent
+ * to its own bundled module, so the import resolves to the running pi.
  */
 export function resolvePiVersion(
 	load: () => Promise<{ VERSION?: unknown }> = () => import("@earendil-works/pi-coding-agent"),

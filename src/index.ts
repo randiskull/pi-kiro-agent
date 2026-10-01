@@ -169,16 +169,30 @@ export async function currentIdentityLine(modelId: string): Promise<string> {
 
 const STATUS_KEY = "kiro";
 
-/** Show the identity line in pi's status bar while a kiro model is active; clear it otherwise. */
-function updateIdentityStatus(ctx: ExtensionContext | undefined): void {
+// Bumped on every status update so a slow identity-line resolution for an
+// earlier model never overwrites the status set for a later one.
+let statusGeneration = 0;
+
+/**
+ * Show the identity line in pi's status bar while a kiro model is active; clear
+ * it otherwise. `model` defaults to ctx.model; model_select passes the newly
+ * selected model explicitly so a /model switch updates the bar immediately
+ * instead of on the next provider request.
+ */
+function updateIdentityStatus(
+	ctx: ExtensionContext | undefined,
+	model: { provider: string; id: string } | undefined = ctx?.model,
+): void {
 	if (!ctx?.hasUI) return;
-	const model = ctx.model;
+	const generation = ++statusGeneration;
 	if (!model || model.provider !== KIRO_PROVIDER) {
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		return;
 	}
 	void currentIdentityLine(model.id)
-		.then((line) => ctx.ui.setStatus(STATUS_KEY, line))
+		.then((line) => {
+			if (generation === statusGeneration) ctx.ui.setStatus(STATUS_KEY, line);
+		})
 		.catch(() => undefined);
 }
 let registered = false;
@@ -286,6 +300,9 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 		if (sessionId) rememberSessionCtx(sessionId, ctx);
 		maybeSelfHeal(pi);
 		updateIdentityStatus(ctx);
+	});
+	pi.on("model_select", (event, ctx) => {
+		updateIdentityStatus(ctx, event.model);
 	});
 	// Session starts/reloads (/new, /resume, fork, reload) drop dynamically
 	// registered providers in the host while this module survives — re-register
