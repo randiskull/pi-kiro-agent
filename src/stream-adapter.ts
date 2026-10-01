@@ -163,10 +163,48 @@ export function toolUseTranscript(body: string, rawStderr: string): string {
 	return body ? `${body}\n${stderrClean}` : stderrClean;
 }
 
-/** Split the cleaned body into (working, final) via the sentinel protocol. */
+/**
+ * Find the opening tag that pairs with the closing tag at `close`, scanning
+ * backwards and treating every tag pair in between as nested. Returns -1 when
+ * the tags before `close` do not balance.
+ */
+function matchingOpen(body: string, close: number): number {
+	let depth = 1;
+	let pos = close;
+	while (pos > 0) {
+		const open = body.lastIndexOf(FINAL_OPEN, pos - 1);
+		if (open === -1) return -1;
+		const inner = body.lastIndexOf(FINAL_CLOSE, pos - 1);
+		if (inner > open) {
+			depth++;
+			pos = inner;
+		} else {
+			depth--;
+			if (depth === 0) return open;
+			pos = open;
+		}
+	}
+	return -1;
+}
+
+/**
+ * Split the cleaned body into (working, final) via the sentinel protocol.
+ *
+ * The final answer is the span ending at the LAST closing tag, opened by the tag
+ * that balances it. Neither "first open" nor "last open" is right on its own: a
+ * model that writes an earlier span or names the tag in its notes defeats the
+ * first (the answer swallows the notes and their raw tags), and an answer that
+ * itself quotes both tags, which is routine when kiro works on this repo,
+ * defeats the last (the answer is cut to its tail). Balancing handles both.
+ * When the tags do not balance (an answer quoting a lone closing tag) it falls
+ * back to the first opening tag, the pre-balancing behaviour. The one shape
+ * still misread is an answer quoting a lone OPENING tag; there the tags are
+ * genuinely ambiguous.
+ */
 export function extractFinal(body: string): { working: string; final: string } {
-	const open = body.indexOf(FINAL_OPEN);
 	const close = body.lastIndexOf(FINAL_CLOSE);
+	const balanced = close === -1 ? -1 : matchingOpen(body, close);
+	const open = balanced !== -1 ? balanced : body.indexOf(FINAL_OPEN);
 	if (open !== -1 && close > open) {
 		const final = body.slice(open + FINAL_OPEN.length, close).trim();
 		const working = `${body.slice(0, open)}${body.slice(close + FINAL_CLOSE.length)}`.trim();
