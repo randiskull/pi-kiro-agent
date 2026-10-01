@@ -13,14 +13,25 @@ export interface IdentityScore {
 	claimed?: string;
 }
 
-/** Normalize curly apostrophes (GPT answers "I\u2019m Kiro") and whitespace. */
+/**
+ * Normalize curly apostrophes (GPT answers "I\u2019m Kiro"), markdown emphasis
+ * and code marks (opus-4.5 / minimax answer "**pi 0.85.1 via Kiro** (...) on
+ * **model**", which splits the exact line), and whitespace.
+ */
 function normalize(text: string): string {
-	return text.replace(/[\u2018\u2019\u02bc]/g, "'").replace(/\s+/g, " ").trim();
+	return text
+		.replace(/[\u2018\u2019\u02bc]/g, "'")
+		.replace(/\*\*|__|[*`]/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
 }
 
 const SELF = String.raw`(?:I'm|I am|my name is|this is|you're talking to|you are talking to)`;
 const CLAIMS_OTHER = new RegExp(String.raw`\b${SELF}\s+(Kiro|Amazon Q|Claude|ChatGPT|GPT|an AI (?:assistant|model) (?:built|created|made|developed) by (?:AWS|Amazon|Anthropic|OpenAI))\b`, "i");
-const CLAIMS_PI = new RegExp(String.raw`(?:^|\b${SELF}\s+)pi\b`, "i");
+// "Which harness ... is this session running on?" gets answers like "running on
+// pi 0.85.1 via Kiro" or "- Harness: pi 0.85.1 via Kiro" with no "I am".
+const HARNESS = String.raw`(?:running on|runs on|harness(?: is)?\s*[:-]?)`;
+const CLAIMS_PI = new RegExp(String.raw`(?:^|\b${SELF}\s+|\b${HARNESS}\s*)pi\b`, "i");
 
 /**
  * Pass = the answer identifies as pi (the exact identity line, or an explicit

@@ -57,12 +57,25 @@ const TURN_BUDGET_MS = 120_000;
 type Expectation = "pass" | "record";
 /**
  * Models MEASURED as pi on engine v2 (kiro-cli 2.26.1, chat, 3 questions x 3
- * repeats, 2026-10-01): claude-sonnet-4.6, claude-opus-4.8, gpt-5.6-terra and
- * auto all 9/9. Those are asserted; any other model is recorded only until it
- * has been measured. claude-* stays asserted as a family (haiku-4.5 passed on
- * ACP; on chat it fails only when global steering overflows its 200K window).
+ * repeats, 2026-10-01), every one 9/9: 11 claude-* models (sonnet-4/4.5/4.6/5,
+ * opus-4.5/4.7/4.8/5/5.5, haiku-4.5, fable-5.1), gpt-5.6-terra/sol/luna,
+ * deepseek-3.2, glm-5, qwen3-coder-next, minimax-m2.1/m2.5 and auto. Those are
+ * asserted; claude-* stays asserted as a family (haiku-4.5 fails on chat only
+ * when global steering overflows its 200K window). agi-nova-beta-1m is
+ * recorded only: kiro itself reports it "temporarily unavailable". Any other
+ * model is recorded only until it has been measured.
  */
-const ASSERTED_MODELS = new Set(["gpt-5.6-terra", "auto"]);
+const ASSERTED_MODELS = new Set([
+	"gpt-5.6-terra",
+	"gpt-5.6-sol",
+	"gpt-5.6-luna",
+	"deepseek-3.2",
+	"glm-5",
+	"qwen3-coder-next",
+	"minimax-m2.1",
+	"minimax-m2.5",
+	"auto",
+]);
 const expectationFor = (model: string): Expectation =>
 	/^claude-/.test(model) || ASSERTED_MODELS.has(model) ? "pass" : "record";
 

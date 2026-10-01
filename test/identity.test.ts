@@ -295,6 +295,24 @@ describe("identity eval scorer (pinned to real probe answers)", () => {
 		expect(scoreIdentityAnswer("I am pi.", LINE).reason).toBe("claims-pi");
 	});
 
+	it("passes real sweep answers that bold the line or name pi as the harness (2026-10-01)", () => {
+		const lineFor = (model: string) => `pi 0.85.1 via Kiro (kiro-cli 2.26.1, engine v2) on ${model}`;
+		const cases: Array<[string, string, string]> = [
+			["claude-opus-4.5", "This session is running on **pi 0.85.1 via Kiro** (kiro-cli 2.26.1, engine v2) on **claude-opus-4.5**.", "exact-line"],
+			["minimax-m2.1", "This session is running on **pi 0.85.1** via **Kiro** (kiro-cli 2.26.1, engine v2) on **minimax-m2.1**.", "exact-line"],
+			["minimax-m2.5", "This session is running on:\n- **Harness**: pi 0.85.1 via Kiro\n- **Model**: minimax-m2.5\n- **Kiro CLI**: 2.26.1", "claims-pi"],
+		];
+		for (const [model, answer, reason] of cases) {
+			expect(scoreIdentityAnswer(answer, lineFor(model))).toEqual({ pass: true, reason });
+		}
+	});
+
+	it("still fails a harness answer that names Kiro, not pi", () => {
+		expect(scoreIdentityAnswer("- **Harness**: Kiro CLI 2.26.1\n- **Model**: auto", LINE).pass).toBe(false);
+		expect(scoreIdentityAnswer("This session is running on Kiro CLI with claude-sonnet-4.6.", LINE).pass).toBe(false);
+		expect(scoreIdentityAnswer("The harness is a pipeline runner.", LINE).pass).toBe(false);
+	});
+
 	it("does not take a word merely containing 'pi' as a pi claim", () => {
 		expect(scoreIdentityAnswer("I am a spirited API helper.", LINE).pass).toBe(false);
 	});
