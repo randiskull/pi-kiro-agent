@@ -150,6 +150,8 @@ export function synthesizeToolCallBlocks(body: string): ToolCall[] {
 		type: "toolCall",
 		id: `kiro-mcp-${bodyDigest}-${index}-${use.name}`,
 		name: use.name,
-		arguments: use.arguments,
+		// Parsed from JSON text, so every value is already JSON; pi >= 0.86 types
+		// ToolCall.arguments as JsonObject rather than Record<string, unknown>.
+		arguments: use.arguments as ToolCall["arguments"],
 	}));
 }

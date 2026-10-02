@@ -71,6 +71,7 @@ import {
 	stripLivePlaceholders,
 } from "./stream-adapter.js";
 import { trace } from "./trace.js";
+import { initialSystemPrompt } from "./system-prompt.js";
 import { ACP_ENGINE, authMethod, identityLine, pluginName, pluginVersion, redactSecrets, resolvePiVersion } from "./identity.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import {
@@ -336,9 +337,12 @@ const childRegistry = new Map<string, AcpChild>();
 /**
  * conversationKey distinguishes conversations that share a cwd: the parent and
  * each subagent carry different system prompts, so a hash of the system prompt
- * separates their kiro children. Hashed directly (not via message-hash.ts's
- * hashMessages) because Context.systemPrompt is a plain string and the Message
- * union has no "system" variant to wrap it in.
+ * separates their kiro children. The input is the LEADING system prompt
+ * (initialSystemPrompt): on pi >= 0.86 the prompt lives in transcript system
+ * messages and context.systemPrompt is always undefined, which hashed every
+ * conversation in a cwd to one key. The leading message is used rather than
+ * the full current prompt because pi appends mid-conversation updates as later
+ * system messages; keying on those would respawn the child on every update.
  */
 function conversationKey(systemPrompt: string | undefined): string {
 	return createHash("sha256").update(systemPrompt ?? "").digest("hex").slice(0, 16);
@@ -998,7 +1002,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				// One child per (cwd, conversationKey): the parent and each subagent
 				// carry different system prompts, so they resolve to different children
 				// and a subagent's abort can no longer reject the parent's pending turn.
-				const key = registryKey(cwd, context.systemPrompt);
+				const key = registryKey(cwd, initialSystemPrompt(context));
 				const workflowServers = discoverWorkflowMcpServers(cwd);
 				const turnSignal = options?.signal ?? new AbortController().signal;
 

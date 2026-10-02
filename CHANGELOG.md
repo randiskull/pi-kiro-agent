@@ -156,6 +156,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **pi's system prompt reaches kiro again on pi >= 0.86, including 1.0.** pi 0.86.0 changed what
+  custom providers receive to a normalized `TranscriptContext`: there is no `systemPrompt` field, and
+  the prompt is a leading `role: "system"` message that later system messages extend or patch by
+  section. The provider read only `context.systemPrompt`, and the history serializer drops system
+  messages, so every turn went to kiro WITHOUT pi's prompt (AGENTS.md, skills, tool guidance); the
+  pi-kiro `<identity>` block is built separately, which is why identity evals still passed. Measured
+  live on pi 1.0: the same one-line turn sent 2,593 characters with no `<prior_system_context>`
+  block before, and 13,828 with an 11,607-character block after, on both chat and ACP. The prompt is
+  now replayed with pi-ai's own `getCurrentSystemPrompt` (looked up on the module namespace so an
+  older host without it still loads; there `context.systemPrompt` is used). Three follow-on fixes:
+  ACP children are keyed on the LEADING system prompt (the always-empty field had hashed every
+  conversation in a cwd to one key, collapsing parent and subagent onto one child again); a resume
+  whose delta carries a system message (a mid-conversation prompt or tool update) is sent fresh in
+  full, since the delta prompt has no slot for it and the resumed kiro session holds the old prompt;
+  and `ToolCall.arguments` is typed as pi's `JsonObject`. Pinned by tests that go through pi's
+  `normalizeContext()` instead of hand-built contexts, each mutation-checked.
+- **The bridge capture shim no-ops every host mutator pi declares.** Re-running a sibling extension
+  to harvest its tools must not touch the real session. pi 0.99/1.0 added `registerMcpServer`,
+  `unregisterMcpServer`, `registerVirtualModel` and `unregisterVirtualModel`, and three older ones
+  (`registerMarkdownTransformer`, `setLabel`, `setSessionName`) were never in the list, so a sibling
+  calling `setSessionName` during capture would have renamed the user's session. The test now derives
+  the must-no-op set from the installed pi's `ExtensionAPI` type, so a future addition fails it.
+
 - **The chat transport no longer garbles the answer when the reply holds more than one
   `<pi_final>` tag.** `extractFinal` took the span from the FIRST opening tag to the LAST closing
   tag, so a model that wrote an earlier span, or mentioned the tag in its notes, had those notes and

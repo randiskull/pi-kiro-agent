@@ -24,6 +24,7 @@
 import { execFile } from "node:child_process";
 import type { Message } from "@earendil-works/pi-ai";
 import { hashMessages } from "./message-hash.js";
+import { hasSystemMessage } from "./system-prompt.js";
 
 // Re-exported so existing importers (and the collision test) keep their import
 // site; the implementation now lives in message-hash.ts, shared with acp-session.
@@ -75,6 +76,10 @@ export function planTurn(cwd: string, messages: Message[]): TurnPlan {
 		if (messages.length < session.sentMessageCount) continue; // shorter than sent ⇒ truncated/diverged
 		if (hashMessages(messages.slice(0, session.sentMessageCount)) !== session.prefixHash) continue; // prefix changed
 		const delta = messages.slice(session.sentMessageCount);
+		// A system message in the delta is a mid-conversation prompt or tool
+		// update (pi >= 0.86). The delta prompt has no slot for it and the
+		// resumed kiro session still holds the OLD prompt, so re-send in full.
+		if (hasSystemMessage(delta)) return { mode: "fresh", deltaStart: 0 };
 		// Nothing new but assistant echoes ⇒ no incremental turn to send; re-send full.
 		if (!delta.some((message) => message.role !== "assistant")) return { mode: "fresh", deltaStart: 0 };
 		return { mode: "resume", resumeId: session.sessionId, deltaStart: session.sentMessageCount };

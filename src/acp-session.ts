@@ -21,6 +21,7 @@
 
 import type { Message } from "@earendil-works/pi-ai";
 import { hashMessages } from "./message-hash.js";
+import { hasSystemMessage } from "./system-prompt.js";
 
 // Re-exported so this module's import surface is unchanged; the implementation
 // (formerly duplicated verbatim from session-manager.ts) now lives in the shared
@@ -90,6 +91,10 @@ export function planAcpTurn(cwd: string, sessionKey: string, messages: Message[]
 		if (messages.length < session.sentMessageCount) continue; // truncated/diverged
 		if (hashMessages(messages.slice(0, session.sentMessageCount)) !== session.prefixHash) continue; // prefix changed
 		const delta = messages.slice(session.sentMessageCount);
+		// A system message in the delta is a mid-conversation prompt or tool
+		// update (pi >= 0.86). The delta prompt has no slot for it and the
+		// resumed kiro session still holds the OLD prompt, so re-send in full.
+		if (hasSystemMessage(delta)) return { mode: "fresh", deltaStart: 0 };
 		if (!delta.some((m) => m.role !== "assistant")) return { mode: "fresh", deltaStart: 0 };
 		touch(session.sessionId); // LRU: resuming counts as use [L1-09 polish]
 		return { mode: "resume", acpSessionId: session.sessionId, deltaStart: session.sentMessageCount };

@@ -39,6 +39,7 @@ import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-rea
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import { createToolUseStreamParser, parseKiroToolUses, synthesizeToolCallBlocks } from "./kiro-tooluse-parser.js";
 import { trace } from "./trace.js";
+import { currentSystemPrompt } from "./system-prompt.js";
 import { CHAT_ENGINE, authMethod, identityBlock, identityLine, redactSecrets, resolvePiVersion } from "./identity.js";
 import {
 	advanceSession,
@@ -341,8 +342,11 @@ function buildScaffolding(bridgedTools?: string[], workflowMcp?: boolean, opts?:
 /** Full prompt: preamble + system prompt + the entire conversation history. */
 export function buildPromptFromContext(context: Context, bridgedTools?: string[], workflowMcp?: boolean, opts?: PromptBuildOpts): string {
 	const parts = buildScaffolding(bridgedTools, workflowMcp, opts);
-	if (context.systemPrompt && context.systemPrompt.trim().length > 0) {
-		parts.push(`<prior_system_context>\n${context.systemPrompt}\n</prior_system_context>`);
+	// pi >= 0.86 carries the prompt as transcript system messages, not
+	// context.systemPrompt; see system-prompt.ts.
+	const systemPrompt = currentSystemPrompt(context);
+	if (systemPrompt.trim().length > 0) {
+		parts.push(`<prior_system_context>\n${systemPrompt}\n</prior_system_context>`);
 	}
 	const history = context.messages.map(serializeMessage).filter((block): block is string => block !== undefined);
 	if (history.length > 0) {
@@ -356,7 +360,8 @@ export function buildPromptFromContext(context: Context, bridgedTools?: string[]
  * turn's input — no <prior_system_context> and no <conversation_history> (kiro
  * already holds those in the resumed session). Assistant messages are skipped:
  * they are kiro's own prior replies, already in-session — re-sending them would
- * echo the model's output back as user input.
+ * echo the model's output back as user input. System messages never reach
+ * here: planTurn/planAcpTurn send a turn whose delta carries one fresh.
  */
 export function buildDeltaPrompt(deltaMessages: Message[], bridgedTools?: string[], workflowMcp?: boolean, opts?: PromptBuildOpts): string {
 	const parts = buildScaffolding(bridgedTools, workflowMcp, opts);

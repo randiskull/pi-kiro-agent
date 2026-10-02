@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { Writable } from "node:stream";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetAcpSessions, _acpSessionCount } from "../src/acp-session.js";
 import { _getAcpChildRegistry, _resetAcpChildren, _acpRegistryKey, buildInitializeParams, isUnadvertisedClientMethod, makeStreamViaAcp } from "../src/acp-transport.js";
@@ -1693,6 +1694,18 @@ describe("makeStreamViaAcp", () => {
 			expect(reg.size).toBe(2);
 			expect(reg.has(_acpRegistryKey(process.cwd(), "You are the PARENT."))).toBe(true);
 			expect(reg.has(_acpRegistryKey(process.cwd(), "You are a SUBAGENT."))).toBe(true);
+		});
+
+		it("keys pi-normalized contexts (pi >= 0.86) by their leading system prompt", async () => {
+			// pi >= 0.86 passes a TranscriptContext with NO systemPrompt field. Keying
+			// on context.systemPrompt hashed every conversation in a cwd to one key.
+			await driveConversation(normalizeContext({ systemPrompt: "You are the PARENT.", messages: [user("hi")] }) as unknown as Context, { sessionId: "sess-tcA" });
+			await driveConversation(normalizeContext({ systemPrompt: "You are a SUBAGENT.", messages: [user("hi")] }) as unknown as Context, { sessionId: "sess-tcB" });
+
+			const reg = _getAcpChildRegistry();
+			expect(reg.has(_acpRegistryKey(process.cwd(), "You are the PARENT."))).toBe(true);
+			expect(reg.has(_acpRegistryKey(process.cwd(), "You are a SUBAGENT."))).toBe(true);
+			expect(reg.has(_acpRegistryKey(process.cwd(), undefined))).toBe(false);
 		});
 
 		it("a subagent turn's abort does not terminate the parent's in-flight turn", async () => {
