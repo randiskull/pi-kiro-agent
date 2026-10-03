@@ -1046,6 +1046,46 @@ describe("makeStreamViaAcp", () => {
 			for (const text of promptTexts) expect(text.startsWith("<identity>")).toBe(true);
 		});
 
+		it("a resumed delta carries another provider's answer, but not kiro's own (P1)", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementation(() => child);
+			const promptTexts: string[] = [];
+			void (async () => {
+				await passStartupGate(child, "sess-p1");
+				for (const reply of ["KIRO-A1", "A3"]) {
+					const p = (await child.awaitLine()) as { id: number; params: { prompt: Array<{ text: string }> } };
+					promptTexts.push(p.params.prompt[0]?.text ?? "");
+					await deliverTurn(child, "sess-p1", reply);
+					child.sendLine({ jsonrpc: "2.0", id: p.id, result: { stopReason: "end_turn" }});
+				}
+			})();
+
+			const stamped = (text: string, provider: string): Message =>
+				({ ...(assistant(text) as object), provider }) as unknown as Message;
+			await collect({ messages: [user("turn one")] });
+			await collect({
+				messages: [
+					user("turn one"),
+					stamped("KIRO-A1", "kiro"),
+					user("turn two"),
+					stamped("BEDROCK-A2", "amazon-bedrock"),
+					user("turn three"),
+				],
+			});
+
+			expect(spawnMock).toHaveBeenCalledTimes(1);
+			expect(promptTexts).toHaveLength(2);
+			const delta = promptTexts[1];
+			expect(delta).not.toContain("<conversation_history>");
+			const u2 = delta.indexOf("<user_message>\nturn two\n</user_message>");
+			const a2 = delta.indexOf("<assistant_message>\nBEDROCK-A2\n</assistant_message>");
+			const u3 = delta.indexOf("<user_message>\nturn three\n</user_message>");
+			expect(u2).toBeGreaterThan(-1);
+			expect(a2).toBeGreaterThan(u2);
+			expect(u3).toBeGreaterThan(a2);
+			expect(delta).not.toContain("KIRO-A1");
+		});
+
 		it("creates a new session (session/new) on diverged prefix", async () => {
 			const child = new AcpScriptChild();
 			spawnMock.mockImplementation(() => child);
@@ -2096,5 +2136,138 @@ describe("identity in the ACP session/prompt", () => {
 		} finally {
 			delete process.env.KIRO_API_KEY;
 		}
+	});
+});
+
+describe("ACP model selection (P2: kiro v2 ignores model on session/prompt)", () => {
+	beforeEach(() => {
+		spawnMock.mockReset();
+		_resetAcpSessions();
+		_resetAcpChildren();
+	});
+
+	const kiroModel = (id: string): Model<any> => ({ ...MODEL, id, name: `${id} [kiro]` }) as Model<any>;
+
+	async function collectAs(model: Model<any>, context: Context): Promise<AssistantMessageEvent[]> {
+		const stream = makeStreamViaAcp({ binaryPath: "kiro-cli" })(model, context, undefined);
+		const events: AssistantMessageEvent[] = [];
+		for await (const event of stream) events.push(event);
+		return events;
+	}
+
+	/**
+	 * A child that answers every request after the startup gate: set_model with
+	 * `{}` (or `setModelError`), session/prompt with one turn. Records the method
+	 * and params of every request, in order.
+	 */
+	function scriptedChild(opts: {
+		sessionIds: string[];
+		currentModelId?: string | null;
+		setModelError?: { code: number; message: string };
+	}): { log: Array<{ method: string; params: Record<string, unknown> }> } {
+		const log: Array<{ method: string; params: Record<string, unknown> }> = [];
+		const child = new AcpScriptChild();
+		spawnMock.mockImplementation(() => child);
+		const models = opts.currentModelId === null ? undefined : { currentModelId: opts.currentModelId ?? "auto", availableModels: [] };
+		const sessionIds = [...opts.sessionIds];
+		void (async () => {
+			for (;;) {
+				const req = (await child.awaitLine()) as { id: number; method: string; params: Record<string, unknown> };
+				log.push({ method: req.method, params: req.params });
+				if (req.method === "initialize") {
+					child.sendLine({ jsonrpc: "2.0", id: req.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
+				} else if (req.method === "session/new") {
+					const sessionId = sessionIds.shift() ?? "sess-extra";
+					child.sendLine({ jsonrpc: "2.0", id: req.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, ...(models ? { models } : {}) }});
+					child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
+				} else if (req.method === "session/set_model") {
+					if (opts.setModelError) child.sendLine({ jsonrpc: "2.0", id: req.id, error: opts.setModelError });
+					else child.sendLine({ jsonrpc: "2.0", id: req.id, result: {} });
+				} else if (req.method === "session/prompt") {
+					await deliverTurn(child, req.params.sessionId as string, "ok");
+					child.sendLine({ jsonrpc: "2.0", id: req.id, result: { stopReason: "end_turn" }});
+				}
+			}
+		})();
+		return { log };
+	}
+
+	it("sends set_model before the first prompt, then only when the model changes", async () => {
+		const { log } = scriptedChild({ sessionIds: ["sess-m1"] });
+		const h = kiroModel("claude-haiku-4.5");
+		const s = kiroModel("claude-sonnet-4.6");
+		const u1 = user("one");
+		const u2 = user("two");
+		const u3 = user("three");
+		const u4 = user("four");
+		await collectAs(h, { messages: [u1] });
+		await collectAs(h, { messages: [u1, assistant("ok"), u2] });
+		await collectAs(s, { messages: [u1, assistant("ok"), u2, assistant("ok"), u3] });
+		await collectAs(MODEL, { messages: [u1, assistant("ok"), u2, assistant("ok"), u3, assistant("ok"), u4] });
+
+		expect(spawnMock).toHaveBeenCalledTimes(1);
+		const calls = log
+			.filter((e) => e.method === "session/set_model" || e.method === "session/prompt")
+			.map((e) => (e.method === "session/set_model" ? `set:${e.params.modelId}` : "prompt"));
+		expect(calls).toEqual([
+			"set:claude-haiku-4.5", "prompt",
+			"prompt",
+			"set:claude-sonnet-4.6", "prompt",
+			"set:auto", "prompt",
+		]);
+		for (const e of log.filter((x) => x.method === "session/set_model")) expect(e.params.sessionId).toBe("sess-m1");
+		// The ignored field is no longer sent.
+		for (const e of log.filter((x) => x.method === "session/prompt")) expect(e.params).not.toHaveProperty("model");
+	});
+
+	it("sends no set_model when the session already runs the requested model", async () => {
+		const { log } = scriptedChild({ sessionIds: ["sess-m2"], currentModelId: "claude-haiku-4.5" });
+		await collectAs(kiroModel("claude-haiku-4.5"), { messages: [user("one")] });
+		expect(log.map((e) => e.method)).toEqual(["initialize", "session/new", "session/prompt"]);
+	});
+
+	it("sends set_model even for auto when session/new does not report the model", async () => {
+		const { log } = scriptedChild({ sessionIds: ["sess-m3"], currentModelId: null });
+		await collectAs(MODEL, { messages: [user("one")] });
+		expect(log.map((e) => e.method)).toEqual(["initialize", "session/new", "session/set_model", "session/prompt"]);
+	});
+
+	it("re-selects the model on the successor session after a divergence", async () => {
+		const { log } = scriptedChild({ sessionIds: ["sess-d1", "sess-d2"] });
+		const h = kiroModel("claude-haiku-4.5");
+		await collectAs(h, { messages: [user("one")] });
+		await collectAs(h, { messages: [user("SUMMARY"), user("two")] });
+		const seq = log.filter((e) => e.method !== "initialize").map((e) =>
+			e.method === "session/set_model" ? `set:${e.params.sessionId}` : e.method);
+		expect(seq).toEqual([
+			"session/new", "set:sess-d1", "session/prompt",
+			"session/new", "set:sess-d2", "session/prompt",
+		]);
+	});
+
+	it("a kiro-cli without set_model (-32601) still serves kiro/auto, but not an explicit model", async () => {
+		const notFound = { code: -32601, message: "Method not found" };
+		const auto = scriptedChild({ sessionIds: ["sess-nf1"], currentModelId: null, setModelError: notFound });
+		const okEvents = await collectAs(MODEL, { messages: [user("one")] });
+		expect(okEvents.some((e) => e.type === "done")).toBe(true);
+		expect(auto.log.map((e) => e.method)).toEqual(["initialize", "session/new", "session/set_model", "session/prompt"]);
+
+		_resetAcpSessions();
+		_resetAcpChildren();
+		const explicit = scriptedChild({ sessionIds: ["sess-nf2"], currentModelId: "auto", setModelError: notFound });
+		const errEvents = await collectAs(kiroModel("claude-haiku-4.5"), { messages: [user("one")] });
+		expect(errEvents.some((e) => e.type === "error")).toBe(true);
+		await settle();
+		expect(explicit.log.some((e) => e.method === "session/prompt")).toBe(false);
+	});
+
+	it("fails the turn, without prompting, when set_model errors", async () => {
+		const { log } = scriptedChild({ sessionIds: ["sess-m4"], setModelError: { code: -32603, message: "Internal error" } });
+		const events = await collectAs(kiroModel("claude-haiku-4.5"), { messages: [user("one")] });
+		const error = events.find((e) => e.type === "error");
+		if (error?.type !== "error") throw new Error("expected error event");
+		expect(error.error.errorMessage).toContain("session/set_model claude-haiku-4.5 failed");
+		await settle();
+		expect(log.some((e) => e.method === "session/prompt")).toBe(false);
 	});
 });

@@ -40,6 +40,7 @@ import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import { createToolUseStreamParser, parseKiroToolUses, synthesizeToolCallBlocks } from "./kiro-tooluse-parser.js";
 import { trace } from "./trace.js";
 import { currentSystemPrompt } from "./system-prompt.js";
+import { KIRO_PROVIDER } from "./models.js";
 import { CHAT_ENGINE, authMethod, identityBlock, identityLine, redactSecrets, resolvePiVersion } from "./identity.js";
 import {
 	advanceSession,
@@ -356,17 +357,33 @@ export function buildPromptFromContext(context: Context, bridgedTools?: string[]
 }
 
 /**
+ * True for an assistant message another pi provider produced (a manual /model
+ * switch, or a router fallback to Bedrock / Anthropic / OpenAI). kiro never
+ * saw it, so a resumed kiro session does not hold it. A message with no
+ * provider is treated as kiro's own: pi stamps every assistant message it
+ * records, so only hand-built transcripts lack one.
+ */
+export function isForeignAssistant(message: Message): boolean {
+	if (message.role !== "assistant") return false;
+	const provider = (message as { provider?: unknown }).provider;
+	return typeof provider === "string" && provider !== KIRO_PROVIDER;
+}
+
+/**
  * Delta prompt for a `--resume-id` turn: the same scaffolding, but only the NEW
  * turn's input — no <prior_system_context> and no <conversation_history> (kiro
- * already holds those in the resumed session). Assistant messages are skipped:
- * they are kiro's own prior replies, already in-session — re-sending them would
- * echo the model's output back as user input. System messages never reach
- * here: planTurn/planAcpTurn send a turn whose delta carries one fresh.
+ * already holds those in the resumed session). kiro's OWN assistant messages
+ * are skipped: they are already in-session, and re-sending them would echo the
+ * model's output back as user input. An assistant message from ANOTHER
+ * provider is kept: after kiro -> bedrock -> kiro the delta carries the
+ * Bedrock answer, and dropping it left kiro answering a follow-up to a reply it
+ * never saw. System messages never reach here: planTurn/planAcpTurn send a
+ * turn whose delta carries one fresh.
  */
 export function buildDeltaPrompt(deltaMessages: Message[], bridgedTools?: string[], workflowMcp?: boolean, opts?: PromptBuildOpts): string {
 	const parts = buildScaffolding(bridgedTools, workflowMcp, opts);
 	const blocks = deltaMessages
-		.filter((message) => message.role !== "assistant")
+		.filter((message) => message.role !== "assistant" || isForeignAssistant(message))
 		.map(serializeMessage)
 		.filter((block): block is string => block !== undefined);
 	if (blocks.length > 0) parts.push(blocks.join("\n"));

@@ -409,3 +409,76 @@ describe("identity Layer 1: status bar, /kiro, deps.kiroVersion", () => {
 		expect(message).toMatch(/identity: pi \S+ via Kiro \(kiro-cli 0\.0\.0-test, engine v2\) on auto \(selected by kiro\)/);
 	});
 });
+
+describe("kiro/router registration (opt-in virtual model)", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		delete process.env.PI_KIRO_ROUTER;
+	});
+
+	function withVirtual() {
+		const fake = makeFakePi();
+		const registerVirtualModel = vi.fn();
+		return { fake, registerVirtualModel, pi: { ...fake.pi, registerVirtualModel } };
+	}
+
+	it("registers kiro/router beside the physical models, and again on session_start", async () => {
+		const piKiro = await loadExtension();
+		const { fake, registerVirtualModel, pi } = withVirtual();
+		await piKiro(pi);
+		expect(registerVirtualModel).toHaveBeenCalledTimes(1);
+		const def = registerVirtualModel.mock.calls[0]?.[0] as { provider: string; id: string; thinkingLevels: string[]; route: unknown };
+		expect(def.provider).toBe("kiro");
+		expect(def.id).toBe("router");
+		expect(def.thinkingLevels).toEqual(["low", "medium", "high", "xhigh"]);
+		expect(typeof def.route).toBe("function");
+		// The provider itself is unchanged: kiro/auto stays the physical default.
+		expect(fake.registerProvider).toHaveBeenCalledWith("kiro", expect.objectContaining({ models: [{ id: "auto" }] }));
+		await fake.emit("session_start", { type: "session_start", reason: "new" });
+		expect(registerVirtualModel).toHaveBeenCalledTimes(2);
+	});
+
+	it("routes through ctx.modelRegistry", async () => {
+		const piKiro = await loadExtension();
+		const { registerVirtualModel, pi } = withVirtual();
+		await piKiro(pi);
+		const def = registerVirtualModel.mock.calls[0]?.[0] as { route: (r: unknown, ctx: unknown) => { model: { id: string } } };
+		const haiku = { provider: "kiro", id: "claude-haiku-4.5", contextWindow: 200_000 };
+		const ctx = {
+			modelRegistry: {
+				find: (provider: string, id: string) => (provider === "kiro" && id === "claude-haiku-4.5" ? haiku : undefined),
+				hasConfiguredAuth: () => true,
+			},
+		};
+		const route = def.route({ reason: "user", thinkingLevel: "low", messages: [] }, ctx);
+		expect(route.model).toBe(haiku);
+	});
+
+	it("is not registered on hosts without registerVirtualModel (pi < 1.0)", async () => {
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await expect(piKiro(fake.pi)).resolves.toBeUndefined();
+		expect(fake.registerProvider).toHaveBeenCalledTimes(1);
+	});
+
+	it("PI_KIRO_ROUTER=off skips it", async () => {
+		process.env.PI_KIRO_ROUTER = "off";
+		try {
+			const piKiro = await loadExtension();
+			const { registerVirtualModel, pi } = withVirtual();
+			await piKiro(pi);
+			expect(registerVirtualModel).not.toHaveBeenCalled();
+		} finally {
+			delete process.env.PI_KIRO_ROUTER;
+		}
+	});
+
+	it("never hides a physical kiro model that has the router's id", async () => {
+		const piKiro = await loadExtension();
+		const { fetchKiroModels } = await import("../src/models.js");
+		vi.mocked(fetchKiroModels).mockResolvedValueOnce([{ id: "auto" }, { id: "router" }] as never);
+		const { registerVirtualModel, pi } = withVirtual();
+		await piKiro(pi);
+		expect(registerVirtualModel).not.toHaveBeenCalled();
+	});
+});

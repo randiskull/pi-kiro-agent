@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`kiro/router`, an opt-in virtual model (pi >= 1.0).** Selected with `/model kiro/router`, next to
+  `kiro/auto` and never the default. The thinking level picks a tier, anchored on kiro's credit
+  multipliers: `low` haiku (0.4x), `medium` sonnet (1.3x), `high` opus (2.0x), `xhigh` fable (6.0x),
+  each on the newest kiro model the seat exposes (kiro/auto if it exposes none). Tool follow-ups stay
+  on the model that handled the turn, and compaction stays with the transcript's model. When kiro
+  fails, the turn falls back to the same tier on Amazon Bedrock (`us.anthropic.*` only), Anthropic,
+  or an OpenAI subscription (`openai-codex`; nearest multiplier: luna, terra, terra, sol), the first
+  that has credentials, and holds there for a cooldown before kiro is tried again. pi does not retry
+  quota or auth errors, so a kiro error left in the transcript also triggers the fallback on the next
+  user turn. A retry after a context overflow moves to a larger window (haiku 200K to a 1M sonnet).
+  `PI_KIRO_ROUTER=off` skips registration; `PI_KIRO_ROUTER_FALLBACK` (comma list) and
+  `PI_KIRO_ROUTER_COOLDOWN_MS` (default 15 min) tune it. Not registered on hosts without
+  `registerVirtualModel`, or when a seat has a physical model named `router`.
+
 - **An explicit, larger request-body ceiling for the bridge (32 MiB).** MCP SDK 1.30.1 (#22)
   began reading request bodies with a 4 MiB limit and answering 413 past it, before any bridge code
   runs; verified against `serveBridgeHttp`, a 5 MiB `tools/call` that 1.30.0 delivered is refused by
@@ -156,6 +170,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **ACP turns run the model pi selected.** kiro v2 ignores `model` on `session/prompt` and runs the
+  user's kiro default, so with `PI_KIRO_TRANSPORT=acp` every turn ran (and was billed as) that
+  default whatever `/model` said, while the identity line named the selected one. Measured on
+  kiro-cli 2.26.1: haiku requested, opus-4.8 ran. The transport now sends `session/set_model` before
+  the prompt whenever the session's model (from `session/new`'s `models.currentModelId`, then the
+  last switch) differs from the request's, and drops the ignored field. A failed switch fails the
+  turn instead of running on the wrong model; only `kiro/auto` tolerates a kiro-cli that lacks the
+  method (-32601), keeping its old behavior.
+- **A resumed kiro turn keeps answers from other providers.** The delta prompt dropped every assistant
+  message as kiro's own, so after kiro, then a turn on Bedrock (a `/model` switch or a router
+  fallback), then kiro again, kiro got the second question but not the Bedrock answer to it. An
+  assistant message from another provider is now kept in the delta as `<assistant_message>`; kiro's
+  own are still skipped. Both transports.
 - **pi's system prompt reaches kiro again on pi >= 0.86, including 1.0.** pi 0.86.0 changed what
   custom providers receive to a normalized `TranscriptContext`: there is no `systemPrompt` field, and
   the prompt is a leading `role: "system"` message that later system messages extend or patch by

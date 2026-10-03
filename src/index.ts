@@ -31,6 +31,14 @@ import { reapOrphanedKiroChildren } from "./orphan-reaper.js";
 import { makeStreamViaAcp } from "./acp-transport.js";
 import { makeStreamViaKiro } from "./stream-adapter.js";
 import { wireSubagents } from "./subagent-wiring.js";
+import {
+	cooldownMsFromEnv,
+	fallbackProvidersFromEnv,
+	ROUTER_MODEL_ID,
+	ROUTER_THINKING_LEVELS,
+	type RouterState,
+	routeRequest,
+} from "./router.js";
 import { ACP_ENGINE, CHAT_ENGINE, authMethod, identityLine, parseKiroVersion, pluginName, pluginVersion, resolvePiVersion } from "./identity.js";
 
 /** Comma-separated name list → trimmed, non-empty names. Shared by both /kiro-subagents branches. */
@@ -271,11 +279,42 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<Regist
 		};
 		pi.registerProvider(KIRO_PROVIDER, config);
 		registered = true;
+		registerRouter(pi, models);
 	}
 	return {
 		ok: true,
 		detail: `kiro provider registered (${readiness.detail}). Select with /model ${KIRO_PROVIDER}/<id>.`,
 	};
+}
+
+/**
+ * Register the opt-in kiro/router virtual model (router.ts) next to the
+ * physical kiro models. Skipped on hosts without registerVirtualModel
+ * (pi < 1.0), when PI_KIRO_ROUTER=off, and when the seat exposes a PHYSICAL
+ * model with the router's id (a virtual model would hide it). Re-run on every
+ * provider registration because the host drops both on session resets.
+ * Returns whether it registered.
+ */
+export function registerRouter(pi: ExtensionAPI, models: ReadonlyArray<{ id: string }>): boolean {
+	if (process.env.PI_KIRO_ROUTER === "off") return false;
+	if (typeof (pi as { registerVirtualModel?: unknown }).registerVirtualModel !== "function") return false;
+	if (models.some((model) => model.id === ROUTER_MODEL_ID)) return false;
+	pi.registerVirtualModel<RouterState>({
+		provider: KIRO_PROVIDER,
+		id: ROUTER_MODEL_ID,
+		name: "router: low=haiku, medium=sonnet, high=opus, xhigh=fable [kiro]",
+		thinkingLevels: ROUTER_THINKING_LEVELS,
+		// Shown before the first response only; the haiku tier's window.
+		contextWindow: 200_000,
+		maxTokens: 32_000,
+		input: ["text"],
+		route: (request, ctx) =>
+			routeRequest(request, ctx.modelRegistry, {
+				cooldownMs: cooldownMsFromEnv(process.env.PI_KIRO_ROUTER_COOLDOWN_MS),
+				fallbackProviders: fallbackProvidersFromEnv(process.env.PI_KIRO_ROUTER_FALLBACK),
+			}),
+	});
+	return true;
 }
 
 export default async function piKiro(pi: ExtensionAPI): Promise<void> {

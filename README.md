@@ -21,6 +21,7 @@ Requires kiro-cli on PATH and logged in (`kiro-cli login`; IdC/enterprise seats 
 ## Use
 
 - `/model kiro/<id>` — models fetched live from `kiro-cli chat --list-models` at registration (many seats expose only `auto`, Kiro's internal router).
+- `/model kiro/router` (pi >= 1.0, opt-in): a virtual model that picks a kiro model by thinking level: `low` haiku, `medium` sonnet, `high` opus, `xhigh` fable (tiers by kiro credit multiplier). Tool follow-ups and compaction stay on the transcript's model. If kiro fails, the turn falls back to the same tier on Amazon Bedrock (`us.anthropic.*`), Anthropic, or an OpenAI subscription (`openai-codex`), whichever has credentials first, for a cooldown. `kiro/auto` is unchanged.
 - `/kiro` — readiness status; re-registers after login.
 - `/kiro-subagents on [kiro/<id>] [name1,name2] | off` — route [pi-subagents](https://github.com/tintinweb/pi-subagents) agent profiles through kiro by rewriting the `model:` frontmatter in `~/.pi/agent/agents/*.md`. Wires every discovered agent, or just the named ones; defaults to `kiro/auto`. `off [name1,name2]` reverses it, acting only where the line points at `kiro/`, so agents you routed elsewhere by hand are untouched. If `on` displaced a non-kiro model, that value is stashed in a `pi-kiro-prev-model:` field and `off` puts it back; where there was no `model:` line to begin with, `off` removes the line again. See [docs/integrations/rpiv.md](docs/integrations/rpiv.md).
 
@@ -88,6 +89,9 @@ fails quietly — see the transport section of the
 | `PI_KIRO_CHAT_TIMEOUT_MS` | `2700000` (45 min) | Hard turn ceiling for the chat transport; child killed if exceeded |
 | `PI_KIRO_TURN_TIMEOUT_MS` | `2700000` (45 min) | Hard turn ceiling for the ACP transport pending requests |
 | `PI_KIRO_IDLE_TIMEOUT_MS` | `600000` (10 min) | Idle timeout before killing the persistent ACP child |
+| `PI_KIRO_ROUTER` | `on` | Set `off` to not register the `kiro/router` virtual model |
+| `PI_KIRO_ROUTER_FALLBACK` | `amazon-bedrock,anthropic,openai-codex` | Providers `kiro/router` falls back to, in order, when kiro fails |
+| `PI_KIRO_ROUTER_COOLDOWN_MS` | `900000` (15 min) | How long `kiro/router` stays on a fallback before trying kiro again |
 | `PI_KIRO_MCP_STARTUP_TIMEOUT_MS` | `30000` (30 s) | ACP transport: how long to wait for all MCP servers to report ready after `session/new` before failing the turn. Override for slow-starting servers or to speed up tests. |
 
 ## Security scanning
