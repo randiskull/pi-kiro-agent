@@ -651,11 +651,15 @@ function noteOversizeBody(port: number, limit: number, contentLength: string | u
 
 /**
  * Timing-safe string comparison for bearer tokens.
- * Returns false immediately on length mismatch (timingSafeEqual throws on
+ * Returns false immediately on byte-length mismatch (timingSafeEqual throws on
  * differing lengths, and a length leak is acceptable for fixed-length tokens).
+ * Uses Buffer.byteLength to match the UTF-8 byte count that Buffer.from() will
+ * produce — a character-count check would throw on non-ASCII inputs whose
+ * character lengths match but byte lengths differ, resulting in a 500 instead
+ * of 401, which is distinguishable by a probing attacker.
  */
 function tokenEq(a: string, b: string): boolean {
-	if (a.length !== b.length) return false;
+	if (Buffer.byteLength(a) !== Buffer.byteLength(b)) return false;
 	return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
