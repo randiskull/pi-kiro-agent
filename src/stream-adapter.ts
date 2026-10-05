@@ -39,6 +39,7 @@ import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-rea
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import { createToolUseStreamParser, parseKiroToolUses, synthesizeToolCallBlocks } from "./kiro-tooluse-parser.js";
 import { trace } from "./trace.js";
+import { CHAT_ENGINE, authMethod, identityBlock, identityLine, redactSecrets, resolvePiVersion } from "./identity.js";
 import {
 	advanceSession,
 	dropSession,
@@ -280,6 +281,13 @@ export interface PromptBuildOpts {
 	 *   must not appear (spec §3.4).
 	 */
 	sentinel?: boolean;
+	/**
+	 * The harness identity line (identity.ts identityLine). When set, an
+	 * <identity> block goes FIRST in every prompt, full and delta alike: the
+	 * probes showed a model only reports itself as pi reliably when the
+	 * identity is restated on every turn, not just the first.
+	 */
+	identity?: string;
 }
 
 /** The fixed preamble + tool-context scaffolding shared by full and delta prompts. */
@@ -315,10 +323,12 @@ function buildScaffolding(bridgedTools?: string[], workflowMcp?: boolean, opts?:
 	}
 	toolContextLines.push("</tool_context>");
 
-	const lines = [
+	const lines: string[] = [];
+	if (opts?.identity) lines.push(identityBlock(opts.identity));
+	lines.push(
 		"You are the executor for a task delegated from another agent session. Complete the task in the final user message directly, using your own tools.",
 		toolContextLines.join("\n"),
-	];
+	);
 	if (includeSentinel) {
 		lines.push(
 			`Wrap ONLY your final answer between ${FINAL_OPEN} and ${FINAL_CLOSE} tags — everything outside the tags is treated as working notes.`,
@@ -562,6 +572,8 @@ interface StreamDeps {
 	 * undefined when disabled or no bridgeable tools are available.
 	 */
 	getBridge?: (signal: AbortSignal) => Promise<HttpBridgeHandle | undefined>;
+	/** Bare kiro-cli semver from readiness (e.g. "2.26.1"), for the identity line. */
+	kiroVersion?: string;
 }
 
 export function makeStreamViaKiro(deps: StreamDeps) {
@@ -582,6 +594,14 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				// Parity with built-in providers: fires before_provider_request so
 				// extensions (including our own ctx capture) see the turn.
 				await options?.onPayload?.({ provider: "kiro", model: model.id }, model);
+
+				const identity = identityLine({
+					piVersion: await resolvePiVersion(),
+					kiroVersion: deps.kiroVersion,
+					engine: CHAT_ENGINE,
+					model: model.id,
+				});
+				trace("identity", { transport: "chat", line: identity, auth: authMethod() });
 
 				bridge = await deps.getBridge?.(options?.signal ?? new AbortController().signal);
 				// GSD workflow-MCP transport: mount the project's gsd-workflow stdio
@@ -617,15 +637,18 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				const pushThinking = thinkingWriter.push;
 
 				for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-					const args = ["chat", "--no-interactive", "--trust-all-tools"];
+					// Engine pinned, never left to kiro's default: kiro-cli 2.26 documents v2 as
+					// "the pre-3.0 default", so a kiro upgrade would otherwise switch engines
+					// silently and make the identity line (engine CHAT_ENGINE) wrong.
+					const args = ["chat", "--no-interactive", "--trust-all-tools", "--agent-engine", CHAT_ENGINE];
 					if (useResume && plan.resumeId) args.push("--resume-id", plan.resumeId);
 					if (profile) args.push("--agent", profile.name, "--require-mcp-startup");
 					if (model.id !== "auto") args.push("--model", model.id);
 					const effort = mapEffort(options?.reasoning);
 					if (effort) args.push("--effort", effort);
 					const promptText = useResume
-						? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridge?.toolNames, !!workflowServers)
-						: buildPromptFromContext(context, bridge?.toolNames, !!workflowServers);
+						? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridge?.toolNames, !!workflowServers, { identity })
+						: buildPromptFromContext(context, bridge?.toolNames, !!workflowServers, { identity });
 					args.push(promptText);
 					// attempt is traced explicitly: this loop re-sends the whole prompt on
 					// an MCP-startup retry or a resume fallback, so a bridged tool already
@@ -637,7 +660,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						deltaStart: plan.deltaStart,
 						messageCount: context.messages.length,
 						promptChars: promptText.length,
-						prompt: promptText,
+						prompt: redactSecrets(promptText),
 					});
 
 					const attemptResult = await runAttempt(args, deps.binaryPath, output, pushThinking, options?.signal);
@@ -708,7 +731,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				stream.end();
 			} catch (error) {
 				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-				output.errorMessage = error instanceof Error ? error.message : String(error);
+				output.errorMessage = redactSecrets(error instanceof Error ? error.message : String(error));
 				if (/profileArn is required/i.test(output.errorMessage)) {
 					output.errorMessage += " — run `kiro-cli profile` to select a profile for this IdC seat.";
 				}

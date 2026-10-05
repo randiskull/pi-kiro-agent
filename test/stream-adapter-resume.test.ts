@@ -93,6 +93,7 @@ describe("stream-adapter resume flow", () => {
 		expect(turn1Args).not.toContain("--resume-id");
 		expect(turn1Args.at(-1)).toContain("<conversation_history>");
 		expect(turn1Args.at(-1)).toContain("turn one");
+		expect(turn1Args.at(-1)?.startsWith("<identity>")).toBe(true);
 
 		// Turn 2 — pure append; must resume sess-A and send only the delta.
 		H.spawnCalls = [];
@@ -108,6 +109,8 @@ describe("stream-adapter resume flow", () => {
 		expect(prompt).not.toContain("<conversation_history>");
 		expect(prompt).not.toContain("turn one"); // prior history NOT re-sent
 		expect(prompt).not.toContain("A1"); // kiro's own prior reply not echoed back
+		// Identity is restated on the delta turn too (probes: first-turn-only drifts back to "Kiro").
+		expect(prompt.startsWith("<identity>")).toBe(true);
 	});
 
 	it("resets to a fresh full send when the prefix diverges (compaction)", async () => {

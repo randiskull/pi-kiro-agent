@@ -17,6 +17,7 @@ import {
 	stripAnsi,
 	toolUseTranscript,
 } from "../src/stream-adapter.js";
+import { CHAT_ENGINE } from "../src/identity.js";
 import { resetTraceTarget } from "../src/trace.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
@@ -340,6 +341,10 @@ describe("makeStreamViaKiro", () => {
 		expect(args).toContain("--effort");
 		expect(args).toContain("high");
 		expect(args).not.toContain("--model"); // "auto" is the CLI default
+		// Engine pinned to what the identity line reports, never kiro's default.
+		const i = args.indexOf("--agent-engine");
+		expect(i).toBeGreaterThan(-1);
+		expect(args[i + 1]).toBe(CHAT_ENGINE);
 	});
 
 	it("surfaces nonzero exits as errors with the profile remedy", async () => {

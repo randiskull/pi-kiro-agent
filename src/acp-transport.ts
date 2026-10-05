@@ -71,6 +71,7 @@ import {
 	stripLivePlaceholders,
 } from "./stream-adapter.js";
 import { trace } from "./trace.js";
+import { ACP_ENGINE, authMethod, identityLine, pluginName, pluginVersion, redactSecrets, resolvePiVersion } from "./identity.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import {
 	advanceAcpSession,
@@ -204,6 +205,8 @@ interface AcpDeps {
 		signal: AbortSignal,
 		getCallSignal?: () => AbortSignal,
 	) => Promise<ChildScopedHttpBridgeHandle | undefined>;
+	/** Bare kiro-cli semver from readiness (e.g. "2.26.1"), for the identity line. */
+	kiroVersion?: string;
 }
 
 /** ACP protocol version — pinned to guard against kiro-cli drift (§5 row 1). */
@@ -640,6 +643,24 @@ function onNotification(
 	return () => entry.listeners.get(method)?.delete(handler);
 }
 
+/** Client methods gated by capabilities pi-kiro does not advertise (G9). */
+export function isUnadvertisedClientMethod(method: string): boolean {
+	return method.startsWith("fs/") || method.startsWith("terminal/");
+}
+
+/**
+ * G9: the initialize params. Advertise no client fs/terminal capabilities
+ * (kiro runs its own tools; pi-kiro never served those methods) and report
+ * the real plugin name/version instead of a hardcoded placeholder.
+ */
+export function buildInitializeParams(): Record<string, unknown> {
+	return {
+		protocolVersion: ACP_PROTOCOL_VERSION,
+		clientCapabilities: {},
+		clientInfo: { name: pluginName(), version: pluginVersion() },
+	};
+}
+
 function dispatchMessage(entry: AcpChild, msg: AcpMessage): void {
 	// Any inbound traffic proves the child is alive — reset the idle clock.
 	// This is what makes "idle" mean silence rather than turn duration: a
@@ -658,8 +679,22 @@ function dispatchMessage(entry: AcpChild, msg: AcpMessage): void {
 		return;
 	}
 	if (msg.method) {
-		// Server-initiated request → auto-respond with empty result
-		if (msg.id !== undefined) sendRaw(entry, { jsonrpc: "2.0", id: msg.id, result: {} });
+		if (msg.id !== undefined) {
+			if (isUnadvertisedClientMethod(msg.method)) {
+				// G9: initialize advertises NO fs/terminal capability, so the agent
+				// must not call these. If it does, say so instead of answering {}
+				// (an empty result reads as an empty file / a silent no-op).
+				sendRaw(entry, {
+					jsonrpc: "2.0",
+					id: msg.id,
+					error: { code: -32601, message: `pi-kiro does not provide ${msg.method}` },
+				});
+			} else {
+				// Other server-initiated requests (session/request_permission under
+				// --trust-all-tools, kiro extensions) keep the empty-result reply.
+				sendRaw(entry, { jsonrpc: "2.0", id: msg.id, result: {} });
+			}
+		}
 		const handlers = entry.listeners.get(msg.method);
 		if (handlers) for (const h of handlers) h(msg);
 	}
@@ -807,7 +842,7 @@ async function spawnAcpChild(
 	turnSignal: AbortSignal,
 ): Promise<AcpChild> {
 	warnIfUlimitTooLow();
-	const args = ["acp", "--trust-all-tools", "--agent-engine", "v2"];
+	const args = ["acp", "--trust-all-tools", "--agent-engine", ACP_ENGINE];
 	const detached = process.platform !== "win32";
 	const child = spawn(binaryPath ?? "kiro-cli", args, {
 		cwd,
@@ -863,11 +898,7 @@ async function spawnAcpChild(
 	trace("acp.child.spawn", { registryKey: key, pid: child.pid, children: registry.size });
 
 	// Handshake: initialize
-	const initResp = await request(entry, "initialize", {
-		protocolVersion: ACP_PROTOCOL_VERSION,
-		clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
-		clientInfo: { name: "pi-kiro", version: "0.1.0" },
-	});
+	const initResp = await request(entry, "initialize", buildInitializeParams());
 	if (initResp.error) {
 		registry.delete(key);
 		killChild(entry, "initialize failed");
@@ -954,6 +985,14 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 			try {
 				stream.push({ type: "start", partial: output });
 				await options?.onPayload?.({ provider: "kiro", model: model.id }, model);
+
+				const identity = identityLine({
+					piVersion: await resolvePiVersion(),
+					kiroVersion: deps.kiroVersion,
+					engine: ACP_ENGINE,
+					model: model.id,
+				});
+				trace("identity", { transport: "acp", line: identity, auth: authMethod() });
 
 				const cwd = process.cwd();
 				// One child per (cwd, conversationKey): the parent and each subagent
@@ -1083,8 +1122,8 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				// ACP transport: omit the sentinel instruction (spec §3.4 — turn completion
 				// is a protocol event; sentinel is a chat-transport artifact).
 				const promptContent = useResume
-					? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridgeToolNames, !!workflowServers, { sentinel: false })
-					: buildPromptFromContext(context, bridgeToolNames, !!workflowServers, { sentinel: false });
+					? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridgeToolNames, !!workflowServers, { sentinel: false, identity })
+					: buildPromptFromContext(context, bridgeToolNames, !!workflowServers, { sentinel: false, identity });
 
 				trace("acp.prompt.send", {
 					sessionId: currentSessionId,
@@ -1092,7 +1131,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					deltaStart: plan.deltaStart,
 					messageCount: context.messages.length,
 					promptChars: promptContent.length,
-					prompt: promptContent,
+					prompt: redactSecrets(promptContent),
 				});
 
 				const promptParams: Record<string, unknown> = {
@@ -1177,7 +1216,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				removeUpdateHandler?.();
 				removeMetadataHandler?.();
 				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-				output.errorMessage = error instanceof Error ? error.message : String(error);
+				output.errorMessage = redactSecrets(error instanceof Error ? error.message : String(error));
 				if (/profileArn is required/i.test(output.errorMessage) && !output.errorMessage.includes("kiro-cli profile")) {
 					output.errorMessage += " — run `kiro-cli profile` to select a profile for this IdC seat.";
 				}

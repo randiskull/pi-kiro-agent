@@ -31,6 +31,7 @@ import { reapOrphanedKiroChildren } from "./orphan-reaper.js";
 import { makeStreamViaAcp } from "./acp-transport.js";
 import { makeStreamViaKiro } from "./stream-adapter.js";
 import { wireSubagents } from "./subagent-wiring.js";
+import { ACP_ENGINE, CHAT_ENGINE, authMethod, identityLine, parseKiroVersion, pluginName, pluginVersion, resolvePiVersion } from "./identity.js";
 
 /** Comma-separated name list → trimmed, non-empty names. Shared by both /kiro-subagents branches. */
 export function parseNameList(csv: string): string[] {
@@ -145,7 +146,55 @@ const deps: {
 		signal: AbortSignal,
 		getCallSignal?: () => AbortSignal,
 	) => Promise<ChildScopedHttpBridgeHandle | undefined>;
+	kiroVersion?: string;
 } = { binaryPath: undefined };
+
+/** Which transport ensureRegistered wires up (PI_KIRO_TRANSPORT=acp selects ACP). */
+function useAcpTransport(): boolean {
+	return process.env.PI_KIRO_TRANSPORT === "acp";
+}
+
+/**
+ * Layer 1 identity: the line pi-kiro renders itself, independent of what the
+ * model says. Same parts the transports put in the prompt.
+ */
+export async function currentIdentityLine(modelId: string): Promise<string> {
+	return identityLine({
+		piVersion: await resolvePiVersion(),
+		kiroVersion: deps.kiroVersion,
+		engine: useAcpTransport() ? ACP_ENGINE : CHAT_ENGINE,
+		model: modelId,
+	});
+}
+
+const STATUS_KEY = "kiro";
+
+// Bumped on every status update so a slow identity-line resolution for an
+// earlier model never overwrites the status set for a later one.
+let statusGeneration = 0;
+
+/**
+ * Show the identity line in pi's status bar while a kiro model is active; clear
+ * it otherwise. `model` defaults to ctx.model; model_select passes the newly
+ * selected model explicitly so a /model switch updates the bar immediately
+ * instead of on the next provider request.
+ */
+function updateIdentityStatus(
+	ctx: ExtensionContext | undefined,
+	model: { provider: string; id: string } | undefined = ctx?.model,
+): void {
+	if (!ctx?.hasUI) return;
+	const generation = ++statusGeneration;
+	if (!model || model.provider !== KIRO_PROVIDER) {
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+		return;
+	}
+	void currentIdentityLine(model.id)
+		.then((line) => {
+			if (generation === statusGeneration) ctx.ui.setStatus(STATUS_KEY, line);
+		})
+		.catch(() => undefined);
+}
 let registered = false;
 
 // Self-heal state: activation registers once, so a cold-start readiness miss
@@ -180,6 +229,7 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<Regist
 	if (force) clearKiroReadinessCache();
 	const readiness = await checkKiroReadiness(force);
 	deps.binaryPath = readiness.binaryPath;
+	deps.kiroVersion = parseKiroVersion(readiness.version);
 	if (!readiness.ready) {
 		return { ok: false, detail: `kiro provider NOT registered: ${readiness.detail}` };
 	}
@@ -206,7 +256,7 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<Regist
 		//
 		// PI_KIRO_TRANSPORT=acp: use the persistent ACP transport instead of the
 		// per-turn chat transport. See acp-transport.ts and docs/design/acp-transport.md.
-		const useAcp = process.env.PI_KIRO_TRANSPORT === "acp";
+		const useAcp = useAcpTransport();
 		const config: ProviderConfig & { authMode: "externalCli" } = {
 			name: "Kiro CLI (local runtime)",
 			authMode: "externalCli",
@@ -249,6 +299,10 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 		const sessionId = ctx?.sessionManager?.getSessionId();
 		if (sessionId) rememberSessionCtx(sessionId, ctx);
 		maybeSelfHeal(pi);
+		updateIdentityStatus(ctx);
+	});
+	pi.on("model_select", (event, ctx) => {
+		updateIdentityStatus(ctx, event.model);
 	});
 	// Session starts/reloads (/new, /resume, fork, reload) drop dynamically
 	// registered providers in the host while this module survives — re-register
@@ -296,7 +350,12 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 		description: "Show Kiro delegation status and (re)register the provider",
 		handler: async (_args, ctx) => {
 			const result = await ensureRegistered(pi, true);
-			ctx.ui.notify(result.detail, result.ok ? "info" : "error");
+			const lines = [result.detail, `${pluginName()} ${pluginVersion()}, auth: ${authMethod()}`];
+			if (result.ok && ctx.model?.provider === KIRO_PROVIDER) {
+				lines.push(`identity: ${await currentIdentityLine(ctx.model.id)}`);
+			}
+			ctx.ui.notify(lines.join("\n"), result.ok ? "info" : "error");
+			updateIdentityStatus(ctx);
 		},
 	});
 

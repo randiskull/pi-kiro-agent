@@ -69,6 +69,31 @@ describe("checkKiroReadiness", () => {
 		expect(indeterminate.detail).toContain("indeterminate");
 	});
 
+	it("treats a logged-out whoami as indeterminate (ready) when KIRO_API_KEY is set", async () => {
+		process.env.KIRO_API_KEY = "ksk_readiness_0123456789"; // secret-scan:allow (fake test key)
+		try {
+			execState.handler = (args) =>
+				args[0] === "--version" ? { stdout: "kiro-cli 2.26.1" } : { stdout: "Not logged in" };
+			const readiness = await checkKiroReadiness();
+			expect(readiness).toMatchObject({ ready: true, authed: undefined, version: "kiro-cli 2.26.1" });
+			expect(readiness.detail).toContain("auth: KIRO_API_KEY");
+			expect(readiness.detail).not.toContain("ksk_readiness");
+		} finally {
+			delete process.env.KIRO_API_KEY;
+		}
+	});
+
+	it("still reports a real login as authed when KIRO_API_KEY is set", async () => {
+		process.env.KIRO_API_KEY = "ksk_readiness_0123456789"; // secret-scan:allow (fake test key)
+		try {
+			execState.handler = (args) =>
+				args[0] === "--version" ? { stdout: "kiro-cli 2.26.1" } : { stdout: "Logged in with Builder ID" };
+			expect(await checkKiroReadiness()).toMatchObject({ ready: true, authed: true });
+		} finally {
+			delete process.env.KIRO_API_KEY;
+		}
+	});
+
 	it("caches until forced", async () => {
 		execState.handler = (args) => (args[0] === "--version" ? { stdout: "kiro-cli 2.12.1" } : { stdout: "Logged in" });
 		await checkKiroReadiness();

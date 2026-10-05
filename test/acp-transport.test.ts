@@ -11,12 +11,19 @@
  */
 
 import { EventEmitter } from "node:events";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { Writable } from "node:stream";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetAcpSessions, _acpSessionCount } from "../src/acp-session.js";
-import { _getAcpChildRegistry, _resetAcpChildren, _acpRegistryKey, makeStreamViaAcp } from "../src/acp-transport.js";
+import { _getAcpChildRegistry, _resetAcpChildren, _acpRegistryKey, buildInitializeParams, isUnadvertisedClientMethod, makeStreamViaAcp } from "../src/acp-transport.js";
+import { _resetPiVersionForTest, ACP_ENGINE, identityBlock } from "../src/identity.js";
+import { resetTraceTarget } from "../src/trace.js";
+import { VERSION as HOST_PI_VERSION } from "@earendil-works/pi-coding-agent";
 
 // ─── Spawn mock ───────────────────────────────────────────────────────────────
 
@@ -973,6 +980,7 @@ describe("makeStreamViaAcp", () => {
 		it("reuses the same child for a second turn (pure append)", async () => {
 			const child = new AcpScriptChild();
 			spawnMock.mockImplementation(() => child);
+			const promptTexts: string[] = [];
 
 			// Shared handshake driver that handles MULTIPLE prompts on the same child
 			void (async () => {
@@ -983,13 +991,15 @@ describe("makeStreamViaAcp", () => {
 				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-r1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-r1", commands: [] }});
 				// Turn 1
-				const p1 = (await child.awaitLine()) as { id: number };
+				const p1 = (await child.awaitLine()) as { id: number; params: { prompt: Array<{ text: string }> } };
+				promptTexts.push(p1.params.prompt[0]?.text ?? "");
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId: "sess-r1", contextUsagePercentage: 1.0 }});
 				child.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-r1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "reply1" }}}});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId: "sess-r1", contextUsagePercentage: 1.5, meteringUsage: [{ value: 0.01, unit: "credit" }], turnDurationMs: 100 }});
 				child.sendLine({ jsonrpc: "2.0", id: p1.id, result: { stopReason: "end_turn" }});
 				// Turn 2 (same session, child reused)
-				const p2 = (await child.awaitLine()) as { id: number };
+				const p2 = (await child.awaitLine()) as { id: number; params: { prompt: Array<{ text: string }> } };
+				promptTexts.push(p2.params.prompt[0]?.text ?? "");
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId: "sess-r1", contextUsagePercentage: 1.5 }});
 				child.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-r1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "reply2" }}}});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId: "sess-r1", contextUsagePercentage: 2.0, meteringUsage: [{ value: 0.01, unit: "credit" }], turnDurationMs: 100 }});
@@ -1003,6 +1013,10 @@ describe("makeStreamViaAcp", () => {
 			expect(doneText(events2)).toContain("reply2");
 			// Spawn called only once (child reused for turn 2)
 			expect(spawnMock).toHaveBeenCalledTimes(1);
+			// Turn 2 is a delta (no replayed history) and still restates the identity first.
+			expect(promptTexts).toHaveLength(2);
+			expect(promptTexts[1]).not.toContain("<conversation_history>");
+			for (const text of promptTexts) expect(text.startsWith("<identity>")).toBe(true);
 		});
 
 		it("creates a new session (session/new) on diverged prefix", async () => {
@@ -1873,5 +1887,175 @@ describe("makeStreamViaAcp", () => {
 			expect(src).not.toContain("cleanBody");
 			expect(src).not.toContain("extractFinal");
 		});
+	});
+});
+
+// --- G9 + identity (pi-mode-spec.md build order 1 and 1b) --------------------
+
+const PKG = createRequire(import.meta.url)("../package.json") as { name: string; version: string };
+
+const INIT_RESULT = {
+	protocolVersion: 1,
+	agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} },
+	authMethods: [],
+	agentInfo: { name: "Kiro CLI Agent", version: "test" },
+};
+
+/**
+ * One full turn against a fresh fake child, with hooks at the two points the
+ * G9/identity tests inspect: the initialize request, and the moment after the
+ * session/prompt request arrives (before the turn is delivered).
+ */
+async function driveIdentityTurn(opts: {
+	deps: AcpDeps;
+	onInit?: (req: { params?: unknown }) => void;
+	onPrompt?: (child: AcpScriptChild, req: { params?: unknown }) => Promise<void>;
+}): Promise<AssistantMessageEvent[]> {
+	const child = new AcpScriptChild();
+	spawnMock.mockImplementationOnce(() => child);
+	const sessionId = "sess-g9";
+	void (async () => {
+		const initReq = (await child.awaitLine()) as { id: number; params?: unknown };
+		opts.onInit?.(initReq);
+		child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: INIT_RESULT });
+		const sessionReq = (await child.awaitLine()) as { id: number };
+		child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+		child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
+		const promptReq = (await child.awaitLine()) as { id: number; params?: unknown };
+		if (opts.onPrompt) await opts.onPrompt(child, promptReq);
+		await deliverTurn(child, sessionId, "ok");
+		child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+		child.end();
+	})();
+	return collect({ messages: [user("who are you?")] }, undefined, opts.deps);
+}
+
+describe("G9: ACP initialize and client-method replies", () => {
+	beforeEach(() => {
+		spawnMock.mockReset();
+		_resetAcpSessions();
+		_resetAcpChildren();
+	});
+
+	it("advertises NO client fs/terminal capabilities and reports the real plugin name/version", async () => {
+		let params: Record<string, unknown> | undefined;
+		await driveIdentityTurn({ deps: { binaryPath: "kiro-cli" }, onInit: (req) => (params = req.params as Record<string, unknown>) });
+		expect(params?.clientCapabilities).toEqual({});
+		expect(params?.clientInfo).toEqual({ name: PKG.name, version: PKG.version });
+		expect(params).toEqual(buildInitializeParams());
+	});
+
+	it("spawns the engine the identity line reports (ACP_ENGINE drives the argv)", async () => {
+		await driveIdentityTurn({ deps: { binaryPath: "kiro-cli" } });
+		const args = spawnMock.mock.calls[0]?.[1] as string[];
+		const i = args.indexOf("--agent-engine");
+		expect(i).toBeGreaterThan(-1);
+		expect(args[i + 1]).toBe(ACP_ENGINE);
+	});
+
+	it("answers an unadvertised fs/* or terminal/* request with -32601, other agent requests with {}", async () => {
+		const replies = new Map<number, { result?: unknown; error?: { code: number } }>();
+		await driveIdentityTurn({
+			deps: { binaryPath: "kiro-cli" },
+			onPrompt: async (child) => {
+				child.sendLine({ jsonrpc: "2.0", id: 501, method: "fs/read_text_file", params: { path: "/etc/hosts" } });
+				child.sendLine({ jsonrpc: "2.0", id: 502, method: "terminal/create", params: { command: "ls" } });
+				child.sendLine({ jsonrpc: "2.0", id: 503, method: "session/request_permission", params: {} });
+				for (let n = 0; n < 3; n++) {
+					const reply = (await child.awaitLine()) as { id: number; result?: unknown; error?: { code: number } };
+					replies.set(reply.id, reply);
+				}
+			},
+		});
+		expect(replies.get(501)?.error?.code).toBe(-32601);
+		expect(replies.get(501)?.result).toBeUndefined();
+		expect(replies.get(502)?.error?.code).toBe(-32601);
+		expect(replies.get(503)?.result).toEqual({});
+		expect(replies.get(503)?.error).toBeUndefined();
+	});
+
+	it("isUnadvertisedClientMethod matches only the fs/ and terminal/ namespaces", () => {
+		expect(isUnadvertisedClientMethod("fs/write_text_file")).toBe(true);
+		expect(isUnadvertisedClientMethod("terminal/output")).toBe(true);
+		expect(isUnadvertisedClientMethod("session/request_permission")).toBe(false);
+		expect(isUnadvertisedClientMethod("_kiro.dev/fs/x")).toBe(false);
+	});
+});
+
+describe("identity in the ACP session/prompt", () => {
+	beforeEach(() => {
+		spawnMock.mockReset();
+		_resetAcpSessions();
+		_resetAcpChildren();
+		_resetPiVersionForTest();
+	});
+
+	it("puts the real identity line (host pi, deps.kiroVersion, ACP engine, model) first in the prompt text", async () => {
+		let text = "";
+		await driveIdentityTurn({
+			deps: { binaryPath: "kiro-cli", kiroVersion: "2.26.1" },
+			onPrompt: async (_child, req) => {
+				text = (req.params as { prompt: Array<{ text: string }> }).prompt[0]?.text ?? "";
+			},
+		});
+		const expected = `pi ${HOST_PI_VERSION} via Kiro (kiro-cli 2.26.1, engine ${ACP_ENGINE}) on auto (selected by kiro)`;
+		expect(text.startsWith(identityBlock(expected))).toBe(true);
+	});
+
+	it("traces identity + auth and never writes KIRO_API_KEY to the trace", async () => {
+		const KEY = "ksk_live_acp_trace_0123456789";
+		process.env.KIRO_API_KEY = KEY;
+		const dir = mkdtempSync(join(tmpdir(), "pi-kiro-acp-identity-"));
+		const tracePath = join(dir, "trace.jsonl");
+		const saved = process.env.PI_KIRO_TRACE;
+		process.env.PI_KIRO_TRACE = tracePath;
+		resetTraceTarget();
+		try {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: INIT_RESULT });
+				const sessionReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-k", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-k", commands: [] }});
+				const promptReq = (await child.awaitLine()) as { id: number };
+				await deliverTurn(child, "sess-k", "ok");
+				child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+				child.end();
+			})();
+			await collect({ messages: [user(`my key is ${KEY}`)] }, undefined, { binaryPath: "kiro-cli", kiroVersion: "2.26.1" });
+			const raw = readFileSync(tracePath, "utf8");
+			const events = raw.trim().split("\n").map((l) => JSON.parse(l));
+			expect(events.find((e) => e.event === "identity")).toMatchObject({ transport: "acp", auth: "api-key" });
+			expect(events.find((e) => e.event === "acp.prompt.send")?.prompt).toContain("[REDACTED:KIRO_API_KEY]");
+			expect(raw).not.toContain(KEY);
+		} finally {
+			delete process.env.KIRO_API_KEY;
+			if (saved === undefined) delete process.env.PI_KIRO_TRACE;
+			else process.env.PI_KIRO_TRACE = saved;
+			resetTraceTarget();
+		}
+	});
+
+	it("redacts KIRO_API_KEY from an ACP error message", async () => {
+		const KEY = "ksk_live_acp_error_0123456789";
+		process.env.KIRO_API_KEY = KEY;
+		try {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, error: { code: -32000, message: `invalid api key ${KEY}` } });
+			})();
+			const events = await collect({ messages: [user("hi")] });
+			const error = events.find((e) => e.type === "error");
+			if (error?.type !== "error") throw new Error("expected error event");
+			expect(error.error.errorMessage).toContain("initialize failed");
+			expect(error.error.errorMessage).toContain("[REDACTED:KIRO_API_KEY]");
+			expect(error.error.errorMessage).not.toContain(KEY);
+		} finally {
+			delete process.env.KIRO_API_KEY;
+		}
 	});
 });
