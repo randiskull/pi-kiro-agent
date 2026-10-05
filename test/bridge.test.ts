@@ -155,6 +155,41 @@ describe("serveBridgeHttp", () => {
 			fetch(handle.url, { method: "POST", body: "{}" }).then((response) => response.status),
 		).rejects.toThrow();
 	});
+
+	it("returns 401 with a wrong-length token (guards the length-mismatch fast path)", async () => {
+		const controller = new AbortController();
+		const handle = await serveBridgeHttp([makeTool()], () => FAKE_CTX, controller.signal);
+		if (!handle) throw new Error("expected handle");
+		try {
+			// "wrongtoken" is far shorter than the 48-char hex Bearer value
+			const res = await fetch(handle.url, {
+				method: "POST",
+				headers: { "content-type": "application/json", Authorization: "Bearer wrongtoken" },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+			});
+			expect(res.status).toBe(401);
+		} finally {
+			await handle.close();
+		}
+	});
+
+	it("returns 401 with a same-length-but-wrong token (guards the timingSafeEqual path)", async () => {
+		const controller = new AbortController();
+		const handle = await serveBridgeHttp([makeTool()], () => FAKE_CTX, controller.signal);
+		if (!handle) throw new Error("expected handle");
+		try {
+			// Construct a same-byte-length but wrong bearer value: "Bearer " + zeros of same length as the real token
+			const wrongBearer = `Bearer ${"0".repeat(handle.token.length)}`;
+			const res = await fetch(handle.url, {
+				method: "POST",
+				headers: { "content-type": "application/json", Authorization: wrongBearer },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+			});
+			expect(res.status).toBe(401);
+		} finally {
+			await handle.close();
+		}
+	});
 });
 
 describe("bridge request body limit", () => {

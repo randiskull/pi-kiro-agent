@@ -1874,4 +1874,22 @@ describe("makeStreamViaAcp", () => {
 			expect(src).not.toContain("extractFinal");
 		});
 	});
+
+	describe("sentinel handling and output", () => {
+		it("forwards options.reasoning as effort in session/prompt params", async () => {
+			let capturedEffort: string | undefined;
+			const events = await driveConversation(
+				{ messages: [user("hi")] },
+				{
+					sessionId: "sess-effort-1",
+					options: { reasoning: "high" },
+					beforePrompt: (req) => {
+						capturedEffort = (req as { params?: { effort?: string } }).params?.effort;
+					},
+				},
+			);
+			expect(events.find((e) => e.type === "done")).toBeDefined();
+			expect(capturedEffort).toBe("high");
+		});
+	});
 });
