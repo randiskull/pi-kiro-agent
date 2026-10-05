@@ -132,6 +132,43 @@ describe("serveBridgeHttp", () => {
 		}
 	});
 
+	it("returns 401 with a wrong-length token (guards the length-mismatch fast path)", async () => {
+		const tool = makeTool();
+		const controller = new AbortController();
+		const handle = await serveBridgeHttp([tool], () => FAKE_CTX, controller.signal);
+		if (!handle) throw new Error("expected handle");
+		try {
+			// "Bearer wrongtoken" is shorter than the real 48-char hex Bearer value
+			const res = await fetch(handle.url, {
+				method: "POST",
+				headers: { "content-type": "application/json", Authorization: "Bearer wrongtoken" },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+			});
+			expect(res.status).toBe(401);
+		} finally {
+			await handle.close();
+		}
+	});
+
+	it("returns 401 with a same-length-but-wrong token (guards the timingSafeEqual path)", async () => {
+		const tool = makeTool();
+		const controller = new AbortController();
+		const handle = await serveBridgeHttp([tool], () => FAKE_CTX, controller.signal);
+		if (!handle) throw new Error("expected handle");
+		try {
+			// Construct a wrong token of the same 48-char length as a real hex token
+			const wrongToken = "0".repeat(handle.token.length);
+			const res = await fetch(handle.url, {
+				method: "POST",
+				headers: { "content-type": "application/json", Authorization: `Bearer ${wrongToken}` },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+			});
+			expect(res.status).toBe(401);
+		} finally {
+			await handle.close();
+		}
+	});
+
 	it("close() is idempotent", async () => {
 		// The handle's owner closes it explicitly AND the signal's own listener
 		// fires close() on abort, so a double close is routine rather than
