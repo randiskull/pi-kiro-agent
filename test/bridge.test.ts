@@ -179,7 +179,7 @@ describe("serveBridgeHttp", () => {
 		if (!handle) throw new Error("expected handle");
 		try {
 			// Construct a same-byte-length but wrong bearer value: "Bearer " + zeros of same length as the real token
-			const wrongBearer = `Bearer ${"0".repeat(handle.token.length)}`;
+			const wrongBearer = `Bearer ${"0".repeat(Buffer.byteLength(handle.token))}`;
 			const res = await fetch(handle.url, {
 				method: "POST",
 				headers: { "content-type": "application/json", Authorization: wrongBearer },
