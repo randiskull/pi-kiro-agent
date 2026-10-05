@@ -390,7 +390,11 @@ describe("makeStreamViaAcp", () => {
 					sessionId: "sess-effort-1",
 					options: { reasoning: "high" },
 					beforePrompt: (req: unknown) => {
-						capturedEffort = (req as { params?: { effort?: string } }).params?.effort;
+						const r = req as { method?: string; params?: { effort?: string } };
+						// Assert the method rather than branching on it: a guard that can
+						// silently skip the capture would fail as an unhelpful undefined.
+						expect(r.method).toBe("session/prompt");
+						capturedEffort = r.params?.effort;
 					},
 				},
 			);
