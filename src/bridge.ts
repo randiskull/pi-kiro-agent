@@ -19,7 +19,7 @@
  * verbatim — no conversion layer.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -650,6 +650,16 @@ function noteOversizeBody(port: number, limit: number, contentLength: string | u
 }
 
 /**
+ * Timing-safe string comparison for bearer tokens.
+ * Returns false immediately on length mismatch (timingSafeEqual throws on
+ * differing lengths, and a length leak is acceptable for fixed-length tokens).
+ */
+function tokenEq(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+/**
  * Serve the bridged tools over Streamable-HTTP MCP on a loopback ephemeral
  * port, for subprocess runtimes that can't hold an in-process instance.
  * Stateless transport: every POST is handled independently, which suits
@@ -704,7 +714,7 @@ export async function serveBridgeHttp(
 	const httpServer: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
 		const auth = req.headers.authorization ?? "";
 		const path = (req.url ?? "").split("?")[0];
-		const authorized = auth === `Bearer ${token}` || path === `/mcp/${token}`;
+		const authorized = tokenEq(auth, `Bearer ${token}`) || tokenEq(path, `/mcp/${token}`);
 		if (!authorized) {
 			res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "unauthorized" }));
 			return;

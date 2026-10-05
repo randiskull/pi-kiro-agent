@@ -167,6 +167,7 @@ describe("output parsing", () => {
 
 	it("maps Pi thinking levels to kiro effort", () => {
 		expect(mapEffort("minimal")).toBe("low");
+		expect(mapEffort("low")).toBe("low");
 		expect(mapEffort("medium")).toBe("medium");
 		expect(mapEffort("high")).toBe("high");
 		expect(mapEffort("xhigh")).toBe("xhigh");

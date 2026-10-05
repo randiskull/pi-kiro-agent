@@ -381,6 +381,22 @@ describe("makeStreamViaAcp", () => {
 			// The transport should NOT strip sentinel markers — the text IS the final answer
 			expect(doneText(events).trim()).toContain("This is the final answer");
 		});
+
+		it("forwards options.reasoning as effort in session/prompt params", async () => {
+			let capturedEffort: string | undefined;
+			const events = await driveConversation(
+				{ messages: [user("hello")] },
+				{
+					sessionId: "sess-effort-1",
+					options: { reasoning: "high" },
+					beforePrompt: (req: unknown) => {
+						capturedEffort = (req as { params?: { effort?: string } }).params?.effort;
+					},
+				},
+			);
+			expect(events.find((e) => e.type === "done")).toBeDefined();
+			expect(capturedEffort).toBe("high");
+		});
 	});
 
 	describe("credits from meteringUsage (parity: chat transport parsed ▸ Credits footer)", () => {
