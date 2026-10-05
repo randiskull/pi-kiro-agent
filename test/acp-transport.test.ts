@@ -384,21 +384,27 @@ describe("makeStreamViaAcp", () => {
 
 		it("forwards options.reasoning as effort in session/prompt params", async () => {
 			let capturedEffort: string | undefined;
+			let capturedMethod: string | undefined;
 			const events = await driveConversation(
 				{ messages: [user("hello")] },
 				{
 					sessionId: "sess-effort-1",
 					options: { reasoning: "high" },
+					// Capture only; never expect() in here. beforePrompt is awaited
+					// inside driveConversation's detached `void (async () => ...)()`
+					// driver, so a throw leaves the prompt unanswered and collect()
+					// hangs to its timeout instead of failing on the assertion.
 					beforePrompt: (req: unknown) => {
 						const r = req as { method?: string; params?: { effort?: string } };
-						// Assert the method rather than branching on it: a guard that can
-						// silently skip the capture would fail as an unhelpful undefined.
-						expect(r.method).toBe("session/prompt");
+						capturedMethod = r.method;
 						capturedEffort = r.params?.effort;
 					},
 				},
 			);
 			expect(events.find((e) => e.type === "done")).toBeDefined();
+			// Name the request we read, so a shape change fails on the method
+			// itself rather than as a bare "expected undefined to be high".
+			expect(capturedMethod).toBe("session/prompt");
 			expect(capturedEffort).toBe("high");
 		});
 	});

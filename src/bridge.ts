@@ -659,8 +659,8 @@ function noteOversizeBody(port: number, limit: number, contentLength: string | u
  * of 401, which is distinguishable by a probing attacker.
  */
 function tokenEq(a: string, b: string): boolean {
-	if (Buffer.byteLength(a) !== Buffer.byteLength(b)) return false;
-	return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+	if (Buffer.byteLength(a, "utf8") !== Buffer.byteLength(b, "utf8")) return false;
+	return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
 }
 
 /**
