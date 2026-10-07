@@ -183,6 +183,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a made-up one included, measured 2026-10-07), so the id is first checked against the session's
   `models.availableModels`: one the session does not offer fails the turn before the switch and the
   prompt. A kiro-cli that lists no models skips the check.
+- **Dependency audit clean again.** Lockfile-only bumps of three transitive dependencies of
+  `@modelcontextprotocol/sdk`: proxy-addr 2.0.8 (GHSA-jqcg-44mw-7w3h, critical), fast-uri 3.1.8 and
+  ip-address 10.7.3 (moderate). The critical one would have failed the blocking Security audit.
 - **A resumed kiro turn keeps answers from other providers.** The delta prompt dropped every assistant
   message as kiro's own, so after kiro, then a turn on Bedrock (a `/model` switch or a router
   fallback), then kiro again, kiro got the second question but not the Bedrock answer to it. An
