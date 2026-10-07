@@ -886,11 +886,13 @@ async function startSession(
  * kiro-cli ACCEPTS ANY id on set_model (a bogus one returns OK), so an OK
  * reply proves nothing. When the session listed its models, an id outside
  * that list fails the turn here, before set_model and before any prompt.
+ * "auto" is exempt: it is kiro's own router, the default, and a session that
+ * does not list it keeps the pre-check behavior (and the -32601 tolerance).
  */
 async function ensureSessionModel(entry: AcpChild, sessionId: string, modelId: string): Promise<void> {
 	if (entry.sessionModelId === modelId) return;
 	const offered = entry.availableModelIds;
-	if (offered && !offered.has(modelId)) {
+	if (offered && modelId !== "auto" && !offered.has(modelId)) {
 		trace("acp.session.set_model", { sessionId, from: entry.sessionModelId, to: modelId, notOffered: true });
 		throw new Error(
 			`kiro-cli acp: model ${modelId} is not offered by this kiro session (available: ${[...offered].join(", ")})`,

@@ -2303,6 +2303,18 @@ describe("ACP model selection (P2: kiro v2 ignores model on session/prompt)", ()
 		expect(log.map((e) => e.method)).toEqual(["initialize", "session/new"]);
 	});
 
+	it("kiro/auto still prompts when the session lists models but not auto", async () => {
+		// The default must never hard-fail on the offered-model check.
+		const noAuto = KIRO_AVAILABLE_MODELS.filter((m) => m.modelId !== "auto");
+		const { log } = scriptedChild({ sessionIds: ["sess-na"], availableModels: noAuto });
+		const events = await collectAs(MODEL, { messages: [user("one")] });
+		expect(events.some((e) => e.type === "done")).toBe(true);
+		const calls = log
+			.filter((e) => e.method === "session/set_model" || e.method === "session/prompt")
+			.map((e) => (e.method === "session/set_model" ? `set:${e.params.modelId}` : "prompt"));
+		expect(calls).toEqual(["set:auto", "prompt"]);
+	});
+
 	it("skips the offered-model check when session/new lists no models", async () => {
 		const { log } = scriptedChild({ sessionIds: ["sess-nl"], availableModels: [] });
 		const events = await collectAs(kiroModel("definitely-not-a-model"), { messages: [user("one")] });

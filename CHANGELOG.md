@@ -182,7 +182,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   method (-32601), keeping its old behavior. kiro-cli answers OK to `session/set_model` for ANY id
   (a made-up one included, measured 2026-10-07), so the id is first checked against the session's
   `models.availableModels`: one the session does not offer fails the turn before the switch and the
-  prompt. A kiro-cli that lists no models skips the check.
+  prompt. A kiro-cli that lists no models skips the check, and `kiro/auto` is never refused by it.
 - **Dependency audit clean again.** Lockfile-only bumps of three transitive dependencies of
   `@modelcontextprotocol/sdk`: proxy-addr 2.0.8 (GHSA-jqcg-44mw-7w3h, critical), fast-uri 3.1.8 and
   ip-address 10.7.3 (moderate). The critical one would have failed the blocking Security audit.
