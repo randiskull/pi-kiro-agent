@@ -174,6 +174,9 @@ describe("stream-adapter resume flow", () => {
 				user("turn two"),
 				stamped("BEDROCK-A2", "amazon-bedrock"),
 				user("turn three"),
+				// No provider stamp = treated as kiro's own (hand-built transcripts only).
+				assistant("NO-PROVIDER-ECHO"),
+				user("turn four"),
 			],
 		});
 
@@ -187,6 +190,8 @@ describe("stream-adapter resume flow", () => {
 		expect(a2).toBeGreaterThan(u2);
 		expect(u3).toBeGreaterThan(a2);
 		expect(prompt).not.toContain("KIRO-A1");
+		expect(prompt).not.toContain("NO-PROVIDER-ECHO");
+		expect(prompt.indexOf("<user_message>\nturn four\n</user_message>")).toBeGreaterThan(u3);
 		expect(prompt).not.toContain("<conversation_history>");
 	});
 

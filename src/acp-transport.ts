@@ -172,6 +172,7 @@ async function resolveSession(
 		dropAcpSession(acpEntry.acpSessionId);
 		acpEntry.acpSessionId = undefined;
 		acpEntry.sessionModelId = undefined;
+		acpEntry.availableModelIds = undefined;
 		acpEntry.ready = false;
 		// Retire the session controller: this branch discards a session that reached
 		// `ready`, so bridged tool calls may be in flight and must be cancelled.
@@ -291,6 +292,14 @@ interface AcpChild {
 	 * needs a set_model first. Undefined = unknown, which always forces one.
 	 */
 	sessionModelId: string | undefined;
+	/**
+	 * The model ids kiro says the CURRENT session offers:
+	 * `models.availableModels[].modelId` from session/new. kiro-cli 2.x
+	 * ACCEPTS ANY id on session/set_model (measured 2026-10-07: a bogus id
+	 * returns OK), so this list is the only check that pi's model exists.
+	 * Undefined or empty = unknown (an older kiro-cli), which skips the check.
+	 */
+	availableModelIds: ReadonlySet<string> | undefined;
 	/**
 	 * Loopback MCP bridge, CHILD-scoped: kiro learns its URL once, at session/new,
 	 * and cannot be told a new one, so one bridge serves every session on this
@@ -468,6 +477,7 @@ function teardownChild(entry: AcpChild, reason: string, options: { kill: boolean
 		entry.acpSessionId = undefined;
 	}
 	entry.sessionModelId = undefined;
+	entry.availableModelIds = undefined;
 	if (options.kill) {
 		try {
 			const { pid } = entry.child;
@@ -817,7 +827,10 @@ async function startSession(
 			throw new Error(`kiro-cli acp session/new failed: ${sessionResp.error.message}`);
 		}
 		const sessionResult = sessionResp.result as
-			| { sessionId?: string; models?: { currentModelId?: string } }
+			| {
+					sessionId?: string;
+					models?: { currentModelId?: string; availableModels?: Array<{ modelId?: unknown }> };
+			  }
 			| undefined;
 		const sessionId = sessionResult?.sessionId;
 		if (!sessionId) throw new Error("kiro-cli acp session/new: no sessionId");
@@ -825,6 +838,11 @@ async function startSession(
 		// A fresh session starts on the user's kiro default, not on pi's model.
 		const reported = sessionResult?.models?.currentModelId;
 		entry.sessionModelId = typeof reported === "string" && reported ? reported : undefined;
+		const offered = sessionResult?.models?.availableModels;
+		const ids = Array.isArray(offered)
+			? offered.map((m) => m?.modelId).filter((id): id is string => typeof id === "string" && id.length > 0)
+			: [];
+		entry.availableModelIds = ids.length > 0 ? new Set(ids) : undefined;
 
 		// Wait for both: all servers initialized + commands/available with full tool list
 		const timeoutMs = mcpStartupTimeoutMs();
@@ -851,6 +869,7 @@ async function startSession(
 		if (!entry.ready) {
 			entry.acpSessionId = undefined;
 			entry.sessionModelId = undefined;
+			entry.availableModelIds = undefined;
 		}
 	}
 }
@@ -863,9 +882,20 @@ async function startSession(
  * session's known model differs, so a resumed turn on an unchanged model costs
  * no extra round trip. A failure fails the turn: running on a model pi did not
  * select, and reporting the one it did, is the bug this exists to remove.
+ *
+ * kiro-cli ACCEPTS ANY id on set_model (a bogus one returns OK), so an OK
+ * reply proves nothing. When the session listed its models, an id outside
+ * that list fails the turn here, before set_model and before any prompt.
  */
 async function ensureSessionModel(entry: AcpChild, sessionId: string, modelId: string): Promise<void> {
 	if (entry.sessionModelId === modelId) return;
+	const offered = entry.availableModelIds;
+	if (offered && !offered.has(modelId)) {
+		trace("acp.session.set_model", { sessionId, from: entry.sessionModelId, to: modelId, notOffered: true });
+		throw new Error(
+			`kiro-cli acp: model ${modelId} is not offered by this kiro session (available: ${[...offered].join(", ")})`,
+		);
+	}
 	const from = entry.sessionModelId;
 	const resp = await request(entry, "session/set_model", { sessionId, modelId });
 	if (resp.error?.code === -32601 && modelId === "auto") {
@@ -911,6 +941,7 @@ async function spawnAcpChild(
 		registryKey: key,
 		acpSessionId: undefined,
 		sessionModelId: undefined,
+		availableModelIds: undefined,
 		bridge: undefined,
 		bridgePromise: undefined,
 		pending: new Map(),

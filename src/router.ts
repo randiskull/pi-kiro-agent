@@ -34,6 +34,7 @@
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ModelRoute, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
 import { KIRO_PROVIDER } from "./models.js";
+import { trace } from "./trace.js";
 
 export const ROUTER_MODEL_ID = "router";
 
@@ -115,7 +116,12 @@ export function tierFor(level: ModelThinkingLevel | undefined): RouterTier {
 export interface RouterState {
 	/** Epoch ms until which user turns skip kiro and go straight to a fallback. */
 	fallbackUntil?: number;
-	/** Why the fallback started (the kiro error, truncated). */
+	/**
+	 * Why the fallback started (the kiro error, truncated to 200 chars). Also
+	 * emitted on the router.fallback.start / router.fallback.end trace events
+	 * (PI_KIRO_TRACE), so "why is this session off kiro" has an answer
+	 * without reading the session branch.
+	 */
 	fallbackReason?: string;
 }
 
@@ -227,8 +233,19 @@ function kiroFailedLastTurn(messages: readonly Message[]): string | undefined {
 	return last.errorMessage ?? "kiro request failed";
 }
 
-function startFallback(now: number, cooldownMs: number, reason: string): RouterState {
-	return { fallbackUntil: now + cooldownMs, fallbackReason: reason.slice(0, 200) };
+const routeId = (model: Model<Api>) => `${model.provider}/${model.id}`;
+
+/** Start a cooldown on `to`. `trigger`: a pi retry of the failed kiro request, or a kiro error left in the transcript. */
+function startFallback(
+	now: number,
+	cooldownMs: number,
+	reason: string,
+	trigger: "retry" | "transcript",
+	to: Model<Api>,
+): RouterState {
+	const state = { fallbackUntil: now + cooldownMs, fallbackReason: reason.slice(0, 200) };
+	trace("router.fallback.start", { trigger, to: routeId(to), until: state.fallbackUntil, reason: state.fallbackReason });
+	return state;
 }
 
 export function routeRequest(
@@ -265,7 +282,7 @@ export function routeRequest(
 			return {
 				model: fallback,
 				thinkingLevel: level,
-				state: startFallback(now, cooldownMs, failed.message.errorMessage ?? "kiro request failed"),
+				state: startFallback(now, cooldownMs, failed.message.errorMessage ?? "kiro request failed", "retry", fallback),
 			};
 		}
 		// A fallback provider failed: try the next one, then kiro again.
@@ -284,10 +301,15 @@ export function routeRequest(
 	const kiroError = kiroFailedLastTurn(request.messages);
 	if (kiroError !== undefined) {
 		const fallback = fallbackFor(registry, tier, providers);
-		if (fallback) return { model: fallback, thinkingLevel: level, state: startFallback(now, cooldownMs, kiroError) };
+		if (fallback) {
+			return { model: fallback, thinkingLevel: level, state: startFallback(now, cooldownMs, kiroError, "transcript", fallback) };
+		}
 	}
 	const model = kiroModelFor(registry, tier);
 	// An expired fallback is cleared, so the next kiro error starts a fresh cooldown.
-	if (state?.fallbackUntil !== undefined && state.fallbackUntil <= now) return { model, thinkingLevel: level, state: {} };
+	if (state?.fallbackUntil !== undefined && state.fallbackUntil <= now) {
+		trace("router.fallback.end", { to: routeId(model), until: state.fallbackUntil, reason: state.fallbackReason });
+		return { model, thinkingLevel: level, state: {} };
+	}
 	return { model, thinkingLevel: level };
 }

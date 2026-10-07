@@ -21,7 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user turn. A retry after a context overflow moves to a larger window (haiku 200K to a 1M sonnet).
   `PI_KIRO_ROUTER=off` skips registration; `PI_KIRO_ROUTER_FALLBACK` (comma list) and
   `PI_KIRO_ROUTER_COOLDOWN_MS` (default 15 min) tune it. Not registered on hosts without
-  `registerVirtualModel`, or when a seat has a physical model named `router`.
+  `registerVirtualModel`, or when a seat has a physical model named `router`. With `PI_KIRO_TRACE`
+  set, each fallback start (`router.fallback.start`: trigger, destination, deadline, the kiro error)
+  and each cooldown expiry (`router.fallback.end`) is traced.
 
 - **An explicit, larger request-body ceiling for the bridge (32 MiB).** MCP SDK 1.30.1 (#22)
   began reading request bodies with a 4 MiB limit and answering 413 past it, before any bridge code
@@ -177,7 +179,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the prompt whenever the session's model (from `session/new`'s `models.currentModelId`, then the
   last switch) differs from the request's, and drops the ignored field. A failed switch fails the
   turn instead of running on the wrong model; only `kiro/auto` tolerates a kiro-cli that lacks the
-  method (-32601), keeping its old behavior.
+  method (-32601), keeping its old behavior. kiro-cli answers OK to `session/set_model` for ANY id
+  (a made-up one included, measured 2026-10-07), so the id is first checked against the session's
+  `models.availableModels`: one the session does not offer fails the turn before the switch and the
+  prompt. A kiro-cli that lists no models skips the check.
 - **A resumed kiro turn keeps answers from other providers.** The delta prompt dropped every assistant
   message as kiro's own, so after kiro, then a turn on Bedrock (a `/model` switch or a router
   fallback), then kiro again, kiro got the second question but not the Bedrock answer to it. An

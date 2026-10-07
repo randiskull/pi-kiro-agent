@@ -454,6 +454,46 @@ describe("kiro/router registration (opt-in virtual model)", () => {
 		expect(route.model).toBe(haiku);
 	});
 
+	it("the route closure reads PI_KIRO_ROUTER_FALLBACK and PI_KIRO_ROUTER_COOLDOWN_MS", async () => {
+		const saved = { fb: process.env.PI_KIRO_ROUTER_FALLBACK, cd: process.env.PI_KIRO_ROUTER_COOLDOWN_MS };
+		process.env.PI_KIRO_ROUTER_FALLBACK = "anthropic";
+		process.env.PI_KIRO_ROUTER_COOLDOWN_MS = "1234";
+		const now = vi.spyOn(Date, "now").mockReturnValue(5_000);
+		try {
+			const piKiro = await loadExtension();
+			const { registerVirtualModel, pi } = withVirtual();
+			await piKiro(pi);
+			const def = registerVirtualModel.mock.calls[0]?.[0] as {
+				route: (r: unknown, ctx: unknown) => { model: { provider: string; id: string }; state?: { fallbackUntil?: number } };
+			};
+			const kiroSonnet = { provider: "kiro", id: "claude-sonnet-5.5", contextWindow: 1_000_000 };
+			// Bedrock is listed first by default and has credentials: only the env order skips it.
+			const bedrock = { provider: "amazon-bedrock", id: "us.anthropic.claude-sonnet-5", contextWindow: 1_000_000 };
+			const anthropic = { provider: "anthropic", id: "claude-sonnet-5-5", contextWindow: 1_000_000 };
+			const catalog = [kiroSonnet, bedrock, anthropic];
+			const ctx = {
+				modelRegistry: {
+					find: (provider: string, id: string) => catalog.find((m) => m.provider === provider && m.id === id),
+					hasConfiguredAuth: () => true,
+				},
+			};
+			const failed = {
+				model: kiroSonnet,
+				thinkingLevel: "medium",
+				message: { role: "assistant", stopReason: "error", errorMessage: "503", provider: "kiro", content: [] },
+			};
+			const route = def.route({ reason: "retry", thinkingLevel: "medium", messages: [], failed }, ctx);
+			expect(route.model).toBe(anthropic);
+			expect(route.state?.fallbackUntil).toBe(5_000 + 1234);
+		} finally {
+			now.mockRestore();
+			if (saved.fb === undefined) delete process.env.PI_KIRO_ROUTER_FALLBACK;
+			else process.env.PI_KIRO_ROUTER_FALLBACK = saved.fb;
+			if (saved.cd === undefined) delete process.env.PI_KIRO_ROUTER_COOLDOWN_MS;
+			else process.env.PI_KIRO_ROUTER_COOLDOWN_MS = saved.cd;
+		}
+	});
+
 	it("is not registered on hosts without registerVirtualModel (pi < 1.0)", async () => {
 		const piKiro = await loadExtension();
 		const fake = makeFakePi();

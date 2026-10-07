@@ -1,5 +1,8 @@
 import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
 import type { ModelRouteRequest } from "@earendil-works/pi-coding-agent";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_FALLBACK_PROVIDERS,
@@ -13,6 +16,7 @@ import {
 	routeRequest,
 	tierFor,
 } from "../src/router.js";
+import { resetTraceTarget } from "../src/trace.js";
 
 const model = (provider: string, id: string, contextWindow = 1_000_000): Model<Api> =>
 	({ provider, id, name: id, api: "test", contextWindow, maxTokens: 32_000, reasoning: true, input: ["text"] }) as unknown as Model<Api>;
@@ -150,6 +154,14 @@ describe("kiro/router request reasons", () => {
 		expect(route.state?.fallbackReason).toContain("503");
 	});
 
+	it("a kiro -> fallback retry runs at the request's level, not the failed request's", () => {
+		// failedWith records "medium"; the request asks for "high" (opus tier).
+		const failed = failedWith(model("kiro", "claude-opus-5.5"), "503");
+		const route = routeRequest(req({ reason: "retry", failed, thinkingLevel: "high" }), reg, opts);
+		expect(id(route.model)).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+		expect(route.thinkingLevel).toBe("high");
+	});
+
 	it("follows the fallback order to the first provider with credentials", () => {
 		const failed = failedWith(model("kiro", "claude-opus-5.5"), "502 bad gateway");
 		const noBedrock = registry(catalog(), ["amazon-bedrock"]);
@@ -217,6 +229,14 @@ describe("kiro/router fallback on user turns", () => {
 		}
 	});
 
+	it("another provider's error in the transcript does not start a kiro fallback", () => {
+		// Only a KIRO error says kiro cannot serve; an Anthropic failure says nothing about kiro.
+		const messages = [userMsg("one"), reply("anthropic", { stopReason: "error", errorMessage: "529 overloaded" }), userMsg("two")];
+		const route = routeRequest(req({ messages }), reg, opts);
+		expect(id(route.model)).toBe("kiro/claude-sonnet-5.5");
+		expect(route.state).toBeUndefined();
+	});
+
 	it("a kiro overflow error in the transcript does not trigger a provider fallback", () => {
 		const messages = [userMsg("one"), reply("kiro", { stopReason: "error", errorMessage: "prompt is too long" }), userMsg("two")];
 		expect(routeRequest(req({ messages }), reg, opts).model.provider).toBe("kiro");
@@ -251,6 +271,78 @@ describe("kiro/router fallback on user turns", () => {
 		const state = routeRequest(req({ messages }), reg, opts).state;
 		expect(state).toBeDefined();
 		expect(JSON.parse(JSON.stringify(state))).toEqual(state);
+	});
+});
+
+describe("kiro/router fallback trace (PI_KIRO_TRACE)", () => {
+	const reg = registry();
+
+	function traced(run: () => void): Array<Record<string, unknown>> {
+		const dir = mkdtempSync(join(tmpdir(), "pi-kiro-router-trace-"));
+		const path = join(dir, "trace.jsonl");
+		const saved = process.env.PI_KIRO_TRACE;
+		process.env.PI_KIRO_TRACE = path;
+		resetTraceTarget();
+		try {
+			run();
+			let raw = "";
+			try {
+				raw = readFileSync(path, "utf8");
+			} catch {
+				// no event written
+			}
+			return raw.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+		} finally {
+			if (saved === undefined) delete process.env.PI_KIRO_TRACE;
+			else process.env.PI_KIRO_TRACE = saved;
+			resetTraceTarget();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
+	it("traces why and where each fallback starts, on both triggers", () => {
+		const events = traced(() => {
+			const failed = failedWith(model("kiro", "claude-sonnet-5.5"), "kiro-cli acp session/prompt failed: 503 service unavailable");
+			routeRequest(req({ reason: "retry", failed }), reg, opts);
+			const messages = [userMsg("one"), reply("kiro", { stopReason: "error", errorMessage: "quota exceeded: out of credits" }), userMsg("two")];
+			routeRequest(req({ messages, thinkingLevel: "low" }), reg, opts);
+		});
+		expect(events.map(({ event, trigger, to, until, reason }) => ({ event, trigger, to, until, reason }))).toEqual([
+			{
+				event: "router.fallback.start",
+				trigger: "retry",
+				to: "amazon-bedrock/us.anthropic.claude-sonnet-5",
+				until: NOW + 60_000,
+				reason: "kiro-cli acp session/prompt failed: 503 service unavailable",
+			},
+			{
+				event: "router.fallback.start",
+				trigger: "transcript",
+				to: "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+				until: NOW + 60_000,
+				reason: "quota exceeded: out of credits",
+			},
+		]);
+	});
+
+	it("traces the stored reason when the cooldown expires, and nothing while it holds", () => {
+		const events = traced(() => {
+			routeRequest(req({ state: { fallbackUntil: NOW + 1, fallbackReason: "quota exceeded" } }), reg, opts);
+			routeRequest(req({ state: { fallbackUntil: NOW, fallbackReason: "quota exceeded" } }), reg, opts);
+		});
+		expect(events.map(({ event, to, until, reason }) => ({ event, to, until, reason }))).toEqual([
+			{ event: "router.fallback.end", to: "kiro/claude-sonnet-5.5", until: NOW, reason: "quota exceeded" },
+		]);
+	});
+
+	it("truncates the traced reason exactly as it stores it", () => {
+		const long = "x".repeat(500);
+		let stored: string | undefined;
+		const events = traced(() => {
+			stored = routeRequest(req({ reason: "retry", failed: failedWith(model("kiro", "claude-sonnet-5.5"), long) }), reg, opts).state?.fallbackReason;
+		});
+		expect(stored).toHaveLength(200);
+		expect(events[0]?.reason).toBe(stored);
 	});
 });
 

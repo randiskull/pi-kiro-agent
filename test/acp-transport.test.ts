@@ -45,6 +45,22 @@ const MODEL: Model<any> = {
 	maxTokens: 32_000,
 } as Model<any>;
 
+/**
+ * What a real kiro session reports at session/new (live probe 2026-10-07,
+ * kiro-cli acp --agent-engine v2): a CONCRETE current model, never "auto",
+ * and the ids it offers as `{ modelId, name, description }`. Fixtures that
+ * report "auto" make kiro/auto skip set_model, which production never does.
+ */
+const KIRO_MODEL_IDS = [
+	"auto", "claude-opus-5.5", "claude-sonnet-5.5", "claude-opus-5", "claude-sonnet-5",
+	"claude-opus-4.8", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-opus-4.7",
+	"claude-sonnet-4.6", "claude-opus-4.5", "claude-sonnet-4.5", "claude-sonnet-4",
+	"claude-fable-5.1", "claude-haiku-4.5", "deepseek-3.2", "minimax-m2.5", "minimax-m2.1",
+	"glm-5", "qwen3-coder-next", "agi-nova-beta-1m",
+];
+const KIRO_AVAILABLE_MODELS = KIRO_MODEL_IDS.map((modelId) => ({ modelId, name: modelId, description: "" }));
+const SESSION_MODELS = { currentModelId: "claude-opus-4.8", availableModels: KIRO_AVAILABLE_MODELS };
+
 // ─── NDJSON fake child ────────────────────────────────────────────────────────
 
 /**
@@ -68,11 +84,23 @@ class AcpScriptChild extends EventEmitter {
 	 */
 	refOps: string[] = [];
 
+	/**
+	 * Every session/set_model this child answered itself (see constructor).
+	 * Scripts that read stdin in a fixed order never see these requests.
+	 */
+	setModelCalls: Array<{ sessionId: unknown; modelId: unknown }> = [];
+
 	private _stdinLines: string[] = [];
 	private _stdinWaiters: Array<(line: string) => void> = [];
 	private _stdinBuf = "";
 
-	constructor() {
+	/**
+	 * @param autoSetModel Answer session/set_model with `{}` here instead of
+	 * queueing it for awaitLine(). On by default: with a concrete
+	 * SESSION_MODELS.currentModelId every turn starts with one, and scripts
+	 * written as "next line is the prompt" must not have to know.
+	 */
+	constructor({ autoSetModel = true }: { autoSetModel?: boolean } = {}) {
 		super();
 		this.stdout = new PassThrough();
 		this.stderr = new PassThrough();
@@ -85,7 +113,9 @@ class AcpScriptChild extends EventEmitter {
 				while ((nl = self._stdinBuf.indexOf("\n")) !== -1) {
 					const line = self._stdinBuf.slice(0, nl);
 					self._stdinBuf = self._stdinBuf.slice(nl + 1);
-					if (line.trim()) {
+					if (line.trim() && autoSetModel && self.answerSetModel(line)) {
+						// answered in place; not queued for the script
+					} else if (line.trim()) {
 						if (self._stdinWaiters.length > 0) {
 							self._stdinWaiters.shift()!(line);
 						} else {
@@ -100,6 +130,19 @@ class AcpScriptChild extends EventEmitter {
 		this.instrumentRef("stdin", this.stdin);
 		this.instrumentRef("stdout", this.stdout);
 		this.instrumentRef("stderr", this.stderr);
+	}
+
+	private answerSetModel(line: string): boolean {
+		let msg: { id?: number; method?: string; params?: { sessionId?: unknown; modelId?: unknown } };
+		try {
+			msg = JSON.parse(line);
+		} catch {
+			return false;
+		}
+		if (msg.method !== "session/set_model" || msg.id === undefined) return false;
+		this.setModelCalls.push({ sessionId: msg.params?.sessionId, modelId: msg.params?.modelId });
+		queueMicrotask(() => this.sendLine({ jsonrpc: "2.0", id: msg.id, result: {} }));
+		return true;
 	}
 
 	/** Attach ref/unref spies to a handle so setChildKeepalive calls are observable. */
@@ -229,7 +272,7 @@ async function passStartupGate(
 		}});
 	}
 	const sessionReq = (await child.awaitLine()) as { id: number; params: { mcpServers: Array<{ name: string }> } };
-	child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+	child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 	for (const server of sessionReq.params.mcpServers) {
 		child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/mcp/server_initialized", params: { sessionId, serverName: server.name }});
 	}
@@ -284,7 +327,7 @@ async function driveConversation(
 		// Handle session/new
 		const sessionReq = (await child.awaitLine()) as { id: number; method: string };
 		child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/subagent/list_update", params: { subagents: [] }});
-		child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+		child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 		child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
 		// Handle session/prompt
 		const promptReq = (await child.awaitLine()) as { id: number; method: string };
@@ -329,7 +372,7 @@ describe("makeStreamViaAcp", () => {
 				capturedInitParams = initReq.params;
 				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
 				const sessionReq = (await child.awaitLine()) as { id: number };
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-1", commands: [] }});
 				const promptReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId: "sess-1", contextUsagePercentage: 1.0 }});
@@ -350,7 +393,7 @@ describe("makeStreamViaAcp", () => {
 				const initReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
 				const sessionReq = (await child.awaitLine()) as { id: number };
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-2", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-2", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-2", commands: [] }});
 				const promptReq = (await child.awaitLine()) as { id: number; params?: unknown };
 				capturedPromptParams = promptReq.params;
@@ -434,7 +477,7 @@ describe("makeStreamViaAcp", () => {
 				const initReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
 				const sessionReq = (await child.awaitLine()) as { id: number };
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-c2", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-c2", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-c2", commands: [] }});
 				const promptReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId: "sess-c2", contextUsagePercentage: 1.0 }});
@@ -459,7 +502,7 @@ describe("makeStreamViaAcp", () => {
 				const initReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
 				const sessionReq = (await child.awaitLine()) as { id: number };
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-t1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-t1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-t1", commands: [] }});
 				const promptReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId: "sess-t1", contextUsagePercentage: 1.0 }});
@@ -521,7 +564,7 @@ describe("makeStreamViaAcp", () => {
 				const sessionReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-live1",
 					modes: { currentModeId: "kiro_default", availableModes: [] },
-					models: { currentModelId: "auto", availableModels: [] } }});
+					models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available",
 					params: { sessionId: "sess-live1", commands: [] }});
 				const promptReq = (await child.awaitLine()) as { id: number };
@@ -629,7 +672,7 @@ describe("makeStreamViaAcp", () => {
 				const initReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
 				const sessionReq = (await child.awaitLine()) as { id: number };
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-e1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-e1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-e1", commands: [] }});
 				const promptReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId: "sess-e1", contextUsagePercentage: 1.0 }});
@@ -754,7 +797,7 @@ describe("makeStreamViaAcp", () => {
 					child.sendLine({
 						jsonrpc: "2.0",
 						id: sessionReq.id,
-						result: { sessionId: "sess-timeout", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } },
+						result: { sessionId: "sess-timeout", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS },
 					});
 					// Give the timeout time to fire, then let the child exit.
 					setTimeout(() => child.end(1), 60);
@@ -947,7 +990,7 @@ describe("makeStreamViaAcp", () => {
 					agentInfo: { name: "Kiro CLI Agent", version: "test" },
 				}});
 				const sessionReq = (await child.awaitLine()) as { id: number };
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-orphan", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-orphan", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				// Silence: no server_initialized, no commands/available.
 			})();
 
@@ -1015,7 +1058,7 @@ describe("makeStreamViaAcp", () => {
 				const initReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
 				const sessionReq = (await child.awaitLine()) as { id: number };
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-r1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-r1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-r1", commands: [] }});
 				// Turn 1
 				const p1 = (await child.awaitLine()) as { id: number; params: { prompt: Array<{ text: string }> } };
@@ -1097,7 +1140,7 @@ describe("makeStreamViaAcp", () => {
 				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
 				const sessionReq1 = (await child.awaitLine()) as { id: number };
 				sessionNewCount++;
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq1.id, result: { sessionId: "sess-d1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq1.id, result: { sessionId: "sess-d1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-d1", commands: [] }});
 				// Turn 1
 				const p1 = (await child.awaitLine()) as { id: number };
@@ -1109,7 +1152,7 @@ describe("makeStreamViaAcp", () => {
 				const req2 = (await child.awaitLine()) as { id: number; method?: string };
 				if (req2.method === "session/new") {
 					sessionNewCount++;
-					child.sendLine({ jsonrpc: "2.0", id: req2.id, result: { sessionId: "sess-d2", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+					child.sendLine({ jsonrpc: "2.0", id: req2.id, result: { sessionId: "sess-d2", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 					child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-d2", commands: [] }});
 				}
 				const p2 = (await child.awaitLine()) as { id: number };
@@ -1143,7 +1186,7 @@ describe("makeStreamViaAcp", () => {
 
 			const answerSessionNew = (req: { id: number; params: { mcpServers: Array<{ name: string; url?: string }> } }, sessionId: string) => {
 				urlsPerSession.push(req.params.mcpServers.find((s) => s.name === "pi")?.url);
-				child.sendLine({ jsonrpc: "2.0", id: req.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: req.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				for (const server of req.params.mcpServers) {
 					child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/mcp/server_initialized", params: { sessionId, serverName: server.name }});
 				}
@@ -1206,7 +1249,7 @@ describe("makeStreamViaAcp", () => {
 				const initReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
 				const sessionReq = (await child.awaitLine()) as { id: number };
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-k1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-k1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-k1", commands: [] }});
 				const promptReq = (await child.awaitLine()) as { id: number };
 				await deliverTurn(child, "sess-k1", "done");
@@ -1235,7 +1278,7 @@ describe("makeStreamViaAcp", () => {
 				const initReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
 				const sessionReq = (await child.awaitLine()) as { id: number };
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-k2", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-k2", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-k2", commands: [] }});
 				for (const text of ["one", "two"]) {
 					const promptReq = (await child.awaitLine()) as { id: number };
@@ -1296,7 +1339,7 @@ describe("makeStreamViaAcp", () => {
 				const sessionReq = (await child1.awaitLine()) as { id: number };
 				child1.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-crash1",
 					modes: { currentModeId: "kiro_default", availableModes: [] },
-					models: { currentModelId: "auto", availableModels: [] } }});
+					models: SESSION_MODELS }});
 				child1.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available",
 					params: { sessionId: "sess-crash1", commands: [] }});
 				const promptReq = (await child1.awaitLine()) as { id: number };
@@ -1337,7 +1380,7 @@ describe("makeStreamViaAcp", () => {
 					sessionNewCount++;
 					child2.sendLine({ jsonrpc: "2.0", id: req2.id, result: { sessionId: "sess-crash2",
 						modes: { currentModeId: "kiro_default", availableModes: [] },
-						models: { currentModelId: "auto", availableModels: [] } }});
+						models: SESSION_MODELS }});
 					child2.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available",
 						params: { sessionId: "sess-crash2", commands: [] }});
 				}
@@ -1403,7 +1446,7 @@ describe("makeStreamViaAcp", () => {
 				// to simulate the server emitting them back-to-back before any microtask yields
 				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-vn3",
 					modes: { currentModeId: "kiro_default", availableModes: [] },
-					models: { currentModelId: "auto", availableModels: [] } }});
+					models: SESSION_MODELS }});
 				orderLog.push("commands/available-fired");
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available",
 					params: { sessionId: "sess-vn3", commands: [] }});
@@ -1479,7 +1522,7 @@ describe("makeStreamViaAcp", () => {
 				const sessionReq = (await child2.awaitLine()) as { id: number };
 				child2.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-vn4-2",
 					modes: { currentModeId: "kiro_default", availableModes: [] },
-					models: { currentModelId: "auto", availableModels: [] } }});
+					models: SESSION_MODELS }});
 				child2.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available",
 					params: { sessionId: "sess-vn4-2", commands: [] }});
 				const promptReq = (await child2.awaitLine()) as { id: number };
@@ -1514,7 +1557,7 @@ describe("makeStreamViaAcp", () => {
 				const sessionReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-sentinel1",
 					modes: { currentModeId: "kiro_default", availableModes: [] },
-					models: { currentModelId: "auto", availableModels: [] } }});
+					models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available",
 					params: { sessionId: "sess-sentinel1", commands: [] }});
 				const promptReq = (await child.awaitLine()) as { id: number; params?: { prompt?: Array<{ text?: string }> } };
@@ -1570,7 +1613,7 @@ describe("makeStreamViaAcp", () => {
 				const sessionReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-sentinel3",
 					modes: { currentModeId: "kiro_default", availableModes: [] },
-					models: { currentModelId: "auto", availableModels: [] } }});
+					models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available",
 					params: { sessionId: "sess-sentinel3", commands: [] }});
 				const promptReq = (await child.awaitLine()) as { id: number };
@@ -1625,7 +1668,7 @@ describe("makeStreamViaAcp", () => {
 				agentInfo: { name: "Kiro CLI Agent", version: "test" },
 			}});
 			const sessionReq = (await child.awaitLine()) as { id: number };
-			child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+			child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 			child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
 			const promptReq = (await child.awaitLine()) as { id: number };
 			return promptReq.id;
@@ -1717,7 +1760,7 @@ describe("makeStreamViaAcp", () => {
 			const initReq = (await child.awaitLine()) as { id: number };
 			child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
 			const sessionReq = (await child.awaitLine()) as { id: number };
-			child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+			child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 			child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
 			const promptReq = (await child.awaitLine()) as { id: number };
 			return promptReq.id;
@@ -1887,7 +1930,7 @@ describe("makeStreamViaAcp", () => {
 				const initReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
 				const sessionReq = (await child.awaitLine()) as { id: number };
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-drop1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-drop1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-drop1", commands: [] }});
 				const promptReq = (await child.awaitLine()) as { id: number };
 				await deliverTurn(child, "sess-drop1", "ok");
@@ -1998,7 +2041,7 @@ async function driveIdentityTurn(opts: {
 		opts.onInit?.(initReq);
 		child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: INIT_RESULT });
 		const sessionReq = (await child.awaitLine()) as { id: number };
-		child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+		child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 		child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
 		const promptReq = (await child.awaitLine()) as { id: number; params?: unknown };
 		if (opts.onPrompt) await opts.onPrompt(child, promptReq);
@@ -2096,7 +2139,7 @@ describe("identity in the ACP session/prompt", () => {
 				const initReq = (await child.awaitLine()) as { id: number };
 				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: INIT_RESULT });
 				const sessionReq = (await child.awaitLine()) as { id: number };
-				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-k", modes: { currentModeId: "kiro_default", availableModes: [] }, models: { currentModelId: "auto", availableModels: [] } }});
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-k", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
 				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-k", commands: [] }});
 				const promptReq = (await child.awaitLine()) as { id: number };
 				await deliverTurn(child, "sess-k", "ok");
@@ -2162,13 +2205,21 @@ describe("ACP model selection (P2: kiro v2 ignores model on session/prompt)", ()
 	 */
 	function scriptedChild(opts: {
 		sessionIds: string[];
+		/** null = session/new reports no `models` at all. */
 		currentModelId?: string | null;
+		/** Defaults to the live list; [] = an older kiro that lists none. */
+		availableModels?: Array<{ modelId: string; name: string; description: string }>;
 		setModelError?: { code: number; message: string };
 	}): { log: Array<{ method: string; params: Record<string, unknown> }> } {
 		const log: Array<{ method: string; params: Record<string, unknown> }> = [];
-		const child = new AcpScriptChild();
+		const child = new AcpScriptChild({ autoSetModel: false });
 		spawnMock.mockImplementation(() => child);
-		const models = opts.currentModelId === null ? undefined : { currentModelId: opts.currentModelId ?? "auto", availableModels: [] };
+		const models = opts.currentModelId === null
+			? undefined
+			: {
+				currentModelId: opts.currentModelId ?? SESSION_MODELS.currentModelId,
+				availableModels: opts.availableModels ?? KIRO_AVAILABLE_MODELS,
+			};
 		const sessionIds = [...opts.sessionIds];
 		void (async () => {
 			for (;;) {
@@ -2224,6 +2275,39 @@ describe("ACP model selection (P2: kiro v2 ignores model on session/prompt)", ()
 		const { log } = scriptedChild({ sessionIds: ["sess-m2"], currentModelId: "claude-haiku-4.5" });
 		await collectAs(kiroModel("claude-haiku-4.5"), { messages: [user("one")] });
 		expect(log.map((e) => e.method)).toEqual(["initialize", "session/new", "session/prompt"]);
+	});
+
+	it("kiro/auto sends set_model on the first turn of a session that reports a concrete model", async () => {
+		// Real sessions report e.g. claude-opus-4.8, never "auto", so production
+		// kiro/auto pays one set_model per session, then none while it holds.
+		const { log } = scriptedChild({ sessionIds: ["sess-ma"] });
+		const u1 = user("one");
+		await collectAs(MODEL, { messages: [u1] });
+		await collectAs(MODEL, { messages: [u1, assistant("ok"), user("two")] });
+		const calls = log
+			.filter((e) => e.method === "session/set_model" || e.method === "session/prompt")
+			.map((e) => (e.method === "session/set_model" ? `set:${e.params.modelId}` : "prompt"));
+		expect(calls).toEqual(["set:auto", "prompt", "prompt"]);
+	});
+
+	it("fails the turn before set_model and prompt when the session does not offer the model", async () => {
+		// kiro-cli answers OK to set_model for ANY id (live probe 2026-10-07), so
+		// only the session's own availableModels list can catch a bad id.
+		const { log } = scriptedChild({ sessionIds: ["sess-no"] });
+		const events = await collectAs(kiroModel("definitely-not-a-model"), { messages: [user("one")] });
+		const error = events.find((e) => e.type === "error");
+		if (error?.type !== "error") throw new Error("expected error event");
+		expect(error.error.errorMessage).toContain("model definitely-not-a-model is not offered by this kiro session");
+		expect(error.error.errorMessage).toContain("claude-opus-4.8");
+		await settle();
+		expect(log.map((e) => e.method)).toEqual(["initialize", "session/new"]);
+	});
+
+	it("skips the offered-model check when session/new lists no models", async () => {
+		const { log } = scriptedChild({ sessionIds: ["sess-nl"], availableModels: [] });
+		const events = await collectAs(kiroModel("definitely-not-a-model"), { messages: [user("one")] });
+		expect(events.some((e) => e.type === "done")).toBe(true);
+		expect(log.map((e) => e.method)).toEqual(["initialize", "session/new", "session/set_model", "session/prompt"]);
 	});
 
 	it("sends set_model even for auto when session/new does not report the model", async () => {
