@@ -101,7 +101,7 @@ function makeCaptureShim(realPi: ExtensionAPI, sink: CapturedTool[]): ExtensionA
 
 /**
  * Tool-name allowlist: `envOverride` (comma-separated) beats the default set.
- * Backends pass their own env var value (e.g. RPIV_CLAUDE_CODE_BRIDGE_TOOLS).
+ * Backends pass their own env var value (e.g. PI_KIRO_BRIDGE_TOOLS).
  */
 export function allowedToolNames(envOverride: string | undefined): Set<string> {
 	if (envOverride && envOverride.trim().length > 0) {
