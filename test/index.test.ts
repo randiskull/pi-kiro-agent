@@ -203,7 +203,7 @@ describe("provider registration lifecycle", () => {
 		// The pin above is right for a bridge that dies with its session. An ACP
 		// bridge does not: kiro learns its URL once, at session/new, and cannot be
 		// told a new one, so one bridge serves every session on the child
-		// (docs/design/acp-transport.md SS5e.3). With a one-shot capture, session
+		// (docs/design/acp-transport.md §5e.3). With a one-shot capture, session
 		// two and everything after it kept resolving session ONE's ctx -- and kept
 		// resolving it, because the LRU still holds that entry, so the latestCtx
 		// fallback never fired either. resolveSession therefore calls rebindOrigin

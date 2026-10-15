@@ -1,7 +1,8 @@
 # pi-kiro-agent v2 transport: ACP (Agent Client Protocol)
 
-**Status:** DRAFT — architecture spec, not yet scheduled
-**Author:** drafted 2026-07-30, from the GSD M026/M027 integration campaign
+**Status:** implemented behind `PI_KIRO_TRANSPORT=acp`; not the default. Sections 5b onward
+are field evidence from running it, and section 5c demoted ACP to a contingency in favour of
+`chat --output-format stream-json`.
 **Refs:** https://kiro.dev/docs/cli/acp/ · https://agentclientprotocol.com · `kiro-cli acp --help` (2.15.2)
 
 ---
@@ -100,6 +101,8 @@ Probe whether ACP surfaces usage/credits metadata. If yes → map to `usage.cost
 if not → keep `PI_KIRO_CREDIT_USD` with credits unavailable (0), and note it in `/kiro`.
 
 ## 4. Migration plan
+
+Superseded as the roadmap by section 5c, which keeps steps 1-5 valid as an ACP plan only.
 
 1. **Probe phase** (same empiricism as the workflow-MCP build — probes before code):
    P1 initialize/session/new handshake; P2 prompt round-trip + event shapes; P3 `--agent`
@@ -421,7 +424,7 @@ a `⚙ <tool>` thinking marker, full parity with `stream-adapter.ts:404`: pushin
 onto `output.content` emits no event by itself, so previously nothing carried the
 update until the next `agent_message_chunk` happened to arrive.
 
-### 5e.3 Open defect: a session reset hands kiro a new bridge port it will never use
+### 5e.3 Fixed: a session reset handed kiro a new bridge port it would never use
 
 Found while re-running the smoke test with the §5d fix in place. `read`, `glob`,
 `todo` and `Agent` all now work. `steer_subagent` and `get_subagent_result` fail
@@ -456,7 +459,7 @@ what the divergence branch wants when it retires a controller whose tool calls m
 be in flight. Lifetime is not: from kiro's point of view the bridge URL is a
 property of the **child**, fixed when the child first learns it.
 
-Fix (implemented): separate the two. `serveBridgeHttp` takes the child-scoped
+Fix: separate the two. `serveBridgeHttp` takes the child-scoped
 signal for lifetime plus a `getCallSignal: () => AbortSignal` accessor for
 per-call cancellation, symmetric with the `getCtx` callback it already takes and
 resolved **per request** rather than captured, so a reset mid-turn still cancels
@@ -634,8 +637,8 @@ context exhaustion, while the units were in fact doing the work. That is the sam
 false-negative shape as the 2.21 stderr/format regression in §5b, reached by a different route:
 the blocks exist mid-turn and are gone from history.
 
-This is not ACP-only any more. M001/S01/T01 (`48d2ee5`) adopted the same tagging and
-push-site filtering in `stream-adapter.ts`, so after M001 both transports have the property.
+This is not ACP-only any more. `48d2ee5` adopted the same tagging and push-site filtering in
+`stream-adapter.ts`, so both transports now have the property.
 
 ### Receipts
 
@@ -685,10 +688,10 @@ on the `done` message:
 
 The second one is explicit: the final message must carry a block that is **not** live-tagged.
 That is the same requirement GSD's counter has, written as an assertion, and it is
-unsatisfiable together with "pi must not redispatch". M001/S01/T01 turned both tests red, and
+unsatisfiable together with "pi must not redispatch". `48d2ee5` turned both tests red, and
 correctly so.
 
-The belief that let the two coexist on paper is in the comment M001 deleted: the synthesized
+The belief that let the two coexist on paper is in the comment that commit deleted: the synthesized
 blocks are "surfaced with stopReason `stop` -- the host counts/renders these but never
 redispatches them". The first half is true and the second half is false, for the same reason
 §5d gives. It is the chat transport's copy of the mistake §5f found in the bridge docstring:
@@ -729,23 +732,6 @@ test that would expose it is the documented pattern in
 `docs/integrations/gsd-workflow-mcp.md` -- pi with `/model kiro/auto` inside a GSD project,
 driving auto-mode itself.
 
-## 6. Non-goals
-
-- No change to the trust/billing model (kiro-cli owns auth; seat-billed).
-- No change to the tool-mounting design (agent profile + MCP servers).
-- No attempt to expose kiro's *own* built-in tools to pi — direction stays pi→kiro.
-
-## 7. Definition of done
-
-- All six probes green with captured fixtures; parity suite green on both transports.
-- A full GSD milestone slice completes on `PI_KIRO_TRANSPORT=acp` with **zero** salvage
-  events, **zero** synthesized tool calls (all event-sourced), and tool-call counts
-  matching GSD's ledger. **Blocked on pi, see §5g:** the ledger clause and §5d's
-  no-redispatch fix are mutually exclusive with the block types pi has today, so the
-  ledger reads zero and GSD's zero tool-call guard pauses auto-mode. The no-redispatch
-  half ships; this half needs pi to gate dispatch on `stopReason` or honour `endTurn`.
-- Sentinel, salvage heuristic, and list-sessions snapshot-diff code paths deleted.
-
 ## 5h. Chat transport carries the same no-redispatch defect (2026-09-20)
 
 ### The defect
@@ -762,7 +748,7 @@ Identical to §5d. The chat path had the same structural gap as ACP before
 `318e6c5`/`4fae29c`: synthesized blocks with non-LIVE IDs survive
 `stripLivePlaceholders` and reach pi's dispatch logic.
 
-### Fix (M001/S01–S02)
+### Fix
 
 `reconcileToolCalls` now tags every synthesized block with `LIVE_TOOL_ID_PREFIX`
 before pushing. The `done` and `error` push sites build filtered spread copies
@@ -772,3 +758,20 @@ retroactive mutation (§5e.2 applies identically here). `pushThinking` is called
 once per block emitting `⚙ <toolname>` markers, and `trace("chat.toolcall.surfaced",
 { tool, displayOnly: true })` is emitted per block for `PI_KIRO_TRACE` parity
 with the ACP path.
+
+## 6. Non-goals
+
+- No change to the trust/billing model (kiro-cli owns auth; seat-billed).
+- No change to the tool-mounting design (agent profile + MCP servers).
+- No attempt to expose kiro's *own* built-in tools to pi — direction stays pi→kiro.
+
+## 7. Definition of done
+
+- All six probes green with captured fixtures; parity suite green on both transports.
+- A full GSD milestone slice completes on `PI_KIRO_TRANSPORT=acp` with **zero** salvage
+  events, **zero** synthesized tool calls (all event-sourced), and tool-call counts
+  matching GSD's ledger. **Blocked on pi, see §5g:** the ledger clause and §5d's
+  no-redispatch fix are mutually exclusive with the block types pi has today, so the
+  ledger reads zero and GSD's zero tool-call guard pauses auto-mode. The no-redispatch
+  half ships; this half needs pi to gate dispatch on `stopReason` or honour `endTurn`.
+- Sentinel, salvage heuristic, and list-sessions snapshot-diff code paths deleted.
