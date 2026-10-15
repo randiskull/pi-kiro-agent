@@ -4,22 +4,18 @@
  * parseKiroToolUses(body): extract MCP tool invocations from kiro's
  * non-interactive output. Two grammars are accepted because kiro-cli changed
  * format in 2.21: the legacy "Running tool X with the param (from mcp
- * server: Y)" followed by ⋮-prefixed JSON param lines, and the compact
- * "[tool] Running: @Y/X" with no param block (arguments degrade to {}).
+ * server: Y)" followed by ⋮-prefixed JSON param lines, and the
+ * compact "[tool] Running: @Y/X" with no param block (arguments degrade to {}).
  *
  * synthesizeToolCallBlocks(body): map those uses onto pi `ToolCall` content
- * blocks, which is what GSD's snapshotUnitActivity counts for the zero-tool-call
- * guard. stopReason does NOT make them safe: pi's agent loop dispatches on the
- * PRESENCE of toolCall blocks and only skips a message whose stopReason is
- * "error" or "aborted", so a block left on a "stop" message is re-executed.
- * reconcileToolCalls therefore tags every block produced here with
- * LIVE_TOOL_ID_PREFIX and the done/error push sites send a filtered copy (M001,
- * docs/design/acp-transport.md §5h).
+ * blocks, which is what GSD's snapshotUnitActivity counts. stopReason does NOT
+ * make them safe: pi's agent loop dispatches on the PRESENCE of toolCall
+ * blocks, so a block left on a "stop" message is re-executed. Every block
+ * produced here is therefore tagged with LIVE_TOOL_ID_PREFIX and stripped
+ * before pi sees the message (docs/design/acp-transport.md section 5h).
  *
- * Split out of the original workflow-mcp.ts (L3-03): this half is pure
- * output-parsing with no dependency on GSD's install layout or `.mcp.json`.
- * See workflow-mcp-discovery.ts for the sibling half that resolves the
- * gsd-workflow MCP server entry itself.
+ * Resolution of the gsd-workflow MCP server entry itself lives in
+ * workflow-mcp-discovery.ts, which this file does not depend on.
  */
 
 import { createHash } from "node:crypto";
@@ -123,26 +119,20 @@ export function createToolUseStreamParser(): { feed(text: string): Array<Pick<Ki
 
 /**
  * Map parsed tool uses onto pi ToolCall content blocks for the final
- * AssistantMessage. The host counts and renders them (GSD's zero-tool-call guard
- * reads exactly these blocks), but it does NOT treat stopReason "stop" as a
- * do-not-dispatch marker: execution already happened inside kiro via MCP, so the
- * caller must tag these with LIVE_TOOL_ID_PREFIX and strip them from the message
- * pi finally sees, or pi runs every one of them again (M001).
+ * AssistantMessage. The host counts and renders them (GSD's zero-tool-call
+ * guard reads exactly these blocks), but pi does NOT treat stopReason "stop" as
+ * a do-not-dispatch marker: execution already happened inside kiro via MCP, so
+ * the caller must tag these with LIVE_TOOL_ID_PREFIX and strip them from the
+ * message pi finally sees, or pi runs every one of them again.
  *
- * The id must be GLOBALLY unique, not merely unique within one response.
- * GSD derives a workflow idempotency key from it
- * (`pi:gsd_task_complete:<id>`) and rejects a completion whose key already
- * belongs to another canonical operation. A bare positional `kiro-mcp-<index>`
- * restarts at 0 on every response, so the low ordinals are consumed almost
- * immediately and every later `gsd_task_complete` throws
- * "Task completion idempotency identity belongs to a different canonical
- * operation" — the task's work succeeds but can never be recorded. The
- * claude-code provider avoids this by emitting random `tooluse_*` ids.
+ * The id must be GLOBALLY unique, not merely unique within one response. GSD
+ * derives a workflow idempotency key from it (`pi:gsd_task_complete:<id>`) and
+ * rejects a completion whose key belongs to another canonical operation. A bare
+ * positional `kiro-mcp-<index>` restarts at 0 on every response, so later
+ * completions throw and the task's work can never be recorded.
  *
- * The digest of the response body is mixed in so ids stay REPLAY-STABLE:
- * parsing the same body twice yields the same ids (so a genuine replay is
- * still recognized as one), while different bodies — and therefore different
- * sessions — never collide.
+ * The digest of the response body is mixed in so ids stay REPLAY-STABLE: the
+ * same body yields the same ids, different bodies never collide.
  */
 export function synthesizeToolCallBlocks(body: string): ToolCall[] {
 	const bodyDigest = createHash("sha256").update(body).digest("hex").slice(0, 16);

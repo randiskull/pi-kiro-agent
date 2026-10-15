@@ -3,25 +3,14 @@
  *
  * Set PI_KIRO_TRACE to a file path and every prompt sent to kiro and every
  * bridged tool invocation is appended as one JSON object per line. Unset, every
- * function here is a no-op with no filesystem access.
- *
- * This exists because the agent narration in a kiro turn is not a log: it has
- * repeatedly claimed tool results that the raw results contradict. Questions
- * like "was the bridged tool called once or twice, and was the prompt resent"
- * are not answerable from a transcript, only from the wire.
- *
- * Tracing must never break a turn: every write is wrapped and failures are
- * swallowed.
+ * function here is a no-op with no filesystem access. Tracing must never break
+ * a turn: every write is wrapped and failures are swallowed.
  *
  * TREAT THE OUTPUT AS SENSITIVE. The events carry the FULL prompt text sent to
- * kiro and the RAW arguments of every bridged tool call, so a trace holds
- * whatever the user typed, plus any file content or credential that reached the
- * context. Three consequences, handled here and in .gitignore:
- *   - the file is created 0600 and its parent directory 0700, so it is not
- *     world-readable the way a default-mode create would be;
- *   - *.jsonl is gitignored, because scripts/secret-scan.mjs scans git-tracked
- *     files only and so cannot see an untracked trace sitting in the repo;
- *   - prefer a path outside the checkout entirely.
+ * kiro and the RAW arguments of every bridged tool call. The file is created
+ * 0600 inside a 0700 parent; *.jsonl is gitignored, because
+ * scripts/secret-scan.mjs scans git-tracked files only and cannot see an
+ * untracked trace in the repo; prefer a path outside the checkout entirely.
  */
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";

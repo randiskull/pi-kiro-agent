@@ -1,49 +1,37 @@
 /**
- * ACP transport (Option B): Pi turn → kiro-cli acp (NDJSON JSON-RPC) → Pi AssistantMessageEventStream.
+ * ACP transport: Pi turn -> kiro-cli acp (NDJSON JSON-RPC) -> Pi
+ * AssistantMessageEventStream. Enable with PI_KIRO_TRANSPORT=acp; the default
+ * chat transport is untouched.
  *
- * Key design decisions:
+ * 1. Persistent child: one `kiro-cli acp` per (cwd, conversationKey), kept
+ *    alive across turns, idle-timeout after 10 min. conversationKey is a hash
+ *    of the system prompt, so the parent conversation and each subagent get
+ *    their OWN child even in one cwd -- on a shared child, a subagent turn's
+ *    abort rejects the parent's in-flight turn. The registry is bounded by
+ *    PI_KIRO_MAX_CHILDREN (default 32) with LRU eviction of idle children;
+ *    PI_KIRO_CHILD_KEY=cwd forces the old cwd-only keying.
+ * 2. Tool mounting: both bridge (HTTP) and gsd-workflow (stdio) are injected
+ *    directly in session/new.mcpServers, with no agent profile file. The bridge
+ *    is per child: getBridge() is handed `entry.sessionAbort.signal`, so it
+ *    outlives a turn exactly as long as the ACP session it is mounted into.
+ * 3. Session startup gate: wait for every server_initialized event before
+ *    sending session/prompt. kiro initializes servers sequentially and fires
+ *    commands/available once per server init.
+ * 4. Divergence: a prefix-hash mismatch means session/new on the same child,
+ *    resending the full context.
  *
- * 1. Persistent child: one `kiro-cli acp` per (cwd, conversationKey) pair, kept
- *    alive across turns, idle-timeout after 10 min. conversationKey is a hash of
- *    the system prompt, so the parent conversation and each subagent (which carry
- *    different system prompts) get their OWN child even in one cwd. Keying on cwd
- *    alone collapsed them onto a shared child, where a subagent turn's abort
- *    rejected the parent's in-flight turn (`acp child terminated: aborted`). The
- *    registry is bounded by PI_KIRO_MAX_CHILDREN (default 32) with LRU eviction of
- *    idle children. Set PI_KIRO_CHILD_KEY=cwd to force the old cwd-only keying
- *    (rollback lever). Session identity via ACP sessionId (not --list-sessions).
- *
- * 2. Option B tool mounting (gate: probes/p3-gate-findings.md — PASSED):
- *    - Both bridge (HTTP) and gsd-workflow (stdio) injected directly in session/new.mcpServers
- *    - No agent profile file; writeAgentProfile() untouched (chat transport unchanged)
- *    - Per-session bridge: getBridge() called once at session creation, lives until session end.
- *      It is handed `entry.sessionAbort.signal` — NOT the caller's per-turn signal — so the
- *      bridge outlives a turn exactly as long as the ACP session it is mounted into does.
- *    - Bridge closed on session end (divergence reset / idle-timeout / child crash)
- *    - Discovery code (discoverWorkflowMcpServers, getBridge) unchanged per Q3 decision
- *
- * 3. Session startup gate: must wait for all server_initialized events before sending
- *    session/prompt (gate confirmed by P3-gate probe: servers initialize sequentially,
- *    commands/available fires once per server init).
- *
- * 4. Divergence handling: prefix hash mismatch → session/new on same child (full context resend).
- *    Bridge for the new session is also fresh: close old bridge, start new one.
- *
- * Protocol confirmed by probe campaign against kiro-cli 2.16.0 (probes/):
- *  - NDJSON (one JSON object per newline)
- *  - protocolVersion: 1 (integer)
+ * Protocol facts this depends on (kiro-cli 2.16.0 and later):
+ *  - NDJSON, one JSON object per newline; protocolVersion 1 (integer)
  *  - session/new: { cwd, mcpServers: [array, not map] }
- *  - session/prompt: { sessionId, prompt: [array] } — 'prompt' NOT 'content'
+ *  - session/prompt: { sessionId, prompt: [array] } -- 'prompt', NOT 'content'
  *  - session/update: streaming updates (sessionUpdate discriminator)
- *  - session/cancel: -32601 (not implemented) → abort = SIGTERM
- *  - Credits: _kiro.dev/metadata.meteringUsage[].value (sum all, on final notification)
- *  - _kiro.dev/mcp/server_initialized: fires once per server mount (can fire multiple times)
+ *  - session/cancel: -32601, so an abort is a SIGTERM
+ *  - credits: _kiro.dev/metadata.meteringUsage[].value, summed on the final
+ *    notification
+ *  - _kiro.dev/mcp/server_initialized fires once per server mount
  *
- * Deleted vs chat transport: sentinel, exit-salvage, --list-sessions snapshot-diff.
- * Enable with PI_KIRO_TRANSPORT=acp. Default (chat) transport untouched.
- *
- * Compliance: all model traffic runs inside the official kiro-cli under the user's own
- * login; this module never touches credentials.
+ * Compliance: all model traffic runs inside the official kiro-cli under the
+ * user's own login; this module never touches credentials.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -86,30 +74,22 @@ import {
 /**
  * Resolve which ACP session this turn runs against, mutating `acpEntry` as
  * needed: a brand-new child (no acpSessionId yet) gets its first session; an
- * existing session whose message-prefix diverged (Pi compacted/edited
- * history) is dropped and replaced with a fresh one on the same child; a
- * session that still matches the prefix resumes as-is. Scoped extraction of
- * streamViaAcp's 3-branch session setup [L1-05] -- the notification-handler
- * wiring that follows stays inline in the caller, as specified.
+ * existing session whose message-prefix diverged (Pi compacted/edited history)
+ * is dropped and replaced with a fresh one on the same child; a session that
+ * still matches the prefix resumes as-is.
  */
 /**
  * Mount this child's bridge once, then keep it pointed at the CURRENT session.
  *
- * Two things are deliberately split here, and they used to be conflated:
- *
- * - LIFETIME is per child. childAbort.signal owns the HTTP server, so the URL
- *   kiro learned at session/new stays valid for every successor session (§5e.3).
- * - The SESSION a bridged tool runs against is per session. index.ts captures
- *   the origin session id when the bridge is mounted, which was exactly right
- *   while a bridge died with its session -- but a child-scoped bridge outlives
- *   the session that mounted it, so that capture went stale and every later
- *   bridged tool call resolved a retired session's ExtensionContext (the LRU
- *   still holds it, so the latestCtx fallback never fired either). rebindOrigin
- *   re-points it at each session start, which is why this is called from both
- *   session-creating branches of resolveSession and not just the first.
- *
- * Called at session start, where before_provider_request has already run for
- * this turn -- the same guarantee the original capture relied on.
+ * LIFETIME is per child: childAbort.signal owns the HTTP server, so the URL
+ * kiro learned at session/new stays valid for every successor session (section
+ * 5e.3). The SESSION a bridged tool runs against is per session, so
+ * rebindOrigin re-points it at every session start -- a child-scoped bridge
+ * outlives the session that mounted it, and without the rebind every later
+ * bridged tool call resolves a retired session's ExtensionContext (the LRU
+ * still holds it, so the latestCtx fallback never fires either). Called from
+ * both session-creating branches of resolveSession, where
+ * before_provider_request has already run for the turn.
  */
 async function ensureChildBridge(
 	deps: AcpDeps,
@@ -121,14 +101,12 @@ async function ensureChildBridge(
 	const handle = await acpEntry.bridgePromise;
 	// teardownChild is SYNCHRONOUS and may have run start-to-finish while this
 	// function was suspended at the await above -- a real window, because
-	// getBridge does I/O to mount the HTTP server on first call. Teardown sets
-	// alive=false, aborts childAbort (which closes the server through the
-	// listener in serveBridgeHttp) and clears both fields. Assigning the resolved
-	// handle back without re-checking would resurrect a CLOSED bridge onto a dead
-	// child, and the caller advertises `bridge.urlWithToken` in
-	// session/new.mcpServers -- so kiro would be handed a port nothing is
-	// listening on, and would fail every bridged tool call for that session with
-	// an opaque "error sending request for url". Leave the fields cleared.
+	// getBridge does I/O to mount the HTTP server on first call. It sets
+	// alive=false, aborts childAbort (closing the server) and clears both
+	// fields. Assigning the resolved handle back without re-checking would
+	// resurrect a CLOSED bridge onto a dead child, and the caller advertises
+	// `bridge.urlWithToken` in session/new.mcpServers -- so kiro would be handed
+	// a port nothing is listening on. Leave the fields cleared.
 	if (!acpEntry.alive) {
 		void handle?.close("child-torn-down-during-mount").catch(() => undefined);
 		return undefined;
@@ -146,22 +124,18 @@ async function resolveSession(
 	workflowServers: ReturnType<typeof discoverWorkflowMcpServers>,
 ): Promise<string> {
 	if (!acpEntry.acpSessionId) {
-		// New child: no session yet -- create one now.
-		// A previous startSession attempt may have failed the MCP startup gate
-		// after mounting a bridge (its session never went ready, so acpSessionId
-		// was cleared). Nothing else owns that handle now that bridge lifetime is
-		// session-scoped, so close it here or its HTTP server leaks for the life
-		// of the child.
-		// The bridge is CHILD-scoped, not session-scoped: kiro learns its URL once,
-		// at session/new, and has no way to learn a new one, so a bridge that dies
-		// with a session leaves the child calling a closed port (§5e.3). It is
-		// therefore mounted once, on the first session, and reused by every
-		// successor session on this child -- including the divergence branch below.
-		//
-		// The two signals are deliberately different. childAbort.signal is the
-		// server's lifetime; the accessor returns the CURRENT sessionAbort.signal
-		// for per-call cancellation, read per request rather than captured, so a
-		// session reset still cancels the calls the retired session had in flight.
+		// New child: no session yet -- create one now. A previous startSession
+		// attempt may have failed the MCP startup gate after mounting a bridge;
+		// nothing else owns that handle, so close it here or its HTTP server
+		// leaks for the life of the child.
+		// The bridge is CHILD-scoped: kiro learns its URL once, at session/new,
+		// and has no way to learn a new one, so one bridge is mounted on the
+		// first session and reused by every successor, including the divergence
+		// branch below (section 5e.3).
+		// The two signals differ: childAbort.signal is the server's lifetime,
+		// while the accessor returns the CURRENT sessionAbort.signal for
+		// per-call cancellation, read per request rather than captured, so a
+		// session reset still cancels the retired session's in-flight calls.
 		await ensureChildBridge(deps, acpEntry);
 		const mcpServers = buildMcpServersConfig(acpEntry.bridge, workflowServers);
 		await startSession(acpEntry, mcpServers);
@@ -178,12 +152,10 @@ async function resolveSession(
 		// `ready`, so bridged tool calls may be in flight and must be cancelled.
 		acpEntry.sessionAbort.abort();
 		acpEntry.sessionAbort = new AbortController();
-		// The bridge's SERVER is NOT touched. It rides childAbort and reads the
+		// The bridge's SERVER is NOT touched: it rides childAbort and reads the
 		// session signal through an accessor, so the successor session keeps the
-		// same URL -- which is the only URL kiro will ever call. Closing and
-		// re-mounting here is what stranded it on a dead ephemeral port (§5e.3).
-		// Its ctx origin IS re-pointed at the successor session; see
-		// ensureChildBridge.
+		// same URL -- the only URL kiro will ever call (section 5e.3). Its ctx
+		// origin IS re-pointed at the successor session; see ensureChildBridge.
 		await ensureChildBridge(deps, acpEntry);
 		const mcpServers = buildMcpServersConfig(acpEntry.bridge, workflowServers);
 		await startSession(acpEntry, mcpServers);
@@ -294,10 +266,10 @@ interface AcpChild {
 	sessionModelId: string | undefined;
 	/**
 	 * The model ids kiro says the CURRENT session offers:
-	 * `models.availableModels[].modelId` from session/new. kiro-cli 2.x
-	 * ACCEPTS ANY id on session/set_model (measured 2026-10-07: a bogus id
-	 * returns OK), so this list is the only check that pi's model exists.
-	 * Undefined or empty = unknown (an older kiro-cli), which skips the check.
+	 * `models.availableModels[].modelId` from session/new. kiro-cli 2.x accepts
+	 * ANY id on session/set_model (a bogus one returns OK), so this list is the
+	 * only check that pi's model exists. Undefined or empty = unknown (an older
+	 * kiro-cli), which skips the check.
 	 */
 	availableModelIds: ReadonlySet<string> | undefined;
 	/**
@@ -308,11 +280,10 @@ interface AcpChild {
 	bridge: ChildScopedHttpBridgeHandle | undefined;
 	/**
 	 * The in-flight mount, cached so concurrent turns on one child cannot each
-	 * mount a server. `bridge ??= await getBridge(...)` looked idempotent but is
-	 * not: the check and the assignment sit either side of an await, so two turns
-	 * both saw undefined, both mounted, and the loser's HTTP server leaked until
-	 * childAbort. Caching the PROMISE closes that window because `??=` on it
-	 * completes synchronously.
+	 * mount a server. `bridge ??= await getBridge(...)` is not idempotent: the
+	 * check and the assignment sit either side of an await, so both turns mount
+	 * and the loser's HTTP server leaks until childAbort. Caching the PROMISE
+	 * closes that window, because `??=` on it completes synchronously.
 	 */
 	bridgePromise: Promise<ChildScopedHttpBridgeHandle | undefined> | undefined;
 	/** Pending request map: id → resolver. */
@@ -356,26 +327,22 @@ const childRegistry = new Map<string, AcpChild>();
  * conversationKey distinguishes conversations that share a cwd: the parent and
  * each subagent carry different system prompts, so a hash of the system prompt
  * separates their kiro children. The input is the LEADING system prompt
- * (initialSystemPrompt): on pi >= 0.86 the prompt lives in transcript system
- * messages and context.systemPrompt is always undefined, which hashed every
- * conversation in a cwd to one key. The leading message is used rather than
- * the full current prompt because pi appends mid-conversation updates as later
- * system messages; keying on those would respawn the child on every update.
+ * (initialSystemPrompt), not the full current prompt: pi appends
+ * mid-conversation updates as later system messages, and keying on those would
+ * respawn the child on every update.
  */
 function conversationKey(systemPrompt: string | undefined): string {
 	return createHash("sha256").update(systemPrompt ?? "").digest("hex").slice(0, 16);
 }
 
 /**
- * Registry key: one child per (cwd, conversationKey). NUL-joined — NUL cannot
+ * Registry key: one child per (cwd, conversationKey). NUL-joined -- NUL cannot
  * occur in a hex hash or a filesystem path, so the two fields cannot bleed
  * together into a colliding key.
  *
- * Escape hatch: PI_KIRO_CHILD_KEY=cwd reverts to keying on cwd alone (the
- * pre-per-conversation behavior). That re-collapses the parent and its
- * subagents onto one shared child — reintroducing the subagent-abort collision
- * this keying fixes — so it exists only as a rollback lever if per-conversation
- * keying ever misbehaves in the field.
+ * PI_KIRO_CHILD_KEY=cwd reverts to keying on cwd alone, a rollback lever only:
+ * it re-collapses the parent and its subagents onto one shared child, which
+ * reintroduces the subagent-abort collision this keying removes.
  */
 function registryKey(cwd: string, systemPrompt: string | undefined): string {
 	if (process.env.PI_KIRO_CHILD_KEY === "cwd") return cwd;
@@ -406,28 +373,25 @@ interface AcpChildProbe {
 	acpSessionId: string | undefined;
 	ready: boolean;
 	/**
-	 * Exposed so tests can tell the new-session branch of resolveSession from the
-	 * divergence branch. The bridge no longer distinguishes them (it is
-	 * child-scoped and both reuse it, see §5e.3), so this controller's identity --
-	 * reused vs aborted-and-replaced -- is the discriminator.
+	 * Exposed so tests can tell the new-session branch of resolveSession from
+	 * the divergence branch. The child-scoped bridge is reused by both, so this
+	 * controller's identity -- reused vs aborted-and-replaced -- is the
+	 * discriminator.
 	 */
 	sessionAbort: AbortController;
 }
 
 /**
- * Test hook: return the raw child registry Map for direct state inspection.
- * Allows tests to assert on listeners Map size (leak detection) and on
- * post-failure session state without reaching into private module internals
- * through other means.
+ * Test hook: the raw child registry Map, for asserting on listener-map size
+ * (leak detection) and post-failure session state.
  */
 export function _getAcpChildRegistry(): Map<string, AcpChildProbe> {
 	return childRegistry as unknown as Map<string, AcpChildProbe>;
 }
 
 /**
- * Test hook: compute the exact composite registry key for a (cwd, systemPrompt)
- * pair, so tests can look up / assert on the per-conversation child directly
- * instead of guessing the key (a bare-cwd `.get()` returns undefined now).
+ * Test hook: the exact composite registry key for a (cwd, systemPrompt) pair,
+ * so tests can look up the per-conversation child instead of guessing the key.
  */
 export function _acpRegistryKey(cwd: string, systemPrompt: string | undefined): string {
 	return registryKey(cwd, systemPrompt);
@@ -593,19 +557,17 @@ type RefCountable = { ref?: () => void; unref?: () => void };
 /**
  * Event-loop keepalive for the persistent child.
  *
- * The child is spawned `detached` with piped stdio. Node counts the
+ * The child is spawned `detached` with piped stdio, and node counts the
  * ChildProcess handle AND each of the three pipes as event-loop references, so
- * a live-but-idle child keeps the HOST process alive: `pi -p` printed its answer
- * and then sat there until the idle timeout killed the child (~10 min at the
- * default PI_KIRO_IDLE_TIMEOUT_MS). Measured: unref'ing the child alone, or the
- * pipes alone, changes nothing — the remaining handles still hold the loop. All
- * four have to go.
+ * a live-but-idle child keeps the HOST process alive until the idle timeout
+ * kills it. All four have to be unref'd; unref'ing the child alone, or the
+ * pipes alone, changes nothing.
  *
  * A blanket unref would be worse than the bug: a turn is an awaited promise
- * resolved from the (now unreferenced) stdout pipe, and a pending promise is not
- * an event-loop reference, so node would exit MID-TURN. Keepalive therefore
- * tracks `pending` — referenced while any request is in flight, unreferenced the
- * moment the last one settles. Re-referencing is verified to restore keepalive.
+ * resolved from the (now unreferenced) stdout pipe, and a pending promise is
+ * not an event-loop reference, so node would exit MID-TURN. Keepalive
+ * therefore tracks `pending`: referenced while any request is in flight,
+ * unreferenced the moment the last one settles.
  */
 function setChildKeepalive(entry: AcpChild, active: boolean): void {
 	const { child } = entry;
@@ -633,12 +595,11 @@ function sendRaw(entry: AcpChild, msg: object): void {
 function request(entry: AcpChild, method: string, params: object): Promise<AcpMessage> {
 	entry.lastUsed = Date.now();
 	// A request issued AFTER teardown could never be answered: sendRaw drops the
-	// write on a dead child, and teardownChild only settles the requests that were
-	// already pending, so the promise sat unresolved forever with nothing bounding
-	// the await. Found by the mount-vs-teardown race below: an abort landing during
-	// the first bridge mount left resolveSession -> startSession hung on session/new
-	// instead of failing the turn. Answer with the same terminated-child error shape
-	// teardownChild uses, so every call site handles it on the path it already has.
+	// write on a dead child, and teardownChild only settles the requests already
+	// pending, so the promise would sit unresolved forever with nothing bounding
+	// the await (an abort landing during the first bridge mount left
+	// resolveSession hung on session/new instead of failing the turn). Answer
+	// with the same terminated-child error shape teardownChild uses.
 	if (!entry.alive) {
 		return Promise.resolve({
 			jsonrpc: "2.0",
@@ -667,15 +628,14 @@ function onNotification(
 	return () => entry.listeners.get(method)?.delete(handler);
 }
 
-/** Client methods gated by capabilities pi-kiro does not advertise (G9). */
+/** Client methods gated by capabilities pi-kiro does not advertise. */
 export function isUnadvertisedClientMethod(method: string): boolean {
 	return method.startsWith("fs/") || method.startsWith("terminal/");
 }
 
 /**
- * G9: the initialize params. Advertise no client fs/terminal capabilities
- * (kiro runs its own tools; pi-kiro never served those methods) and report
- * the real plugin name/version instead of a hardcoded placeholder.
+ * The initialize params. Advertise no client fs/terminal capabilities (kiro
+ * runs its own tools) and report the real plugin name/version.
  */
 export function buildInitializeParams(): Record<string, unknown> {
 	return {
@@ -705,7 +665,7 @@ function dispatchMessage(entry: AcpChild, msg: AcpMessage): void {
 	if (msg.method) {
 		if (msg.id !== undefined) {
 			if (isUnadvertisedClientMethod(msg.method)) {
-				// G9: initialize advertises NO fs/terminal capability, so the agent
+				// initialize advertises NO fs/terminal capability, so the agent
 				// must not call these. If it does, say so instead of answering {}
 				// (an empty result reads as an empty file / a silent no-op).
 				sendRaw(entry, {
@@ -753,10 +713,10 @@ function buildMcpServersConfig(
 // ─── Session startup ──────────────────────────────────────────────────────────
 
 /**
- * Start a new ACP session on `entry`, mounting bridge + workflow servers via session/new.
- *
- * Waits for all server_initialized events (gate from P3 probe: kiro fires one per server,
- * and prompts sent before all are ready get "Prompt already in progress" or are ignored).
+ * Start a new ACP session on `entry`, mounting bridge + workflow servers via
+ * session/new. Waits for every server_initialized event: kiro fires one per
+ * server, and a prompt sent before all are ready gets "Prompt already in
+ * progress" or is ignored.
  */
 async function startSession(
 	entry: AcpChild,
@@ -813,11 +773,10 @@ async function startSession(
 		});
 	});
 
-	// Both notification listeners live on the long-lived child. Remove them on
-	// EVERY exit path — the startup-timeout rejection and the zero-server path
-	// (expectedServers.size === 0, so server_initialized never fires) both used
-	// to leave `off`/`offCmd` attached, accumulating on the child across turns.
-	// Both are Set.delete closures, so double-invocation is safe.
+	// Both notification listeners live on the long-lived child, so remove them
+	// on EVERY exit path -- including the startup-timeout rejection and the
+	// zero-server path, where server_initialized never fires. Both are
+	// Set.delete closures, so double-invocation is safe.
 	try {
 		const sessionResp = await request(entry, "session/new", {
 			cwd: entry.cwd,
@@ -876,18 +835,18 @@ async function startSession(
 
 /**
  * Make the ACP session run `modelId` before a prompt is sent. kiro v2 ignores
- * the `model` field on session/prompt (measured 2026-10-01, kiro-cli 2.26.1:
- * every turn ran the user's kiro default whatever pi selected), and
- * session/set_model is the call that actually switches it. Sent only when the
- * session's known model differs, so a resumed turn on an unchanged model costs
- * no extra round trip. A failure fails the turn: running on a model pi did not
- * select, and reporting the one it did, is the bug this exists to remove.
+ * the `model` field on session/prompt (every turn runs the user's kiro default
+ * whatever pi selected); session/set_model is the call that actually switches
+ * it. Sent only when the session's known model differs, so a resumed turn on
+ * an unchanged model costs no extra round trip. A failure fails the turn:
+ * running on a model pi did not select, and reporting the one it did, is the
+ * bug this exists to remove.
  *
- * kiro-cli ACCEPTS ANY id on set_model (a bogus one returns OK), so an OK
- * reply proves nothing. When the session listed its models, an id outside
- * that list fails the turn here, before set_model and before any prompt.
- * "auto" is exempt: it is kiro's own router, the default, and a session that
- * does not list it keeps the pre-check behavior (and the -32601 tolerance).
+ * kiro-cli accepts ANY id on set_model, so an OK reply proves nothing. When the
+ * session listed its models, an id outside that list fails the turn here,
+ * before set_model and before any prompt. "auto" is exempt: it is kiro's own
+ * router and the default, and a session that does not list it keeps the
+ * pre-check behavior (and the -32601 tolerance).
  */
 async function ensureSessionModel(entry: AcpChild, sessionId: string, modelId: string): Promise<void> {
 	if (entry.sessionModelId === modelId) return;
@@ -1082,7 +1041,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				const cwd = process.cwd();
 				// One child per (cwd, conversationKey): the parent and each subagent
 				// carry different system prompts, so they resolve to different children
-				// and a subagent's abort can no longer reject the parent's pending turn.
+				// and a subagent's abort cannot reject the parent's pending turn.
 				const key = registryKey(cwd, initialSystemPrompt(context));
 				const workflowServers = discoverWorkflowMcpServers(cwd);
 				const turnSignal = options?.signal ?? new AbortController().signal;
@@ -1142,20 +1101,16 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 							}
 							break;
 						case "tool_call": {
-							// DISPLAY ONLY. Under ACP, kiro has already EXECUTED this tool by the
-							// time it notifies us: bridged tools ran over the MCP bridge, native
-							// ones (shell, read, glob) ran inside kiro. pi, however, dispatches
-							// every toolCall block it finds on an assistant message — it keys off
-							// presence, not stopReason (pi agent-loop.ts, executeToolCalls). So a
-							// bare block here made pi run the call a SECOND time: a bridged
-							// ask_user_question raised a second questionnaire card that never
-							// touched the bridge (so no single-flight guard could see it), while a
-							// native tool pi does not register failed with "Tool shell not found"
-							// — an error result that then went back to kiro as its next prompt,
-							// which kiro read as a stray turn with no instruction and restarted.
-							// Tagging with LIVE_TOOL_ID_PREFIX keeps the mid-turn progress display
-							// (pushed on `partial`) while stripLivePlaceholders removes the block
-							// from the final message, so pi never dispatches it.
+							// DISPLAY ONLY. Under ACP kiro has already EXECUTED this tool by
+							// the time it notifies us, but pi dispatches every toolCall block
+							// it finds on an assistant message -- it keys off presence, not
+							// stopReason. A bare block here therefore ran the call a SECOND
+							// time: a bridged ask_user_question raised a second questionnaire
+							// card that never touched the bridge, and a native tool pi does
+							// not register failed with "Tool shell not found", whose error
+							// result went back to kiro as its next prompt. Tagging with
+							// LIVE_TOOL_ID_PREFIX keeps the mid-turn progress display while
+							// stripLivePlaceholders removes the block from the final message.
 							const kiroToolName =
 								u._meta?.kiro?.toolName ?? u.title?.replace(/^Running:\s*@[^/]*\//, "") ?? "unknown";
 							// The real kiro id is kept in the suffix: the prefix is what marks the
@@ -1286,13 +1241,12 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				}
 
 				resetIdleTimer(acpEntry);
-				// End-of-turn reconciliation, mirroring the chat transport: pi must not
-				// see the display-only progress blocks, or it re-dispatches work kiro
-				// already did. Done as a filtered COPY, not an in-place strip of
+				// End-of-turn reconciliation, mirroring the chat transport: pi must
+				// not see the display-only progress blocks, or it re-dispatches work
+				// kiro already did. Done as a filtered COPY, not an in-place strip of
 				// output.content: every partial event carries `partial: output` BY
 				// REFERENCE, so mutating it retroactively empties the mid-turn display
-				// for any consumer that reads the partial after the turn ends -- which,
-				// with an async generator, is every consumer the producer outruns.
+				// for any consumer that reads the partial after the turn ends.
 				const finalMessage = {
 					...output,
 					content: stripLivePlaceholders(output.content),
@@ -1307,14 +1261,11 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				if (/profileArn is required/i.test(output.errorMessage) && !output.errorMessage.includes("kiro-cli profile")) {
 					output.errorMessage += " — run `kiro-cli profile` to select a profile for this IdC seat.";
 				}
-				// Same reconciliation as the success path, and for the same reason a
-				// copy rather than a strip: a turn that failed mid-flight can still
-				// have surfaced progress blocks. Defence in depth rather than a live
-				// bug -- pi's agent loop returns on stopReason "error"/"aborted"
-				// BEFORE it filters for toolCall blocks, so it does not dispatch an
-				// errored message today. The strip stays because the guarantee we
-				// depend on is "no display-only block ever leaves this transport",
-				// not "the current consumer happens to ignore them".
+				// Same reconciliation as the success path, and a copy for the same
+				// reason. Defence in depth rather than a live bug: pi's agent loop
+				// returns on stopReason "error"/"aborted" before it filters for
+				// toolCall blocks. The guarantee this keeps is "no display-only block
+				// ever leaves this transport", not "the current consumer ignores them".
 				stream.push({
 					type: "error",
 					reason: output.stopReason as "error" | "aborted",

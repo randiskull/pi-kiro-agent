@@ -87,8 +87,7 @@ const NOOP_METHODS = new Set([
 	"unregisterMcpServer",
 	"registerVirtualModel",
 	"unregisterVirtualModel",
-	// Host mutators the original list missed (present since <= 0.85.1); found
-	// by deriving the must-no-op set from pi's ExtensionAPI type in the tests.
+	// Host mutators present since <= 0.85.1.
 	"registerMarkdownTransformer",
 	"setLabel",
 	"setSessionName",
@@ -151,12 +150,10 @@ export function manifestExtensionEntries(manifest: unknown): string[] {
 
 /**
  * A manifest entry is importable only when it resolves INSIDE the package's own
- * install directory. `manifestExtensionEntries` returns whatever strings the
- * manifest lists, so a corrupt (or hostile) user-scope `package.json` naming
- * `../../elsewhere.ts` would otherwise be resolved and imported from outside the
- * install tree. Exploitation already requires a compromised package the user
- * installed themselves, which is why this is defence in depth rather than the
- * primary control (that is `isBridgeablePackage`).
+ * install directory: `manifestExtensionEntries` returns whatever strings the
+ * manifest lists, so a corrupt or hostile user-scope `package.json` naming
+ * `../../elsewhere.ts` would otherwise be imported from outside the install
+ * tree. Defence in depth; the primary control is `isBridgeablePackage`.
  *
  * Compared against `base + sep`, never a bare prefix: `/pkgs/a-extra` starts
  * with `/pkgs/a` but is a different directory.
@@ -240,25 +237,22 @@ async function importBridgeModules(source: string): Promise<ExtensionModule[]> {
 let capturePromise: Promise<CapturedTool[]> | undefined;
 
 /**
- * Capture bridgeable tool definitions from sibling extensions. The raw capture is
- * cached for the process lifetime; the allowlist filter applies per call so
+ * Capture bridgeable tool definitions from sibling extensions. The raw capture
+ * is cached for the process lifetime; the allowlist filter applies per call so
  * backends can differ.
  *
- * The captured definitions are closures over module-level state belonging to a
- * SECOND instance of each package -- NOT the live instance pi is running. pi's
- * extension loader creates jiti with `moduleCache: false`
- * (coding-agent/src/core/extensions/loader.ts), so an import here always
- * re-evaluates the entry file into a fresh module graph. There is no specifier
- * that would reach pi's own instance, and pi exposes no way to invoke a
- * registered tool by name, so this is structural rather than a choice.
+ * The captured definitions close over module-level state belonging to a SECOND
+ * instance of each package, NOT the live instance pi is running: pi's extension
+ * loader creates jiti with `moduleCache: false`, so an import here always
+ * re-evaluates the entry file into a fresh module graph, and pi exposes no way
+ * to invoke a registered tool by name.
  *
- * Consequence, and the reason this is spelled out: a bridged tool only behaves
- * correctly if it is self-contained or keys its cross-instance state globally. A
- * tool relying on module-level state that pi's instance populates -- from a slash
- * command, or a lifecycle handler the capture never receives -- reads a cold copy,
- * and the divergence is silent because each instance stays internally consistent.
- * See docs/design/acp-transport.md section 5f for the two cases found in the field
- * and the fix pattern (`globalThis[Symbol.for(...)]`).
+ * Consequence: a bridged tool only behaves correctly if it is self-contained or
+ * keys its cross-instance state globally. A tool relying on module-level state
+ * that pi's instance populates reads a cold copy, and the divergence is silent
+ * because each instance stays internally consistent. See
+ * docs/design/acp-transport.md section 5f for the fix pattern
+ * (`globalThis[Symbol.for(...)]`).
  */
 export async function captureBridgeTools(realPi: ExtensionAPI, envOverride?: string): Promise<CapturedTool[]> {
 	capturePromise ??= (async () => {
@@ -294,13 +288,10 @@ const warnedMissingTools = new Set<string>();
 
 /**
  * Warn at MOUNT time about a requested tool that no loaded extension provides.
- *
- * Without this the failure is deferred and opaque: the tool is simply absent from
- * the bridge, kiro never learns it exists, and the only symptom is the delegated
- * model calling something else or (for a tool pi does not register either) a bare
- * `Tool <name> not found` arriving from pi's own dispatcher with no hint that the
- * bridge was the missing link. Naming it here points at the real cause -- usually
- * an extension that failed to load, or a typo in PI_KIRO_BRIDGE_TOOLS.
+ * Otherwise the failure is deferred and opaque: the tool is simply absent from
+ * the bridge, kiro never learns it exists, and the only symptom is a bare
+ * `Tool <name> not found` from pi's own dispatcher. The usual cause is an
+ * extension that failed to load, or a typo in PI_KIRO_BRIDGE_TOOLS.
  *
  * Advisory only. A partial bridge is still useful, so this never throws.
  */
@@ -358,13 +349,10 @@ function toMcpContent(content: Array<Record<string, unknown>>): Array<Record<str
 let callCounter = 0;
 
 /**
- * Tools that block on a human answering. Measured on the wire: kiro's MCP HTTP
- * client abandons a bridged call at about 126 seconds and reports a transport
- * error, and nothing here cancelled the queued question -- so kiro's retry
- * stacked ANOTHER question on the same user. One @pi/ask_user_question was
- * re-issued at 02:32:44, 02:34:50 and 02:37:07, and all three resolved to a
- * real answer hours later. Any question a human thought about for longer than
- * that window was asked again, once per window.
+ * Tools that block on a human answering. kiro's MCP HTTP client abandons a
+ * bridged call at about 126 seconds and reports a transport error, then
+ * retries -- so without a guard here, any question a human thought about for
+ * longer than that window was asked again, once per window.
  */
 const SINGLE_FLIGHT_TOOLS = new Set(["ask_user_question"]);
 
@@ -382,14 +370,12 @@ const inFlightSingleFlight = new Map<string, InFlightEntry>();
 /**
  * How long a call whose caller has left keeps blocking its successors.
  *
- * The block itself is correct: the pi-side question is still on screen, so
- * admitting a second call would stack a second overlay on the same user. But
- * the slot is released in a finally, and ask_user_question cannot be cancelled
- * (its execute ignores the signal it is handed), so the finally does not run
- * until the user answers. A user who never answers would leave the tool
- * refusing for the rest of the process. Cap the block instead of trusting the
- * tool to unwind: past the grace window the old overlay is treated as
- * abandoned and a fresh question is allowed through.
+ * The block itself is correct: the pi-side question is still on screen, so a
+ * second call would stack a second overlay on the same user. But the slot is
+ * released in a finally, and ask_user_question ignores the signal it is handed,
+ * so the finally does not run until the user answers -- and a user who never
+ * answers would leave the tool refusing for the rest of the process. Past the
+ * grace window the old overlay is treated as abandoned.
  */
 const DEFAULT_ORPHAN_GRACE_MS = 5 * 60_000;
 let orphanGraceMs = DEFAULT_ORPHAN_GRACE_MS;
@@ -399,17 +385,16 @@ let orphanGraceMs = DEFAULT_ORPHAN_GRACE_MS;
  * rather than from an abort.
  *
  * The grace window above keys off abortedAt, which onAbort only stamps when an
- * abort actually reaches us. A caller that abandons a call WITHOUT aborting --
- * a reset connection, a client that simply stops reading, an SDK path that does
- * not surface cancellation -- leaves abortedAt undefined forever, and since
- * ask_user_question also ignores the signal it is handed, the finally that
- * would free the slot never runs either. The slot was then unreleasable for the
- * life of the process: every later ask_user_question from every child refused.
+ * abort actually reaches us. A caller that abandons a call WITHOUT aborting (a
+ * reset connection, a client that stops reading, an SDK path that does not
+ * surface cancellation) leaves abortedAt undefined forever, and since
+ * ask_user_question also ignores its signal the finally never frees the slot
+ * either: every later ask_user_question from every child is refused for the
+ * life of the process.
  *
- * Measured from startedAt so it bounds that case without shortening the abort
- * case, which stays governed by the grace window: kiro abandons a bridged call
- * at about 120s, so the longest legitimate hold is that plus the grace window,
- * comfortably inside this.
+ * Measuring from startedAt bounds that case without shortening the abort case:
+ * kiro abandons a bridged call at about 120s, so the longest legitimate hold is
+ * that plus the grace window, comfortably inside this.
  */
 const DEFAULT_SINGLE_FLIGHT_CEILING_MS = 15 * 60_000;
 let singleFlightCeilingMs = DEFAULT_SINGLE_FLIGHT_CEILING_MS;
@@ -595,12 +580,12 @@ export interface HttpBridgeHandle {
 	 * current now.
 	 *
 	 * Only a CHILD-scoped bridge needs it. The owner captures an origin session
-	 * id when the bridge is mounted so a concurrent session cannot steal its tool
-	 * calls [L0-04]; that capture is correct for a bridge that dies with its
-	 * session, but an ACP bridge outlives every session on its child, so without
-	 * a rebind the second and later sessions run their bridged tools against the
-	 * FIRST session's ctx. Supplied by whoever built the handle (src/index.ts),
-	 * optional so the per-turn chat-transport bridge can ignore it.
+	 * id at mount so a concurrent session cannot steal its tool calls, which is
+	 * correct for a bridge that dies with its session; an ACP bridge outlives
+	 * every session on its child, so without a rebind the second and later
+	 * sessions run their bridged tools against the FIRST session's ctx. Supplied
+	 * by whoever built the handle (src/index.ts), optional so the per-turn chat
+	 * bridge can ignore it.
 	 */
 	rebindOrigin?: () => void;
 }
@@ -609,12 +594,11 @@ export interface HttpBridgeHandle {
  * A bridge that OUTLIVES the session which mounted it, so rebinding is not
  * optional. Used for the child-scoped ACP bridge.
  *
- * The base type leaves `rebindOrigin` optional for the per-turn chat-transport
- * bridge, which has nothing to rebind. That optionality is a hazard on the ACP
- * path: every call site there reads `bridge?.rebindOrigin?.()`, so a refactor
- * that dropped the field from the handle would compile, run, emit no warning,
- * and silently restore the stale-ctx defect this type exists to prevent. Making
- * it required here turns that regression into a type error.
+ * The base type leaves `rebindOrigin` optional for the per-turn chat bridge,
+ * which has nothing to rebind. Every ACP call site reads
+ * `bridge?.rebindOrigin?.()`, so a refactor that dropped the field would
+ * compile, run, warn about nothing and silently restore the stale-ctx defect.
+ * Making it required here turns that into a type error.
  */
 export interface ChildScopedHttpBridgeHandle extends HttpBridgeHandle {
 	rebindOrigin: () => void;
@@ -624,21 +608,20 @@ export interface ChildScopedHttpBridgeHandle extends HttpBridgeHandle {
  * Ceiling on ONE bridged request body, i.e. the JSON-RPC message kiro POSTs,
  * which for `tools/call` is dominated by the tool's arguments.
  *
- * MCP SDK 1.30.1 started reading request bodies with a limit (4 MiB default)
- * and answering 413 past it, before any of our code runs. That default suits a
- * public endpoint; this one is loopback-only and token-gated, so the
- * denial-of-service case it guards against barely applies here, and 4 MiB is
- * small for a tool that takes a binary: MCP carries binary as base64, which
- * inflates it by a third, so 4 MiB on the wire is only ~3 MiB of payload.
- * 32 MiB leaves ~24 MiB of payload. The cost is memory -- the SDK buffers the
- * whole body -- which is why this is a ceiling and not unlimited.
+ * MCP SDK 1.30.1 reads request bodies with a 4 MiB default limit and answers
+ * 413 past it, before any of our code runs. That suits a public endpoint; this
+ * one is loopback-only and token-gated, and 4 MiB is small for a tool that
+ * takes a binary (MCP carries binary as base64, so 4 MiB on the wire is only
+ * ~3 MiB of payload). 32 MiB leaves ~24 MiB of payload. The cost is memory --
+ * the SDK buffers the whole body -- which is why this is a ceiling and not
+ * unlimited.
  *
- * Applies to REQUESTS only (kiro -> bridge). A tool RESULT (bridge -> kiro, e.g.
- * a screenshot) is not bounded by this; whatever limit applies to it is kiro's.
- * The SDK's 100-message JSON-RPC batch cap is separate and not configurable.
+ * Applies to REQUESTS only (kiro -> bridge). A tool RESULT is not bounded by
+ * this; whatever limit applies to it is kiro's. The SDK's 100-message JSON-RPC
+ * batch cap is separate and not configurable.
  *
- * Override with PI_KIRO_BRIDGE_MAX_BODY_BYTES (positive integer, bytes). Read at
- * mount, so it is fixed for the life of a bridge.
+ * Override with PI_KIRO_BRIDGE_MAX_BODY_BYTES (positive integer, bytes). Read
+ * at mount, so it is fixed for the life of a bridge.
  */
 export const DEFAULT_BRIDGE_MAX_BODY_BYTES = 32 * 1024 * 1024;
 
@@ -709,12 +692,10 @@ export async function serveBridgeHttp(
 		// `signal` is the server's LIFETIME; getCallSignal() is the cancellation
 		// signal handed to each bridged tool.execute. Under ACP these differ: the
 		// URL is a property of the kiro CHILD (it learns the port once, at
-		// session/new, and has no way to learn a new one), while cancellation is
-		// per-SESSION, because a session reset has to cancel calls in flight. Before
-		// they were split, a session reset closed the server and opened a new one on
-		// a new ephemeral port, stranding kiro on the closed one for the rest of the
-		// conversation -- see docs/design/acp-transport.md §5e.3. Resolved per
-		// request, not captured, so a reset mid-turn still cancels correctly.
+		// session/new, and cannot learn a new one), while cancellation is
+		// per-SESSION, because a session reset has to cancel calls in flight
+		// (docs/design/acp-transport.md section 5e.3). Resolved per request, not
+		// captured, so a reset mid-turn still cancels correctly.
 		const built = buildBridgeServer(tools, getCtx, getCallSignal?.() ?? signal);
 		if (!built) {
 			res.writeHead(500).end();

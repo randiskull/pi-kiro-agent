@@ -57,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mutation in gsd 1.22.0 and does require `_meta["io.opengsd/idempotency-key"]`; that error is a
   real ordered gate, not a red herring.
 
+### Changed
+
+- **Comment audit across `src/` and `test/`: housekeeping prose out, functional comments only.**
+  Removed code history ("used to", "formerly", "previously duplicated here"), internal task and
+  gate ids (`[L0-04]`, `M001`, `G9`, probe-gate references), incident anecdotes, measurement
+  dates, and justifications of decisions the code already shows. What a reader needs to not break
+  the code stays: behavior, external kiro/GSD constraints with their version, invariants and env
+  vars. Comment-only, 625 lines removed against 421 added; no executable line changed except two
+  test titles that carried task ids.
+
 ## 0.3.0 - 2026-10-15
 
 ### Added

@@ -1,27 +1,25 @@
 /**
  * Child-process leak prevention for kiro-cli delegations.
  *
- * Both transports spawn kiro-cli `detached` (own process group — aborts must
- * be able to kill kiro's helper grandchildren, not just the child). The cost:
- * when the parent pi process dies uncleanly (SIGKILL, crash, OOM, machine
- * sleep-wake weirdness), nothing kills the group and the delegation lives on —
- * chat children have been found alive 9 and 23 DAYS after their parent died.
- * Two of the three defense layers live here:
+ * Both transports spawn kiro-cli `detached` (own process group, so an abort can
+ * kill kiro's helper grandchildren and not just the child). The cost: when the
+ * parent pi process dies uncleanly nothing kills the group and the delegation
+ * lives on for days. Two of the three defense layers live here:
  *
  *  1. Parent-exit tether: a registry of live children plus one process "exit"
- *     hook that SIGTERMs them on any orderly shutdown. Only the "exit" hook is
- *     used — it is synchronous-safe (plain process.kill, no timers, no async)
- *     and installing SIGINT/SIGTERM handlers of our own would change whether
- *     the host process dies on those signals.
+ *     hook that SIGTERMs them on an orderly shutdown. Only "exit" is used -- it
+ *     is synchronous-safe (plain process.kill, no timers, no async), and
+ *     installing our own SIGINT/SIGTERM handlers would change whether the host
+ *     process dies on those signals.
  *  2. Orphan reaper: the exit hook cannot run on SIGKILL/crash, so activation
- *     scans the process table for kiro-cli processes that are provably OURS
- *     and provably ORPHANED, and kills their groups. Anything that doesn't
- *     match one of the two ownership signatures (a user's interactive
- *     `kiro-cli chat`, some other tool's delegation) is never touched.
+ *     scans the process table for kiro-cli processes that are provably OURS and
+ *     provably ORPHANED, and kills their groups. Anything matching neither
+ *     ownership signature (a user's interactive `kiro-cli chat`, another tool's
+ *     delegation) is never touched.
  *
- * Layer 3 — a hard per-turn ceiling so a wedged child with a live parent is
- * bounded too — lives in the transports (PI_KIRO_CHAT_TIMEOUT_MS in
- * stream-adapter.ts, PI_KIRO_TURN_TIMEOUT_MS in acp-transport.ts).
+ * Layer 3, a hard per-turn ceiling, lives in the transports
+ * (PI_KIRO_CHAT_TIMEOUT_MS in stream-adapter.ts, PI_KIRO_TURN_TIMEOUT_MS in
+ * acp-transport.ts).
  */
 
 import { execFileSync } from "node:child_process";
@@ -165,11 +163,8 @@ export function _runExitCleanup(): void {
 }
 
 /**
- * Test hook: detach the installed "exit" listener and reset the install flag, so
- * a test can observe the FIRST installation from a clean baseline. Without this,
- * the one-hook-per-process test is vacuous — an earlier test in the same file has
- * already flipped the flag, so `registerChildForCleanup` never adds a listener
- * and `after - before === 0` passes without asserting anything.
+ * Test hook: detach the installed "exit" listener and reset the install flag,
+ * so a test can observe the FIRST installation from a clean baseline.
  */
 export function _resetExitHookForTest(): void {
 	if (exitHookInstalled) {

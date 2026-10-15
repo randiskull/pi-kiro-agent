@@ -520,13 +520,9 @@ describe("createToolUseStreamParser (live progress)", () => {
 });
 
 /**
- * The missing-GSD-project notice (issue #39). The reported symptom was a
- * delegated model calling gsd_capture_thought in a project that never ran GSD
- * and getting an unknown-tool error, with nothing anywhere saying why.
- *
- * The notice must be narrow in BOTH directions, so every test here is paired
- * with its silent counterpart: a wrong diagnosis ("not a GSD project" shouted
- * at a real GSD project) is worse than the silence it replaces.
+ * The missing-GSD-project notice must be narrow in BOTH directions, so every
+ * test here is paired with its silent counterpart: a wrong diagnosis is worse
+ * than the silence it replaces.
  */
 describe("announceMissingGsdProject", () => {
 	let root: string;

@@ -1,16 +1,11 @@
 /**
  * Shared message-prefix hashing for the kiro session managers.
  *
- * Both the chat-transport session manager (session-manager.ts) and the ACP
- * session manager (acp-session.ts) anchor conversation identity / divergence
- * detection on a hash of the sent message prefix. This module is the single
- * source of truth for that hash, so the two transports cannot silently diverge
- * — divergence would break resume continuity on one transport only, the hardest
- * failure mode to notice (resume degrades to a correct-but-expensive full
- * re-send). Collision test: message-hash.test.ts.
- *
- * `messageText` and `messageKey` are module-private; only `hashMessages` is
- * exported, matching the previous per-file surface.
+ * Both session-manager.ts (chat) and acp-session.ts (ACP) anchor conversation
+ * identity and divergence detection on a hash of the sent message prefix. One
+ * source of truth, so the two transports cannot diverge: divergence would break
+ * resume continuity on one transport only, degrading silently to a
+ * correct-but-expensive full re-send. Collision test: message-hash.test.ts.
  */
 
 import { createHash } from "node:crypto";

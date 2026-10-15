@@ -73,20 +73,17 @@ export function parseSubagentsArgs(args: string): SubagentsArgs {
 }
 
 // ExtensionContext keyed by session id, captured per turn for bridged tool
-// execution. A bridged tool call resolves through this map at CALL TIME (not
-// a snapshot taken when the bridge was created), so a tool call made inside
-// one session's delegated turn always reaches for THAT session's newest ctx,
-// never a different session's turn that happened to write more recently
-// [L0-04]. latestCtx stays as a last-resort fallback for the rare case a
-// session id cannot be resolved.
+// execution. A bridged tool call resolves through this map at CALL TIME, not
+// from a snapshot taken when the bridge was created, so a call made inside one
+// session's delegated turn always reaches THAT session's newest ctx. latestCtx
+// is a last-resort fallback for when a session id cannot be resolved.
 //
 // Bounded (LRU, touch-on-use): pi emits no session-end event to hang a delete
-// on, so a long-lived host serving many sessions (the parallel-subagent
-// topology this bridge exists for) would otherwise retain one ExtensionContext
-// per session id forever. Cap + LRU eviction mirrors acp-session.ts's session
-// registry (you cannot have more live ACP sessions than that cap anyway).
-// Touch-on-use — including the getter read below — keeps an in-flight session's
-// ctx off the eviction front while its bridge is still making tool calls.
+// on, so a long-lived host serving many sessions would otherwise retain one
+// ExtensionContext per session id forever. The cap mirrors acp-session.ts's
+// session registry. Touch-on-use, including the getter read below, keeps an
+// in-flight session's ctx off the eviction front while its bridge is still
+// making tool calls.
 const MAX_SESSION_CTX = 64;
 const sessionCtxMap = new Map<string, ExtensionContext>();
 let latestCtx: ExtensionContext | undefined;
@@ -123,15 +120,12 @@ export function _sessionCtxCount(): number {
  * new session starts on that same bridge.
  *
  * getCtx pins to the session that was current when the binding was made, so a
- * concurrent turn from another session writing to the map cannot steal this
- * bridge's tool calls [L0-04]. rebindOrigin re-points that pin, which is what a
- * CHILD-scoped bridge needs: an ACP bridge is mounted once and reused by every
- * session on its child (kiro can only ever call the URL it learned at
- * session/new), so with a one-shot capture the second and later sessions
- * resolved the FIRST session's ctx -- and kept resolving it, because the LRU
- * still holds that entry, so the latestCtx fallback never fired either.
- *
- * Exported for tests: the pin and the rebind are only observable together.
+ * concurrent turn from another session cannot steal this bridge's tool calls.
+ * rebindOrigin re-points that pin, which is what a CHILD-scoped bridge needs:
+ * an ACP bridge is mounted once and reused by every session on its child, so
+ * with a one-shot capture the second and later sessions keep resolving the
+ * FIRST session's ctx (the LRU still holds it, so the latestCtx fallback never
+ * fires either).
  */
 export function _makeBridgeCtxBinding(): {
 	getCtx: () => ExtensionContext | undefined;
@@ -227,7 +221,7 @@ function maybeSelfHeal(pi: ExtensionAPI): void {
 		});
 }
 
-/** ensureRegistered's per-call outcome — read this, never the lingering module-global `registered` flag [L0-03]. */
+/** ensureRegistered's per-call outcome — read this, never the module-global `registered` flag. */
 interface RegistrationResult {
 	ok: boolean;
 	detail: string;
@@ -241,29 +235,26 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<Regist
 	if (!readiness.ready) {
 		return { ok: false, detail: `kiro provider NOT registered: ${readiness.detail}` };
 	}
-	// ALWAYS register when ready — never gate on the local `registered` flag.
-	// The host's registerProvider is an upsert (validate → apply → upsert), and
-	// the host DROPS dynamic providers on session resets (/new, /resume, fork,
-	// reload) while this module (and its flag) survive. Gating on the flag made
-	// ensureRegistered, /kiro, and the lazy self-heal all no-ops after /new,
-	// wedging the provider until a full process relaunch. The flag remains only
-	// as maybeSelfHeal's throttle hint ("have we ever registered") — /kiro reads
-	// this call's own {ok, detail} for its notify level, not the flag [L0-03].
+	// ALWAYS register when ready -- never gate on the local `registered` flag.
+	// The host's registerProvider is an upsert, and the host DROPS dynamic
+	// providers on session resets (/new, /resume, fork, reload) while this
+	// module and its flag survive. Gating on the flag made ensureRegistered,
+	// /kiro and the lazy self-heal no-ops after /new, wedging the provider until
+	// a relaunch. The flag is only maybeSelfHeal's throttle hint.
 	{
 		const models = readiness.binaryPath
 			? await fetchKiroModels(readiness.binaryPath)
 			: FALLBACK_MODELS;
 		// GSD (and other pi hosts) classify a provider that wraps a local CLI via
 		// authMode: "externalCli". It gates flat-rate routing detection and the
-		// workflow-MCP question/tool transport — both require authMode ===
-		// "externalCli" alongside a local:// baseUrl. Without it, kiro is resolved
-		// as an "apiKey" provider (from the dummy apiKey below), so GSD treats a
-		// seat-billed local CLI as a metered API and skips the external-CLI
-		// transport. Upstream pi's ProviderConfig type predates the field, so
+		// workflow-MCP question/tool transport, both of which also require a
+		// local:// baseUrl. Without it kiro is resolved as an "apiKey" provider
+		// (from the dummy apiKey below), so GSD treats a seat-billed local CLI as
+		// a metered API. Upstream pi's ProviderConfig type predates the field, so
 		// widen it here; hosts that don't read authMode ignore it.
 		//
-		// PI_KIRO_TRANSPORT=acp: use the persistent ACP transport instead of the
-		// per-turn chat transport. See acp-transport.ts and docs/design/acp-transport.md.
+		// PI_KIRO_TRANSPORT=acp selects the persistent ACP transport instead of
+		// the per-turn chat transport (docs/design/acp-transport.md).
 		const useAcp = useAcpTransport();
 		const config: ProviderConfig & { authMode: "externalCli" } = {
 			name: "Kiro CLI (local runtime)",
@@ -357,22 +348,18 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 		const tools = await captureBridgeTools(pi, process.env.PI_KIRO_BRIDGE_TOOLS);
 		// Pin this bridge to the session that is creating it: both transports
 		// await options.onPayload (-> before_provider_request -> the handler
-		// above) before ever calling deps.getBridge, so sessionCtxMap already
-		// holds THIS turn's session by the time we get here. Captured once, at
-		// call time, rather than re-read from the global on every bridged tool
-		// call -- so a DIFFERENT session's turn writing to the map afterward
-		// can no longer steal this bridge's tool calls [L0-04].
+		// above) before calling deps.getBridge, so sessionCtxMap already holds
+		// THIS turn's session. Captured once, at call time, rather than re-read
+		// from the global on every bridged tool call, so a DIFFERENT session's
+		// turn writing to the map afterward cannot steal this bridge's calls.
 		//
-		// Residual interleave window (accepted, not closed here): a concurrent
-		// turn from another session racing its own before_provider_request
-		// between that await and this line would still win originId. Closing
-		// that fully means threading session identity explicitly from the
-		// transport into getBridge(signal) instead of reading the global here
-		// -- an intentionally deferred, larger ripple into both transports'
-		// getBridge(signal) call sites (stream-adapter.ts, acp-transport.ts).
+		// Residual window, accepted: a concurrent turn from another session
+		// racing its own before_provider_request between that await and this
+		// line would still win originId. Closing it means threading session
+		// identity from the transport into getBridge(signal).
 		//
 		// The pin is REBINDABLE because an ACP bridge outlives the session that
-		// mounted it (one URL per child, §5e.3): resolveSession calls
+		// mounted it (one URL per child, section 5e.3): resolveSession calls
 		// rebindOrigin at every session start, so session two does not keep
 		// running its bridged tools against session one's ctx.
 		const binding = _makeBridgeCtxBinding();

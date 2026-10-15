@@ -301,11 +301,9 @@ describe("bridge request body limit", () => {
 });
 
 describe("warnOnMissingBridgeTools", () => {
-	// A requested tool no loaded extension provides used to fail silently at mount
-	// and opaquely much later: kiro simply never saw the tool, and the only symptom
-	// was the delegated model reaching for something else, or a bare
-	// `Tool <name> not found` from pi's dispatcher with nothing pointing at the
-	// bridge. These tests pin the mount-time warning that names the real cause.
+	// A requested tool no loaded extension provides must be named at MOUNT time:
+	// otherwise the only symptom is a bare `Tool <name> not found` from pi's
+	// dispatcher, with nothing pointing at the bridge.
 
 	function spyOnStderr() {
 		return vi.spyOn(console, "error").mockImplementation(() => undefined);

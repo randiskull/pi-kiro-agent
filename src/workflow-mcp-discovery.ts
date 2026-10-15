@@ -1,29 +1,19 @@
 /**
  * GSD workflow-MCP server discovery for kiro delegation.
  *
- * GSD auto-mode units (plan-slice, execute-task, complete-slice, run-uat…)
- * require the model to call the `gsd_*` workflow tools. For API providers pi
- * sends tool schemas with the request; for external-CLI providers the CLI owns
- * the agentic loop, so GSD's supported pattern (see claude-code-cli /
- * google-cli in @opengsd/gsd-pi) is to mount GSD's own `gsd-workflow` stdio
- * MCP server INSIDE the CLI, giving the CLI-side model the real tools.
+ * GSD auto-mode units require the model to call the `gsd_*` workflow tools.
+ * For external-CLI providers the CLI owns the agentic loop, so GSD's supported
+ * pattern is to mount GSD's own `gsd-workflow` stdio MCP server INSIDE the CLI.
+ * Without it every GSD unit on kiro ends with zero tool calls and fails GSD's
+ * zero-tool-call guard.
  *
- * Without this, every GSD unit on kiro ends with zero tool calls: the model
- * has no gsd_* tools in any form, writes a prose plan instead, and GSD's
- * zero-tool-call guard fails the unit (historically mislabeled "context
- * exhaustion").
+ * discoverWorkflowMcpServers(cwd) resolves that entry and translates it into
+ * kiro's agent-profile mcpServers schema: the nearest `.mcp.json` wins, a GSD
+ * project without one gets a synthesized entry. kiro's schema has no `cwd`
+ * field, so a `cwd` is honored by wrapping in `/bin/sh -c "cd ... && exec ..."`.
  *
- * discoverWorkflowMcpServers(cwd): resolve the `gsd-workflow` stdio entry and
- * translate it into kiro's agent-profile mcpServers schema. The project's
- * `.mcp.json` (written/maintained by GSD's own mcp-project-config machinery)
- * wins; a GSD project without one gets a synthesized entry so zero-config
- * projects still get real `gsd_*` tools. kiro has no `cwd` field, so a `cwd`
- * is honored by wrapping in `/bin/sh -c "cd … && exec …"`.
- *
- * Split out of the original workflow-mcp.ts (L3-03): this half owns the
- * `.mcp.json` / GSD-install-layout resolution concern. The sibling
- * output-parsing concern (kiro's stdout tool-use lines → `ToolCall` blocks)
- * lives in kiro-tooluse-parser.ts, which this file does not depend on.
+ * The sibling output-parsing concern (kiro's tool-use lines -> `ToolCall`
+ * blocks) lives in kiro-tooluse-parser.ts.
  *
  * Opt-out: PI_KIRO_WORKFLOW_MCP=off.
  */
@@ -89,19 +79,12 @@ export interface WorkflowMcpEntry {
 /**
  * Read the `gsd-workflow` entry out of the nearest `.mcp.json`, if any.
  *
- * TRUST BOUNDARY: this reads a project-supplied `.mcp.json` with a bare
- * `readFileSync` and hands its `command`/`args`/`env` straight into a kiro-cli
- * run launched `--trust-all-tools` with an `allowedTools: ["*"]` profile — it
- * does NOT pass through pi's project-trust machinery. This is the *opposite*
- * posture to `bridge.ts:isBridgeablePackage`, which deliberately refuses
- * project-scope packages because "an untrusted cloned repo could point at
- * attacker-controlled entry files." A hostile repo whose `.mcp.json` names a
- * `gsd-workflow` entry therefore executes as-is on the first prompt. The guard
- * for unreviewed repos is `PI_KIRO_WORKFLOW_MCP=off` (see `workflowMcpEnabled`),
- * and `announceFileSourcedEntry` writes a one-time stderr audit line naming the
- * config path whenever this file-sourced path (rather than synthesis) is what
- * gets mounted, so the user is not silently handed a project's command.
- * Only the `gsd-workflow` key is consumed; no other `.mcp.json` key is mounted.
+ * TRUST BOUNDARY: a project-supplied `command`/`args`/`env` is handed straight
+ * to a kiro-cli run launched `--trust-all-tools`, without passing through pi's
+ * project-trust machinery, so a hostile repo's `gsd-workflow` entry executes
+ * as-is on the first prompt. The guard for unreviewed repos is
+ * PI_KIRO_WORKFLOW_MCP=off; announceFileSourcedEntry names the config path that
+ * was mounted. Only the `gsd-workflow` key is consumed.
  */
 function readWorkflowMcpEntry(cwd: string): { entry: WorkflowMcpEntry; configPath: string } | undefined {
 	const configPath = findMcpConfig(cwd);
@@ -127,18 +110,16 @@ function readWorkflowMcpEntry(cwd: string): { entry: WorkflowMcpEntry; configPat
 const announcedMcpConfigPaths = new Set<string>();
 
 /**
- * Project dirs already warned about by announceMissingGsdProject, keyed by the
- * same value findGsdProjectRoot starts its walk from. Discovery runs once per
- * turn, so without this the line repeats for every turn of a session.
+ * Project dirs already warned about, keyed by the same value findGsdProjectRoot
+ * starts its walk from. Discovery runs once per turn, so without this the line
+ * repeats every turn.
  */
 const announcedMissingProjectDirs = new Set<string>();
 
 /**
- * Audit line for the trust boundary above: a project-supplied `.mcp.json`
- * command is about to be mounted into a kiro run launched `--trust-all-tools`,
- * WITHOUT passing through pi's project-trust prompt. Stderr (not stdout) so it
- * never lands in parsed model output. Synthesized entries are deliberately not
- * announced: those resolve gsd-pi from this extension's own install, so nothing
+ * Audit line for the trust boundary above. Stderr, not stdout, so it never
+ * lands in parsed model output. Synthesized entries are not announced: they
+ * resolve gsd-pi from this extension's own install, so nothing
  * project-supplied is executed.
  */
 function announceFileSourcedEntry(configPath: string): void {
@@ -222,9 +203,8 @@ function resolveGsdCliPath(env: NodeJS.ProcessEnv): string | undefined {
 /**
  * Find the gsd-pi install (or dev checkout) root by walking up from `anchor`
  * looking for `packages/mcp-server/dist/cli.js`. `anchor` is normally the `gsd`
- * binary, which is a symlink into the install, so realpath first — this is the
- * same semantic anchor GSD's findGsdPiRepoRoot uses, rather than a fixed depth
- * that would silently break on a layout change.
+ * binary, a symlink into the install, so realpath first. Same semantic anchor
+ * as GSD's own findGsdPiRepoRoot, rather than a fixed depth.
  */
 function findGsdInstallRoot(anchor: string): string | undefined {
 	let dir: string;
@@ -251,10 +231,8 @@ function resolveGsdAgentDir(env: NodeJS.ProcessEnv): string {
 /**
  * Resolve one gsd extension module (workflow executors / write gate). The LIVE
  * copy under the agent dir wins: GSD copies its extensions there at install and
- * loads them from there, so the install-tree copy can be stale. Best-effort by
- * design — GSD's own buildWorkflowLaunchEnv also spreads these conditionally,
- * and the MCP server has its own resolution fallback that fails loudly rather
- * than silently, which beats mounting no server at all.
+ * loads them from there, so the install-tree copy can be stale. Best-effort --
+ * the MCP server has its own fallback, which fails loudly rather than silently.
  */
 function resolveGsdExtensionModule(
 	env: NodeJS.ProcessEnv,
@@ -282,12 +260,10 @@ function resolveNodeBinary(env: NodeJS.ProcessEnv): string | undefined {
 }
 
 /**
- * Build a `gsd-workflow` entry programmatically for a GSD project that has no
- * `.mcp.json` (never touched by GSD's mcp-project-config machinery, or started
- * on the kiro provider). Without this the delegated kiro turn gets no `gsd_*`
- * tools at all, so a GSD unit can write files but can never call
- * `gsd_task_complete` — the task row stays `pending` and the operator has to
- * reconcile the DB by hand.
+ * Build a `gsd-workflow` entry programmatically for a GSD project with no
+ * `.mcp.json`. Without it the delegated kiro turn gets no `gsd_*` tools, so a
+ * unit can write files but never call `gsd_task_complete`, leaving the task row
+ * `pending`.
  *
  * Every unresolved path bails (returns undefined): a wrong synthesized server
  * is worse than none, and a plain non-GSD kiro turn must never be blocked.
@@ -337,35 +313,10 @@ export function synthesizeWorkflowMcpEntry(
 }
 
 /**
- * Explain a declined mount when the cause is specifically that this is not a
- * GSD project (issue #39). The delegated model then has no `gsd_*` tools in any
- * form, and the only symptom reaching the operator is kiro reporting an unknown
- * tool -- with no hint that a missing `.gsd/` is why.
- *
- * Deliberately narrow, because a wrong diagnosis is worse than none:
- *  - fires only when findGsdProjectRoot finds nothing, the one cause this text
- *    describes. A real GSD project whose *install* is unresolvable is a
- *    different failure and must never be told it is "not a GSD project";
- *  - and only when a GSD install is actually resolvable, so users who do not
- *    have GSD are never told about tools they were never going to get.
- *
- * Mounting is NOT the blocker this points at: GSD's server starts fine without
- * `.gsd/` and lists all its tools, but every memory write then fails with
- * "GSD database is not available". Only a real project fixes it, and GSD has no
- * non-interactive way to create one (`gsd headless init` refuses and tells you
- * to run `gsd` interactively), so the remedy named here is the interactive one.
- *
- * The findGsdProjectRoot walk here deliberately repeats the one synthesis just
- * did. Re-walking is what keeps this guard self-contained: it decides from the
- * filesystem, not from an inference about WHY synthesizeWorkflowMcpEntry
- * returned undefined, so a future change to that function's other bail-outs
- * cannot silently turn this notice into a lie. Threading the answer out of
- * synthesis instead would couple the two and buy nothing measurable -- the walk
- * is a few idempotent existsSync calls on a path already in the page cache, on
- * a path that is about to spawn a CLI.
- *
- * Stderr, never stdout, so it cannot land in parsed model output. Once per
- * project dir for the life of the process.
+ * One-time stderr notice when no `gsd_*` tools are mounted because cwd is not a
+ * GSD project; the only other symptom is kiro reporting an unknown tool. Silent
+ * when a project root exists (an unresolvable GSD install is a different
+ * failure) or when no GSD install resolves.
  */
 function announceMissingGsdProject(cwd: string, env: NodeJS.ProcessEnv): void {
 	if (findGsdProjectRoot(cwd)) return;
@@ -402,9 +353,9 @@ export function discoverWorkflowMcpServers(
 		if (servers && fromFile) announceFileSourcedEntry(fromFile.configPath);
 		return servers;
 	} catch {
-		// readWorkflowMcpEntry no longer throws (malformed .mcp.json → undefined,
-		// which falls through to synthesis above). Reaching here means synthesis
-		// or translation itself threw — there is nothing left to retry. Never throw.
+		// readWorkflowMcpEntry does not throw (a malformed .mcp.json returns
+		// undefined and falls through to synthesis above), so reaching here means
+		// synthesis or translation threw. Nothing left to retry; never throw.
 		return undefined;
 	}
 }

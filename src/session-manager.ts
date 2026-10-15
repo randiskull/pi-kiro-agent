@@ -1,24 +1,21 @@
 /**
  * Incremental-context session manager for the kiro provider.
  *
- * pi-kiro-agent re-serialized the ENTIRE Pi conversation into one prompt and spawned a
- * fresh, stateless `kiro-cli chat` every turn. kiro-cli has no prompt caching, so
- * long GSD sessions (~1M tokens) reprocess everything from scratch and hang.
+ * kiro-cli has no prompt caching, so re-serializing the whole Pi conversation
+ * every turn makes a long GSD session (~1M tokens) hang. kiro-cli does persist
+ * a resumable session (`--resume-id` / `--list-sessions`), so this module
+ * tracks, per logical Pi conversation, the kiro session that mirrors it and
+ * sends only the DELTA.
  *
- * kiro-cli DOES persist a resumable session (`--resume-id` / `--list-sessions`).
- * This module tracks, per logical Pi conversation, the kiro session that mirrors
- * it — so a turn can send only the DELTA and let kiro-cli keep the prior context.
- *
- * Pi's `Context` carries no conversation id, so identity is anchored on the hash
- * of the sent message prefix. That doubles as divergence detection: Pi's context
- * is authoritative and mutable (it compacts/edits/truncates), while a kiro session
- * is append-only — so if the prefix hash no longer matches, the session has
- * diverged and MUST NOT be resumed (the model would see stale history). On any
- * mismatch, doubt, or capture failure we fall back to a full fresh send.
+ * Pi's `Context` carries no conversation id, so identity is anchored on the
+ * hash of the sent message prefix. That doubles as divergence detection: Pi's
+ * context is mutable (it compacts/edits/truncates) while a kiro session is
+ * append-only, so a prefix-hash mismatch means the session MUST NOT be resumed.
+ * Any mismatch, doubt or capture failure falls back to a full fresh send.
  *
  * Sessions are per-cwd; capture is by snapshot-diff (exactly one new session in
- * the cwd after a fresh spawn), which is race-safe under concurrency because a
- * concurrent creation makes the diff ambiguous → fallback, never mis-capture.
+ * the cwd after a fresh spawn), so a concurrent creation makes the diff
+ * ambiguous and falls back instead of mis-capturing.
  */
 
 import { execFile } from "node:child_process";

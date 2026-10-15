@@ -1,9 +1,7 @@
 /**
- * Helpers shared by both turn transports (stream-adapter.ts, acp-transport.ts)
- * and, per the architecture review's L1-07 finding, the coming stream-json
- * reader. Extracted because `emptyAssistantMessage` defines the output message
- * shape both transports must emit identically — a cross-transport contract,
- * not incidental duplication.
+ * Helpers shared by both turn transports (stream-adapter.ts, acp-transport.ts).
+ * `emptyAssistantMessage` defines the output message shape both must emit
+ * identically -- a cross-transport contract, not incidental duplication.
  */
 
 import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";

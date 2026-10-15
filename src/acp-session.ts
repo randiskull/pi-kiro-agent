@@ -1,31 +1,23 @@
 /**
  * ACP session manager for the kiro ACP transport.
  *
- * Tracks, per logical Pi conversation (keyed by (cwd, sessionKey) pair), the
- * kiro ACP session that mirrors it. Identity is anchored on the hash of the
- * sent message prefix — the same divergence-detection mechanism as
- * session-manager.ts, but without the snapshot-diff capture: ACP gives us
- * the sessionId directly from session/new.
+ * Tracks, per logical Pi conversation (keyed by (cwd, sessionKey)), the kiro
+ * ACP session that mirrors it. Identity is anchored on the hash of the sent
+ * message prefix, the same divergence-detection mechanism as session-manager.ts
+ * but without the snapshot-diff capture: session/new returns the sessionId.
  *
- * `sessionKey` is a caller-chosen secondary key used to scope sessions within
- * a cwd. The ACP transport passes the acpSessionId as the sessionKey (it is
- * already unique, so no collision is possible). The parameter was formerly
- * named `agentName`, which was misleading — it is not a literal agent name.
- *
- * Note: the child PROCESS registry (acp-transport.ts) is separately keyed per
- * (cwd, conversationKey) so the parent conversation and each subagent get their
- * own kiro child. This session map is unaffected by that keying — acpSessionIds
- * are globally unique, so the shared `sessions` array never collides across
- * children.
+ * `sessionKey` scopes sessions within a cwd; the ACP transport passes the
+ * acpSessionId, which is already unique. The child PROCESS registry
+ * (acp-transport.ts) is keyed separately, per (cwd, conversationKey); this map
+ * is unaffected, since acpSessionIds never collide across children.
  */
 
 import type { Message } from "@earendil-works/pi-ai";
 import { hashMessages } from "./message-hash.js";
 import { hasSystemMessage } from "./system-prompt.js";
 
-// Re-exported so this module's import surface is unchanged; the implementation
-// (formerly duplicated verbatim from session-manager.ts) now lives in the shared
-// message-hash.ts, so the two transports cannot silently diverge.
+// Re-exported so this module's import surface is unchanged; the shared
+// implementation lives in message-hash.ts.
 export { hashMessages };
 
 interface AcpSession {
@@ -48,11 +40,6 @@ export interface AcpTurnPlan {
 	/** Delta start index: 0 for fresh (send full context), sentMessageCount for resume. */
 	deltaStart: number;
 }
-
-// ─── Hash helpers ─────────────────────────────────────────────────────────────
-// messageText/messageKey/hashMessages moved to the shared message-hash.ts (see
-// the re-export at the top of this file). Previously duplicated verbatim here.
-
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
