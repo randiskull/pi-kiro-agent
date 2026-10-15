@@ -119,6 +119,21 @@ The test suite includes one end-to-end check that the *published* package loads:
 
 **Pre-push hook (optional).** `npm run hooks:install` points `core.hooksPath` at `scripts/hooks`, gating every `git push` on the fast deterministic bar (typecheck + tests + secret scan — no network, so offline pushes work). Bypass a push with `git push --no-verify`. Set `PI_KIRO_PREPUSH_KIRO_AUDIT=1` to additionally run a local kiro-cli release audit (`scripts/scan-kiro.sh`, also available as `npm run scan:kiro`), which reads the tree through your authenticated kiro-cli and blocks only on a HIGH/security verdict; tune it with `PI_KIRO_SCAN_MODEL` (default `auto`) and `PI_KIRO_SCAN_TIMEOUT` (default `300`).
 
+## Versioning
+
+Pre-1.0, so breaking changes land in a minor. A **patch** is fixes and internal
+change only; a **minor** is any change to what a user types or sets (slash commands,
+`kiro/*` model ids, `PI_KIRO_*` variables, the published entry point) and any raised
+floor on pi, kiro-cli, Node or the MCP SDK.
+
+The pi SDK is a peer dependency at `*` on purpose, because pi is the host
+application the user installs. Nothing in npm's resolver therefore enforces host
+compatibility: the dev dependency plus the drift tests are the whole mechanism,
+which is why raising the dev dependency is a minor rather than a patch.
+
+Full policy, and the list of what CI enforces versus what needs judgement:
+[docs/releasing.md](docs/releasing.md).
+
 ## Compliance
 
 Same posture as GSD's claude-code delegation and rpiv's external-runtime providers: the official client performs all model traffic under your own entitlement; headless usage is subject to your plan/org policies (admin governance applies to headless sessions). This extension adds no credentials handling of its own.

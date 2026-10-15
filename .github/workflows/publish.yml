@@ -1,6 +1,7 @@
 name: Publish
 
-# Releases are cut by pushing a version tag: git tag v0.2.1 && git push --tags
+# Releases are cut by pushing a version tag: git tag vX.Y.Z && git push --tags
+# How the number is chosen, and what is machine-checked: docs/releasing.md.
 # Authentication is npm trusted publishing (OIDC). No publish-token secret
 # exists for this repo and none should be added. The id-token permission below is what npm exchanges
 # for a short-lived publish credential. npm also attaches a provenance
@@ -23,6 +24,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history: the ancestry check below needs main, and a tag push
+          # checks out at depth 1 by default.
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -31,12 +36,47 @@ jobs:
       # Trusted publishing needs npm >= 11.5.1; do not rely on the bundled npm.
       - run: npm install -g npm@latest
 
-      - name: Tag must match the package version
+      # Validated once and exported, rather than re-derived per step. The shape
+      # check has to be anchored: a `case` glob like [0-9]*.[0-9]*.[0-9]* accepts
+      # 1.2.3-rc1, 1.2.3.4 and 1.2.3+build, because the trailing * matches anything.
+      - name: Validate the tag and derive the version
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag $GITHUB_REF_NAME is not vX.Y.Z (see docs/releasing.md)" >&2
+            exit 1
+          fi
           pkg="$(node -p "require('./package.json').version")"
-          if [ "$tag" != "$pkg" ]; then
+          if [ "$version" != "$pkg" ]; then
             echo "tag $GITHUB_REF_NAME does not match package.json version $pkg" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # Without this, a tag on ANY branch publishes: the tag is the only trigger, so
+      # unreviewed code reaches npm with every branch protection intact and bypassed.
+      - name: Tag must point at a commit on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "tagged commit $GITHUB_SHA is not an ancestor of origin/main;" >&2
+            echo "releases are cut from merged trunk only (see docs/releasing.md)" >&2
+            exit 1
+          fi
+
+      # The release notes must exist before the tarball does. A publish is one-way:
+      # a version whose notes still sit under "Unreleased" cannot be fixed in place,
+      # only superseded.
+      - name: Changelog must have a section for this version
+        run: |
+          # VERSION is already validated as digits and dots, so escaping the dots is
+          # provably sufficient: no other regex-active character can reach here.
+          # Note the step does not SANITIZE the version by stripping characters,
+          # which would silently match a different section; a bad tag is rejected
+          # above instead.
+          esc="${VERSION//./\\.}"
+          if ! grep -qE "^## ${esc}( |\$)" CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## $VERSION' section (see docs/releasing.md)" >&2
             exit 1
           fi
 
