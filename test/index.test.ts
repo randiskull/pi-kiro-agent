@@ -409,3 +409,116 @@ describe("identity Layer 1: status bar, /kiro, deps.kiroVersion", () => {
 		expect(message).toMatch(/identity: pi \S+ via Kiro \(kiro-cli 0\.0\.0-test, engine v2\) on auto \(selected by kiro\)/);
 	});
 });
+
+describe("kiro/router registration (opt-in virtual model)", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		delete process.env.PI_KIRO_ROUTER;
+	});
+
+	function withVirtual() {
+		const fake = makeFakePi();
+		const registerVirtualModel = vi.fn();
+		return { fake, registerVirtualModel, pi: { ...fake.pi, registerVirtualModel } };
+	}
+
+	it("registers kiro/router beside the physical models, and again on session_start", async () => {
+		const piKiro = await loadExtension();
+		const { fake, registerVirtualModel, pi } = withVirtual();
+		await piKiro(pi);
+		expect(registerVirtualModel).toHaveBeenCalledTimes(1);
+		const def = registerVirtualModel.mock.calls[0]?.[0] as { provider: string; id: string; thinkingLevels: string[]; route: unknown };
+		expect(def.provider).toBe("kiro");
+		expect(def.id).toBe("router");
+		expect(def.thinkingLevels).toEqual(["low", "medium", "high", "xhigh"]);
+		expect(typeof def.route).toBe("function");
+		// The provider itself is unchanged: kiro/auto stays the physical default.
+		expect(fake.registerProvider).toHaveBeenCalledWith("kiro", expect.objectContaining({ models: [{ id: "auto" }] }));
+		await fake.emit("session_start", { type: "session_start", reason: "new" });
+		expect(registerVirtualModel).toHaveBeenCalledTimes(2);
+	});
+
+	it("routes through ctx.modelRegistry", async () => {
+		const piKiro = await loadExtension();
+		const { registerVirtualModel, pi } = withVirtual();
+		await piKiro(pi);
+		const def = registerVirtualModel.mock.calls[0]?.[0] as { route: (r: unknown, ctx: unknown) => { model: { id: string } } };
+		const haiku = { provider: "kiro", id: "claude-haiku-4.5", contextWindow: 200_000 };
+		const ctx = {
+			modelRegistry: {
+				find: (provider: string, id: string) => (provider === "kiro" && id === "claude-haiku-4.5" ? haiku : undefined),
+				hasConfiguredAuth: () => true,
+			},
+		};
+		const route = def.route({ reason: "user", thinkingLevel: "low", messages: [] }, ctx);
+		expect(route.model).toBe(haiku);
+	});
+
+	it("the route closure reads PI_KIRO_ROUTER_FALLBACK and PI_KIRO_ROUTER_COOLDOWN_MS", async () => {
+		const saved = { fb: process.env.PI_KIRO_ROUTER_FALLBACK, cd: process.env.PI_KIRO_ROUTER_COOLDOWN_MS };
+		process.env.PI_KIRO_ROUTER_FALLBACK = "anthropic";
+		process.env.PI_KIRO_ROUTER_COOLDOWN_MS = "1234";
+		const now = vi.spyOn(Date, "now").mockReturnValue(5_000);
+		try {
+			const piKiro = await loadExtension();
+			const { registerVirtualModel, pi } = withVirtual();
+			await piKiro(pi);
+			const def = registerVirtualModel.mock.calls[0]?.[0] as {
+				route: (r: unknown, ctx: unknown) => { model: { provider: string; id: string }; state?: { fallbackUntil?: number } };
+			};
+			const kiroSonnet = { provider: "kiro", id: "claude-sonnet-5.5", contextWindow: 1_000_000 };
+			// Bedrock is listed first by default and has credentials: only the env order skips it.
+			const bedrock = { provider: "amazon-bedrock", id: "us.anthropic.claude-sonnet-5", contextWindow: 1_000_000 };
+			const anthropic = { provider: "anthropic", id: "claude-sonnet-5-5", contextWindow: 1_000_000 };
+			const catalog = [kiroSonnet, bedrock, anthropic];
+			const ctx = {
+				modelRegistry: {
+					find: (provider: string, id: string) => catalog.find((m) => m.provider === provider && m.id === id),
+					hasConfiguredAuth: () => true,
+				},
+			};
+			const failed = {
+				model: kiroSonnet,
+				thinkingLevel: "medium",
+				message: { role: "assistant", stopReason: "error", errorMessage: "503", provider: "kiro", content: [] },
+			};
+			const route = def.route({ reason: "retry", thinkingLevel: "medium", messages: [], failed }, ctx);
+			expect(route.model).toBe(anthropic);
+			expect(route.state?.fallbackUntil).toBe(5_000 + 1234);
+		} finally {
+			now.mockRestore();
+			if (saved.fb === undefined) delete process.env.PI_KIRO_ROUTER_FALLBACK;
+			else process.env.PI_KIRO_ROUTER_FALLBACK = saved.fb;
+			if (saved.cd === undefined) delete process.env.PI_KIRO_ROUTER_COOLDOWN_MS;
+			else process.env.PI_KIRO_ROUTER_COOLDOWN_MS = saved.cd;
+		}
+	});
+
+	it("is not registered on hosts without registerVirtualModel (pi < 1.0)", async () => {
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await expect(piKiro(fake.pi)).resolves.toBeUndefined();
+		expect(fake.registerProvider).toHaveBeenCalledTimes(1);
+	});
+
+	it("PI_KIRO_ROUTER=off skips it", async () => {
+		process.env.PI_KIRO_ROUTER = "off";
+		try {
+			const piKiro = await loadExtension();
+			const { registerVirtualModel, pi } = withVirtual();
+			await piKiro(pi);
+			expect(registerVirtualModel).not.toHaveBeenCalled();
+		} finally {
+			delete process.env.PI_KIRO_ROUTER;
+		}
+	});
+
+	it("never hides a physical kiro model that has the router's id", async () => {
+		const piKiro = await loadExtension();
+		const { fetchKiroModels } = await import("../src/models.js");
+		vi.mocked(fetchKiroModels).mockResolvedValueOnce([{ id: "auto" }, { id: "router" }] as never);
+		const { registerVirtualModel, pi } = withVirtual();
+		await piKiro(pi);
+		expect(registerVirtualModel).not.toHaveBeenCalled();
+	});
+});

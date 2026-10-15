@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`kiro/router`, an opt-in virtual model (pi >= 1.0).** Selected with `/model kiro/router`, next to
+  `kiro/auto` and never the default. The thinking level picks a tier, anchored on kiro's credit
+  multipliers: `low` haiku (0.4x), `medium` sonnet (1.3x), `high` opus (2.0x), `xhigh` fable (6.0x),
+  each on the newest kiro model the seat exposes (kiro/auto if it exposes none). Tool follow-ups stay
+  on the model that handled the turn, and compaction stays with the transcript's model. When kiro
+  fails, the turn falls back to the same tier on Amazon Bedrock (`us.anthropic.*` only), Anthropic,
+  or an OpenAI subscription (`openai-codex`; nearest multiplier: luna, terra, terra, sol), the first
+  that has credentials, and holds there for a cooldown before kiro is tried again. pi does not retry
+  quota or auth errors, so a kiro error left in the transcript also triggers the fallback on the next
+  user turn. A retry after a context overflow moves to a larger window (haiku 200K to a 1M sonnet).
+  `PI_KIRO_ROUTER=off` skips registration; `PI_KIRO_ROUTER_FALLBACK` (comma list) and
+  `PI_KIRO_ROUTER_COOLDOWN_MS` (default 15 min) tune it. Not registered on hosts without
+  `registerVirtualModel`, or when a seat has a physical model named `router`. With `PI_KIRO_TRACE`
+  set, each fallback start (`router.fallback.start`: trigger, destination, deadline, the kiro error)
+  and each cooldown expiry (`router.fallback.end`) is traced.
+
 - **An explicit, larger request-body ceiling for the bridge (32 MiB).** MCP SDK 1.30.1 (#22)
   began reading request bodies with a 4 MiB limit and answering 413 past it, before any bridge code
   runs; verified against `serveBridgeHttp`, a 5 MiB `tools/call` that 1.30.0 delivered is refused by
@@ -155,6 +171,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BRIDGE_SOURCES` is exported, so the live suite asserts against the real list instead of a copy.
 
 ### Fixed
+
+- **ACP turns run the model pi selected.** kiro v2 ignores `model` on `session/prompt` and runs the
+  user's kiro default, so with `PI_KIRO_TRANSPORT=acp` every turn ran (and was billed as) that
+  default whatever `/model` said, while the identity line named the selected one. Measured on
+  kiro-cli 2.26.1: haiku requested, opus-4.8 ran. The transport now sends `session/set_model` before
+  the prompt whenever the session's model (from `session/new`'s `models.currentModelId`, then the
+  last switch) differs from the request's, and drops the ignored field. A failed switch fails the
+  turn instead of running on the wrong model; only `kiro/auto` tolerates a kiro-cli that lacks the
+  method (-32601), keeping its old behavior. kiro-cli answers OK to `session/set_model` for ANY id
+  (a made-up one included, measured 2026-10-07), so the id is first checked against the session's
+  `models.availableModels`: one the session does not offer fails the turn before the switch and the
+  prompt. A kiro-cli that lists no models skips the check, and `kiro/auto` is never refused by it.
+- **Dependency audit clean again.** Lockfile-only bumps of three transitive dependencies of
+  `@modelcontextprotocol/sdk`: proxy-addr 2.0.8 (GHSA-jqcg-44mw-7w3h, critical), fast-uri 3.1.8 and
+  ip-address 10.7.3 (moderate). The critical one would have failed the blocking Security audit.
+- **A resumed kiro turn keeps answers from other providers.** The delta prompt dropped every assistant
+  message as kiro's own, so after kiro, then a turn on Bedrock (a `/model` switch or a router
+  fallback), then kiro again, kiro got the second question but not the Bedrock answer to it. An
+  assistant message from another provider is now kept in the delta as `<assistant_message>`; kiro's
+  own are still skipped. Both transports.
+- **pi's system prompt reaches kiro again on pi >= 0.86, including 1.0.** pi 0.86.0 changed what
+  custom providers receive to a normalized `TranscriptContext`: there is no `systemPrompt` field, and
+  the prompt is a leading `role: "system"` message that later system messages extend or patch by
+  section. The provider read only `context.systemPrompt`, and the history serializer drops system
+  messages, so every turn went to kiro WITHOUT pi's prompt (AGENTS.md, skills, tool guidance); the
+  pi-kiro `<identity>` block is built separately, which is why identity evals still passed. Measured
+  live on pi 1.0: the same one-line turn sent 2,593 characters with no `<prior_system_context>`
+  block before, and 13,828 with an 11,607-character block after, on both chat and ACP. The prompt is
+  now replayed with pi-ai's own `getCurrentSystemPrompt` (looked up on the module namespace so an
+  older host without it still loads; there `context.systemPrompt` is used). Three follow-on fixes:
+  ACP children are keyed on the LEADING system prompt (the always-empty field had hashed every
+  conversation in a cwd to one key, collapsing parent and subagent onto one child again); a resume
+  whose delta carries a system message (a mid-conversation prompt or tool update) is sent fresh in
+  full, since the delta prompt has no slot for it and the resumed kiro session holds the old prompt;
+  and `ToolCall.arguments` is typed as pi's `JsonObject`. Pinned by tests that go through pi's
+  `normalizeContext()` instead of hand-built contexts, each mutation-checked.
+- **The bridge capture shim no-ops every host mutator pi declares.** Re-running a sibling extension
+  to harvest its tools must not touch the real session. pi 0.99/1.0 added `registerMcpServer`,
+  `unregisterMcpServer`, `registerVirtualModel` and `unregisterVirtualModel`, and three older ones
+  (`registerMarkdownTransformer`, `setLabel`, `setSessionName`) were never in the list, so a sibling
+  calling `setSessionName` during capture would have renamed the user's session. The test now derives
+  the must-no-op set from the installed pi's `ExtensionAPI` type, so a future addition fails it.
 
 - **The chat transport no longer garbles the answer when the reply holds more than one
   `<pi_final>` tag.** `extractFinal` took the span from the FIRST opening tag to the LAST closing

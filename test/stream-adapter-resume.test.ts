@@ -157,6 +157,44 @@ describe("stream-adapter resume flow", () => {
 		expect(resumed).toBe(full);
 	});
 
+	it("a resumed delta carries another provider's answer, but not kiro's own (P1)", async () => {
+		// kiro -> bedrock -> kiro. kiro's session holds U1 + A1 only; the Bedrock
+		// turn (U2 -> A2) never touched it, so the delta must carry U2 AND A2.
+		H.script = [{ stdout: answer("KIRO-A1"), code: 0, createSession: "sess-A" }];
+		await collect({ messages: [user("turn one")] });
+
+		const stamped = (text: string, provider: string): Message =>
+			({ ...(assistant(text) as object), provider }) as unknown as Message;
+		H.spawnCalls = [];
+		H.script = [{ stdout: answer("A3"), code: 0 }];
+		await collect({
+			messages: [
+				user("turn one"),
+				stamped("KIRO-A1", "kiro"),
+				user("turn two"),
+				stamped("BEDROCK-A2", "amazon-bedrock"),
+				user("turn three"),
+				// No provider stamp = treated as kiro's own (hand-built transcripts only).
+				assistant("NO-PROVIDER-ECHO"),
+				user("turn four"),
+			],
+		});
+
+		const args = H.spawnCalls[0];
+		expect(args[args.indexOf("--resume-id") + 1]).toBe("sess-A");
+		const prompt = args.at(-1) as string;
+		const u2 = prompt.indexOf("<user_message>\nturn two\n</user_message>");
+		const a2 = prompt.indexOf("<assistant_message>\nBEDROCK-A2\n</assistant_message>");
+		const u3 = prompt.indexOf("<user_message>\nturn three\n</user_message>");
+		expect(u2).toBeGreaterThan(-1);
+		expect(a2).toBeGreaterThan(u2);
+		expect(u3).toBeGreaterThan(a2);
+		expect(prompt).not.toContain("KIRO-A1");
+		expect(prompt).not.toContain("NO-PROVIDER-ECHO");
+		expect(prompt.indexOf("<user_message>\nturn four\n</user_message>")).toBeGreaterThan(u3);
+		expect(prompt).not.toContain("<conversation_history>");
+	});
+
 	it("PI_KIRO_RESUME=off keeps every turn on the full-send path", async () => {
 		process.env.PI_KIRO_RESUME = "off";
 		H.script = [{ stdout: answer("A1"), code: 0, createSession: "sess-A" }];

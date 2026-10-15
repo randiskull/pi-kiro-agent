@@ -81,6 +81,17 @@ const NOOP_METHODS = new Set([
 	"appendEntry",
 	"setModel",
 	"setThinkingLevel",
+	// pi 0.99/1.0 registration APIs. A sibling re-run under the shim must not
+	// register a second MCP server or virtual model with the REAL host.
+	"registerMcpServer",
+	"unregisterMcpServer",
+	"registerVirtualModel",
+	"unregisterVirtualModel",
+	// Host mutators the original list missed (present since <= 0.85.1); found
+	// by deriving the must-no-op set from pi's ExtensionAPI type in the tests.
+	"registerMarkdownTransformer",
+	"setLabel",
+	"setSessionName",
 ]);
 
 function makeCaptureShim(realPi: ExtensionAPI, sink: CapturedTool[]): ExtensionAPI {
@@ -98,6 +109,9 @@ function makeCaptureShim(realPi: ExtensionAPI, sink: CapturedTool[]): ExtensionA
 		},
 	}) as ExtensionAPI;
 }
+
+/** Test hook: the capture shim, so a test can check it against pi's own ExtensionAPI surface. */
+export const _makeCaptureShim = makeCaptureShim;
 
 /**
  * Tool-name allowlist: `envOverride` (comma-separated) beats the default set.

@@ -71,6 +71,7 @@ import {
 	stripLivePlaceholders,
 } from "./stream-adapter.js";
 import { trace } from "./trace.js";
+import { initialSystemPrompt } from "./system-prompt.js";
 import { ACP_ENGINE, authMethod, identityLine, pluginName, pluginVersion, redactSecrets, resolvePiVersion } from "./identity.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import {
@@ -170,6 +171,8 @@ async function resolveSession(
 		// Existing session but prefix diverged -- create a fresh session on the same child.
 		dropAcpSession(acpEntry.acpSessionId);
 		acpEntry.acpSessionId = undefined;
+		acpEntry.sessionModelId = undefined;
+		acpEntry.availableModelIds = undefined;
 		acpEntry.ready = false;
 		// Retire the session controller: this branch discards a session that reached
 		// `ready`, so bridged tool calls may be in flight and must be cancelled.
@@ -282,6 +285,22 @@ interface AcpChild {
 	/** Active ACP session ID (undefined between session/new calls). */
 	acpSessionId: string | undefined;
 	/**
+	 * The model kiro says the CURRENT session runs: `models.currentModelId` from
+	 * session/new, then whatever session/set_model last switched it to. kiro v2
+	 * IGNORES `model` on session/prompt and runs the user's kiro default, so this
+	 * is what ensureSessionModel compares against to decide whether the turn
+	 * needs a set_model first. Undefined = unknown, which always forces one.
+	 */
+	sessionModelId: string | undefined;
+	/**
+	 * The model ids kiro says the CURRENT session offers:
+	 * `models.availableModels[].modelId` from session/new. kiro-cli 2.x
+	 * ACCEPTS ANY id on session/set_model (measured 2026-10-07: a bogus id
+	 * returns OK), so this list is the only check that pi's model exists.
+	 * Undefined or empty = unknown (an older kiro-cli), which skips the check.
+	 */
+	availableModelIds: ReadonlySet<string> | undefined;
+	/**
 	 * Loopback MCP bridge, CHILD-scoped: kiro learns its URL once, at session/new,
 	 * and cannot be told a new one, so one bridge serves every session on this
 	 * child and dies only with the child (docs/design/acp-transport.md §5e.3).
@@ -336,9 +355,12 @@ const childRegistry = new Map<string, AcpChild>();
 /**
  * conversationKey distinguishes conversations that share a cwd: the parent and
  * each subagent carry different system prompts, so a hash of the system prompt
- * separates their kiro children. Hashed directly (not via message-hash.ts's
- * hashMessages) because Context.systemPrompt is a plain string and the Message
- * union has no "system" variant to wrap it in.
+ * separates their kiro children. The input is the LEADING system prompt
+ * (initialSystemPrompt): on pi >= 0.86 the prompt lives in transcript system
+ * messages and context.systemPrompt is always undefined, which hashed every
+ * conversation in a cwd to one key. The leading message is used rather than
+ * the full current prompt because pi appends mid-conversation updates as later
+ * system messages; keying on those would respawn the child on every update.
  */
 function conversationKey(systemPrompt: string | undefined): string {
 	return createHash("sha256").update(systemPrompt ?? "").digest("hex").slice(0, 16);
@@ -454,6 +476,8 @@ function teardownChild(entry: AcpChild, reason: string, options: { kill: boolean
 		dropAcpSession(entry.acpSessionId);
 		entry.acpSessionId = undefined;
 	}
+	entry.sessionModelId = undefined;
+	entry.availableModelIds = undefined;
 	if (options.kill) {
 		try {
 			const { pid } = entry.child;
@@ -802,9 +826,23 @@ async function startSession(
 		if (sessionResp.error) {
 			throw new Error(`kiro-cli acp session/new failed: ${sessionResp.error.message}`);
 		}
-		const sessionId = (sessionResp.result as { sessionId?: string })?.sessionId;
+		const sessionResult = sessionResp.result as
+			| {
+					sessionId?: string;
+					models?: { currentModelId?: string; availableModels?: Array<{ modelId?: unknown }> };
+			  }
+			| undefined;
+		const sessionId = sessionResult?.sessionId;
 		if (!sessionId) throw new Error("kiro-cli acp session/new: no sessionId");
 		entry.acpSessionId = sessionId;
+		// A fresh session starts on the user's kiro default, not on pi's model.
+		const reported = sessionResult?.models?.currentModelId;
+		entry.sessionModelId = typeof reported === "string" && reported ? reported : undefined;
+		const offered = sessionResult?.models?.availableModels;
+		const ids = Array.isArray(offered)
+			? offered.map((m) => m?.modelId).filter((id): id is string => typeof id === "string" && id.length > 0)
+			: [];
+		entry.availableModelIds = ids.length > 0 ? new Set(ids) : undefined;
 
 		// Wait for both: all servers initialized + commands/available with full tool list
 		const timeoutMs = mcpStartupTimeoutMs();
@@ -828,8 +866,53 @@ async function startSession(
 		// which drops a session that was never tracked and recycles the bridge and
 		// session controller for nothing. Clearing it restores the invariant the
 		// new-session branch tests: an acpSessionId means a *usable* session.
-		if (!entry.ready) entry.acpSessionId = undefined;
+		if (!entry.ready) {
+			entry.acpSessionId = undefined;
+			entry.sessionModelId = undefined;
+			entry.availableModelIds = undefined;
+		}
 	}
+}
+
+/**
+ * Make the ACP session run `modelId` before a prompt is sent. kiro v2 ignores
+ * the `model` field on session/prompt (measured 2026-10-01, kiro-cli 2.26.1:
+ * every turn ran the user's kiro default whatever pi selected), and
+ * session/set_model is the call that actually switches it. Sent only when the
+ * session's known model differs, so a resumed turn on an unchanged model costs
+ * no extra round trip. A failure fails the turn: running on a model pi did not
+ * select, and reporting the one it did, is the bug this exists to remove.
+ *
+ * kiro-cli ACCEPTS ANY id on set_model (a bogus one returns OK), so an OK
+ * reply proves nothing. When the session listed its models, an id outside
+ * that list fails the turn here, before set_model and before any prompt.
+ * "auto" is exempt: it is kiro's own router, the default, and a session that
+ * does not list it keeps the pre-check behavior (and the -32601 tolerance).
+ */
+async function ensureSessionModel(entry: AcpChild, sessionId: string, modelId: string): Promise<void> {
+	if (entry.sessionModelId === modelId) return;
+	const offered = entry.availableModelIds;
+	if (offered && modelId !== "auto" && !offered.has(modelId)) {
+		trace("acp.session.set_model", { sessionId, from: entry.sessionModelId, to: modelId, notOffered: true });
+		throw new Error(
+			`kiro-cli acp: model ${modelId} is not offered by this kiro session (available: ${[...offered].join(", ")})`,
+		);
+	}
+	const from = entry.sessionModelId;
+	const resp = await request(entry, "session/set_model", { sessionId, modelId });
+	if (resp.error?.code === -32601 && modelId === "auto") {
+		// A kiro-cli without session/set_model: kiro/auto runs whatever the
+		// session runs, which is what it did before set_model existed. An
+		// explicit model still fails below rather than run on the wrong one.
+		entry.sessionModelId = modelId;
+		trace("acp.session.set_model", { sessionId, from, to: modelId, unsupported: true });
+		return;
+	}
+	if (resp.error) {
+		throw new Error(`kiro-cli acp session/set_model ${modelId} failed: ${resp.error.message} (code ${resp.error.code})`);
+	}
+	entry.sessionModelId = modelId;
+	trace("acp.session.set_model", { sessionId, from, to: modelId });
 }
 
 // ─── Child spawn ──────────────────────────────────────────────────────────────
@@ -859,6 +942,8 @@ async function spawnAcpChild(
 		cwd,
 		registryKey: key,
 		acpSessionId: undefined,
+		sessionModelId: undefined,
+		availableModelIds: undefined,
 		bridge: undefined,
 		bridgePromise: undefined,
 		pending: new Map(),
@@ -998,7 +1083,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				// One child per (cwd, conversationKey): the parent and each subagent
 				// carry different system prompts, so they resolve to different children
 				// and a subagent's abort can no longer reject the parent's pending turn.
-				const key = registryKey(cwd, context.systemPrompt);
+				const key = registryKey(cwd, initialSystemPrompt(context));
 				const workflowServers = discoverWorkflowMcpServers(cwd);
 				const turnSignal = options?.signal ?? new AbortController().signal;
 
@@ -1035,6 +1120,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					: { mode: "fresh" as const, deltaStart: 0 };
 				const useResume = plan.mode === "resume";
 				const currentSessionId = await resolveSession(deps, acpEntry, useResume, workflowServers);
+				await ensureSessionModel(acpEntry, currentSessionId, model.id);
 
 				// Thinking block management
 				const thinkingWriter = createThinkingWriter(stream, output);
@@ -1138,7 +1224,8 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					sessionId: currentSessionId,
 					prompt: [{ type: "text", text: promptContent }],
 				};
-				if (model.id !== "auto") promptParams.model = model.id;
+				// No `model` here: kiro v2 ignores it on session/prompt. The model was
+				// selected by ensureSessionModel above.
 				const effort = mapEffort(options?.reasoning as ThinkingLevel | undefined);
 				if (effort) promptParams.effort = effort;
 
