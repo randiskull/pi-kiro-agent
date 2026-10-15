@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `npm-shrinkwrap.json`, so its subtree resolves normally and the three advisories accepted as
   upstream-frozen (GHSA-3jxr-9vmj-r5cp, GHSA-mh99-v99m-4gvg, GHSA-j3f2-48v5-ccww) are gone from
   the tree. Findings there are fixable by a dependency bump now, rather than accepted.
+- **A gate so the ceiling cannot come back** (`test/package-constraints.test.ts`). An override has
+  to be named in an `ALLOWED_OVERRIDES` list in the test, and the range it names has to be a floor
+  (`>=x.y.z`) rather than a pinned version. Two assertions instead of one because the exception path
+  is where this kind of gate usually dies: a bare "no overrides" check has no way to admit a
+  legitimate override, so the first contributor who needs one deletes the test. The floor predicate
+  is itself pinned against a known-bad and a known-good range, since it is vacuous while the
+  allowlist is empty. Mutation-tested three ways: an unapproved pin fails, an approved name that is
+  still an exact pin fails, an approved name with a floor passes.
 
 ## 0.3.0 - 2026-10-15
 
