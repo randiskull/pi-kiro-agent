@@ -66,6 +66,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the code stays: behavior, external kiro/GSD constraints with their version, invariants and env
   vars. Comment-only, 625 lines removed against 421 added; no executable line changed except two
   test titles that carried task ids.
+- **`docs/` audited on the same rule, where the problem was staleness rather than volume.**
+  `docs/design/acp-transport.md` said **Status: DRAFT, not yet scheduled** for a transport that
+  has been implemented and running for a month, and section 5e.3 was still titled "Open defect"
+  below a body that says "Fix (implemented)" and "Confirmed live". Both corrected; section 4 now
+  names section 5c as what superseded it as the roadmap; section 5h was appended after sections 6
+  and 7 and is moved back into order. `docs/transport-milestones/M001-...md` is deleted: it was a
+  work order for shipped work ("Work on a branch off `main`. Do not push. `main` is at
+  `9f8aaf9`"), and its durable content is section 5h. Milestone/slice ids (`M001/S01/T01`) give
+  way to the commit that did the work.
 
 ## 0.3.0 - 2026-10-15
 
