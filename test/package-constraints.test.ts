@@ -25,6 +25,7 @@ const packageJson = JSON.parse(
 	publishConfig?: { registry?: string; access?: string };
 	files?: string[];
 	pi?: { extensions?: string[] };
+	overrides?: Record<string, string>;
 };
 
 const changelog = readFileSync(resolve(__dirname, "..", "CHANGELOG.md"), "utf8");
@@ -53,6 +54,30 @@ describe("package.json security constraints", () => {
 			`@modelcontextprotocol/sdk constraint "${constraint}" allows versions below 1.30.0. ` +
 				"Must be at least ^1.30.0 to prevent @hono/node-server path-traversal chain (see README).",
 		).toBe(true);
+	});
+
+	/**
+	 * `overrides` pins a transitive dependency to one exact version, which makes it
+	 * a ceiling as well as a floor. The block this test replaces was added to clear
+	 * an advisory (`brace-expansion@5.0.9`) and later became the reason three new
+	 * ones were reported: upstream had already moved to the patched 5.0.12 and the
+	 * pin dragged it back into the vulnerable range (4.0.0 - 5.0.11). Nothing warns
+	 * about that. `npm ls` prints a neutral "overridden", and the dependency the pin
+	 * applies to is dev-only here, so `npm audit --omit=dev` -- which is what CI
+	 * gates on -- never sees it either.
+	 *
+	 * The key is asserted absent rather than looped over: an empty block satisfies
+	 * any per-entry predicate, so a loop would pass while proving nothing. If an
+	 * override is ever genuinely needed, express it as a floor (">=x.y.z") and amend
+	 * this test to allow that one name with the reason. The friction is the point.
+	 */
+	it("declares no dependency overrides (an exact pin is a ceiling)", () => {
+		expect(
+			Object.keys(packageJson.overrides ?? {}),
+			"package.json has an `overrides` block. An exact pin there blocks the upstream security " +
+				"patches it was added to anticipate; prefer a floor in `dependencies`, or amend this " +
+				"test with the reason (see README 'Security scanning').",
+		).toEqual([]);
 	});
 });
 

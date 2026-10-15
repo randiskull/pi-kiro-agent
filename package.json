@@ -69,9 +69,5 @@
 	},
 	"engines": {
 		"node": ">=22.0.0"
-	},
-	"overrides": {
-		"brace-expansion": "5.0.9",
-		"protobufjs": "7.6.5"
 	}
 }
