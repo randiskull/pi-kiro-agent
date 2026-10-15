@@ -10,8 +10,7 @@
  *   low -> haiku   medium -> sonnet   high -> opus   xhigh -> fable
  *
  * Each tier is anchored on a kiro credit multiplier (kiro-cli chat
- * --list-models, 2026-10-02): haiku 0.4x, sonnet 1.3x, opus 2.0-2.2x,
- * fable 6.0x. Bedrock and Anthropic fall back to the same Claude family. kiro
+ * --list-models): haiku 0.4x, sonnet 1.3x, opus 2.0-2.2x, fable 6.0x. Bedrock and Anthropic fall back to the same Claude family. kiro
  * sells no OpenAI model at sonnet's 1.3x, so the OpenAI subscription
  * (openai-codex) takes the gpt-5.6 model with the NEAREST kiro multiplier:
  * luna 0.6x for haiku, terra 2.2x for sonnet and opus, sol 4.4x for fable.

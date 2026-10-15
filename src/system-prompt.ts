@@ -1,19 +1,17 @@
 /**
  * System prompt access for both context shapes pi has passed to providers.
  *
- * pi < 0.86 handed providers a `Context` whose prompt was `context.systemPrompt`.
- * pi >= 0.86 (including 1.0) hands them a normalized `TranscriptContext`: no
- * `systemPrompt` field at all; the prompt is a leading `role: "system"` message,
- * and later system messages append text or patch named `sections`
- * (docs/custom-provider.md, "Custom Streaming API"). Reading only the old field
- * on a new host silently drops pi's whole prompt (AGENTS.md, skills, tool
- * guidance) from every turn sent to kiro.
+ * pi < 0.86 handed providers a `Context` whose prompt was
+ * `context.systemPrompt`. pi >= 0.86 hands them a normalized
+ * `TranscriptContext` with no `systemPrompt` field: the prompt is a leading
+ * `role: "system"` message, and later system messages append text or patch
+ * named `sections`. Reading only the old field on a new host silently drops
+ * pi's whole prompt (AGENTS.md, skills, tool guidance) from every turn.
  *
  * The replay is pi-ai's own `getCurrentSystemPrompt`, looked up on the module
  * namespace rather than imported by name: the peer range is "*", and a named
  * import of an export an older pi-ai lacks fails at module link time, which
- * would stop the whole extension from loading. An older pi-ai cannot produce
- * system messages, so `context.systemPrompt` is the complete answer there.
+ * would stop the whole extension from loading.
  */
 import * as piAi from "@earendil-works/pi-ai";
 

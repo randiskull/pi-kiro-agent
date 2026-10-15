@@ -128,14 +128,13 @@ describe("provider registration lifecycle", () => {
 		const fake = makeFakePi();
 		await piKiro(fake.pi);
 		expect(fake.registerProvider).toHaveBeenCalledTimes(1);
-		// Previously: /kiro cleared the readiness cache but no-oped on the
-		// stale `registered` flag, reporting success while the host registry
-		// had nothing. It must now upsert unconditionally.
+		// /kiro must upsert unconditionally: gating on the stale `registered`
+		// flag reported success while the host registry held nothing.
 		await fake.runCommand("kiro");
 		expect(fake.registerProvider).toHaveBeenCalledTimes(2);
 	});
 
-	it("/kiro notify level reflects THIS call's outcome, not the lingering `registered` flag [L0-03]", async () => {
+	it("/kiro notify level reflects THIS call's outcome, not the `registered` flag", async () => {
 		const piKiro = await loadExtension();
 		const { checkKiroReadiness } = await import("../src/readiness.js");
 		const readinessMock = vi.mocked(checkKiroReadiness);
@@ -160,7 +159,7 @@ describe("provider registration lifecycle", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("NOT registered"), "error");
 	});
 
-	it("pins each session's bridge to that session's own ctx, not whichever session wrote latestCtx last [L0-04]", async () => {
+	it("pins each session's bridge to that session's own ctx, not whichever session wrote latestCtx last", async () => {
 		const piKiro = await loadExtension();
 		const { bridgeEnabled } = await import("../src/kiro-bridge.js");
 		// mockReturnValueOnce (not mockReturnValue): self-scopes to this test's

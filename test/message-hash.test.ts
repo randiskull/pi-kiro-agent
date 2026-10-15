@@ -1,7 +1,6 @@
 /**
- * Tests for the shared message-prefix hash (message-hash.ts), extracted from the
- * two session managers so both transports hash identically. The collision test
- * previously lived in session-manager.test.ts against its local copy.
+ * Tests for the shared message-prefix hash (message-hash.ts): both transports
+ * must hash identically.
  */
 
 import { describe, expect, it } from "vitest";

@@ -2,20 +2,20 @@
  * streamSimple bridge: Pi turn -> `kiro-cli chat --no-interactive` -> Pi
  * AssistantMessageEventStream.
  *
- * Kiro has no agent SDK and (as of CLI 2.12 / v3 early access) no structured
- * output — kirodotdev/Kiro#5423 tracks NDJSON. Until that ships:
+ * Kiro has no agent SDK and no structured output (kirodotdev/Kiro#5423 tracks
+ * NDJSON). Until that ships:
  *
- * - The Pi conversation is serialized into one XML-tagged prompt (XML-tagged) with a sentinel instruction: the model wraps ONLY
- *   its final answer in <pi_final>...</pi_final>.
- * - stdout is ANSI-stripped and streamed into a thinking block live; when
- *   the process exits, the sentinel span becomes the text block (fallback:
- *   the whole cleaned body).
+ * - The Pi conversation is serialized into one XML-tagged prompt with a
+ *   sentinel instruction: the model wraps ONLY its final answer in
+ *   <pi_final>...</pi_final>.
+ * - stdout is ANSI-stripped and streamed into a thinking block live; on exit
+ *   the sentinel span becomes the text block (fallback: the whole cleaned body).
  * - stderr is scanned for tool activity, NOT folded into the answer. As of
  *   kiro-cli 2.21 that is where tool-use lines are printed, so a turn's tool
  *   calls are invisible on stdout alone (see toolUseTranscript).
  * - The dim footer line ` ▸ Credits: N.NN • Time: Ns` is parsed for cost:
- *   credits land in usage.cost.total scaled by PI_KIRO_CREDIT_USD
- *   (default 0 — seat-billed). Token counts are not reported by the CLI.
+ *   credits land in usage.cost.total scaled by PI_KIRO_CREDIT_USD (default 0,
+ *   seat-billed). The CLI reports no token counts.
  *
  * Compliance: all model traffic runs inside the official kiro-cli under the
  * user's own login; this module never touches credentials.
@@ -58,15 +58,14 @@ const MCP_STARTUP_EXIT_CODE = 3;
 // Up to 3: one turn plus room for an MCP-startup retry and a resume→full fallback.
 const MAX_ATTEMPTS = 3;
 
-/** Id prefix for live-progress toolCall placeholders — shared by every producer
- * (id construction in both chat stream handlers and the ACP session/update
- * handler) and every strip site, so they cannot drift apart [L1-03].
+/** Id prefix for live-progress toolCall placeholders -- shared by every
+ * producer (both chat stream handlers and the ACP session/update handler) and
+ * every strip site, so they cannot drift apart.
  *
- * Exported because the ACP transport surfaces the same kind of display-only
- * block: pi dispatches ANY toolCall block it finds on an assistant message
- * (agent-loop.ts keys off presence, not stopReason), so a block describing a
- * call kiro has ALREADY executed must be marked and stripped, or pi runs it a
- * second time. */
+ * Exported because the ACP transport surfaces the same display-only blocks: pi
+ * dispatches ANY toolCall block it finds on an assistant message, keying off
+ * presence rather than stopReason, so a block describing a call kiro has
+ * ALREADY executed must be marked and stripped. */
 export const LIVE_TOOL_ID_PREFIX = "kiro-live-";
 
 /** Drop live-progress placeholder toolCall blocks (matched by LIVE_TOOL_ID_PREFIX). */
@@ -91,10 +90,9 @@ export const FINAL_OPEN = "<pi_final>";
 export const FINAL_CLOSE = "</pi_final>";
 // TODO(stream-json): demote to fallback once `chat --output-format stream-json`
 // is default (it exposes structured output directly, making FINAL_OPEN,
-// FINAL_CLOSE, extractFinal, and the sentinel instruction unnecessary); delete
-// only once support for kiro-cli versions lacking the flag is dropped. The
-// ACP field gate this used to cite is stale (ACP was demoted to an optional
-// contingency) — see docs/design/acp-transport.md §5c.
+// FINAL_CLOSE, extractFinal and the sentinel instruction unnecessary); delete
+// only once support for kiro-cli versions lacking the flag is dropped. See
+// docs/design/acp-transport.md section 5c.
 
 /** Map Pi thinking levels onto kiro-cli --effort values. */
 export function mapEffort(level: ThinkingLevel | undefined): string | undefined {
@@ -254,12 +252,8 @@ function serializeMessage(message: Message): string | undefined {
 		// into `[called tool name({...})]` text, and this history is replayed to
 		// kiro on every full resend alongside a <tool_context> block that tells it
 		// those same tools ARE callable as @pi/<name>. kiro read that as work to
-		// do and re-issued the calls: a user was asked the same
-		// @pi/ask_user_question twice, and each turn re-fired the PRIOR turn's
-		// @pi/steer_subagent / @pi/get_subagent_result at already-reaped agent ids
-		// lifted verbatim out of the replayed text. The paired <tool_result>
-		// already carries what ran and what came back, so nothing is lost by
-		// omitting the call itself -- only the invitation to run it again.
+		// do and re-issued the calls against ids lifted out of the replayed text.
+		// The paired <tool_result> already carries what ran and what came back.
 		const text = contentToText(
 			message.content.filter((block) => block.type !== "thinking" && block.type !== "toolCall") as Message["content"],
 		);
@@ -391,13 +385,11 @@ export function buildDeltaPrompt(deltaMessages: Message[], bridgedTools?: string
 }
 
 /**
- * One spawn+drain of the kiro-cli child for a single attempt of the retry
- * loop in streamViaKiro below. Wires abort/ceiling kill timers and LIVE
- * tool-use detection on stdout/stderr -- mutating `output.content` with
- * placeholder toolCall blocks and feeding `pushThinking` as they arrive --
- * then resolves once the child exits. The retry POLICY (whether to retry,
- * drop a resume session, etc.) stays in the caller: this only runs one
- * attempt and reports what happened [L1-01].
+ * One spawn+drain of the kiro-cli child for a single attempt of the retry loop
+ * in streamViaKiro below. Wires abort/ceiling kill timers and LIVE tool-use
+ * detection on stdout/stderr -- mutating `output.content` with placeholder
+ * toolCall blocks and feeding `pushThinking` as they arrive -- then resolves
+ * once the child exits. The retry POLICY stays in the caller.
  */
 async function runAttempt(
 	args: string[],
@@ -510,18 +502,16 @@ async function runAttempt(
 
 /**
  * Decide whether a nonzero exit still represents a completed turn: kiro-cli
- * sometimes dies AFTER the final answer / after MCP tool calls have already
- * landed server-side (observed on kiro-cli 2.15.2: exit 1 following a
- * successful gsd_task_complete). Failing the whole turn would discard
- * finished work and pause GSD auto-mode; instead, degrade to success and let
- * the caller's own verification (artifact/DB checks) be the arbiter. A
- * nonzero exit with NO final sentinel and NO tool activity is still a hard
- * failure. Named as part of the streamViaKiro post-loop tail [L1-01].
+ * sometimes dies AFTER the final answer, or after MCP tool calls have already
+ * landed server-side (seen on 2.15.2: exit 1 following a successful
+ * gsd_task_complete). Failing the whole turn would discard finished work and
+ * pause GSD auto-mode, so degrade to success and let the caller's own
+ * verification be the arbiter. A nonzero exit with NO final sentinel and NO
+ * tool activity is still a hard failure.
  *
  * TODO(stream-json): demote to fallback once stream-json is default (turn
- * completion becomes a protocol event there, making this exit-code salvage
- * heuristic unnecessary); delete only once support for kiro-cli versions
- * lacking the flag is dropped. See docs/design/acp-transport.md §5c.
+ * completion becomes a protocol event there); delete only once support for
+ * kiro-cli versions lacking the flag is dropped.
  */
 function salvageOrThrow(exitCode: number, body: string, stderrText: string, toolTranscript: string, pushThinking: (delta: string) => void): void {
 	if (exitCode === 0) return;
@@ -559,12 +549,11 @@ function reconcileToolCalls(
 }
 
 /**
- * Record/advance the kiro session bookkeeping BEFORE the caller emits
- * `done`, so a sequential next turn sees it (else it would create a
- * duplicate session). Advance (resume path) is sync; capture (fresh path)
- * does one list-sessions call -- paid once per session, not per turn.
- * Best-effort: never fail a good turn over session bookkeeping. Named as
- * part of the streamViaKiro post-loop tail [L1-01].
+ * Record/advance the kiro session bookkeeping BEFORE the caller emits `done`,
+ * so a sequential next turn sees it instead of creating a duplicate session.
+ * Advance (resume path) is sync; capture (fresh path) does one list-sessions
+ * call, paid once per session rather than per turn. Best-effort: never fail a
+ * good turn over session bookkeeping.
  */
 async function recordSession(
 	useResume: boolean,
@@ -641,14 +630,11 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				const plan = planTurn(cwd, context.messages);
 				let useResume = plan.mode === "resume";
 				// Snapshot existing sessions before a fresh spawn so we can identify the
-				// one kiro creates (exactly-one-new-in-cwd; ambiguity ⇒ fallback).
-				// TODO(stream-json): the snapshot-diff capture here (snapshotSessions,
-				// makeListSessions, preSnapshot, recordFreshSession below) can die once
-				// stream-json is default — metadata.data.sessionId is in the output
-				// directly, no diffing needed. The --resume-id/prefix-hash resume logic
-				// (planTurn et al) STAYS regardless of stream-json. Demote to fallback
-				// when stream-json ships; delete only when old-version support is
-				// dropped. See docs/design/acp-transport.md §5c.
+				// one kiro creates (exactly-one-new-in-cwd; ambiguity => fallback).
+				// TODO(stream-json): this snapshot-diff capture can die once
+				// stream-json is default -- metadata.data.sessionId is in the output
+				// directly. The --resume-id/prefix-hash resume logic STAYS regardless.
+				// See docs/design/acp-transport.md section 5c.
 				let preSnapshot = useResume ? new Set<string>() : await snapshotSessions(cwd, listSessions);
 
 				let raw = "";
