@@ -355,6 +355,15 @@ export function synthesizeWorkflowMcpEntry(
  * non-interactive way to create one (`gsd headless init` refuses and tells you
  * to run `gsd` interactively), so the remedy named here is the interactive one.
  *
+ * The findGsdProjectRoot walk here deliberately repeats the one synthesis just
+ * did. Re-walking is what keeps this guard self-contained: it decides from the
+ * filesystem, not from an inference about WHY synthesizeWorkflowMcpEntry
+ * returned undefined, so a future change to that function's other bail-outs
+ * cannot silently turn this notice into a lie. Threading the answer out of
+ * synthesis instead would couple the two and buy nothing measurable -- the walk
+ * is a few idempotent existsSync calls on a path already in the page cache, on
+ * a path that is about to spawn a CLI.
+ *
  * Stderr, never stdout, so it cannot land in parsed model output. Once per
  * project dir for the life of the process.
  */
