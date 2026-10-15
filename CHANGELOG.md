@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A documented versioning policy, and gates that enforce the parts a test can reach**
+  (`docs/releasing.md`). It writes down what counts as a patch versus a minor for a package whose
+  real public surface is slash commands, `kiro/*` model ids and `PI_KIRO_*` variables rather than
+  exported symbols, and why raising the pi SDK dev dependency is a minor: the peer range is `*` on
+  purpose, so npm's resolver enforces nothing about host compatibility and the dev dependency plus the
+  drift tests are the entire mechanism. Enforced in CI: the version is a plain `X.Y.Z` and equals the
+  newest released CHANGELOG heading (a bump without a cut fails, and a cut without a bump fails), the
+  release headings strictly descend, the newest section is not an empty heading, and the pi peer range
+  stays unpinned. Enforced at publish: the tag matches `package.json`, the tagged commit is an
+  **ancestor of `main`** (a tag on any branch used to publish unreviewed code, since the tag is the
+  only trigger), and the CHANGELOG has a section for the version being released.
 - **Verified against pi 1.2.0.** The pi SDK dev dependencies move from 1.0.0 to 1.2.0, so CI exercises
   the extension against the host version users actually run. They had been pinned at 1.0.0 in the
   lockfile while the shipped CLI moved on two minor versions, which meant every gate was green against
