@@ -73,7 +73,14 @@ describe("package.json security constraints", () => {
 	 * has to be a floor -- so the exception cannot reintroduce the pin this exists
 	 * to prevent.
 	 */
-	/** `>=x.y.z` only. `^`/`~`/bare versions all cap the dependency somewhere. */
+	/**
+	 * `>=x.y.z` only. `^`, `~` and a bare version all cap the dependency somewhere.
+	 * Two more forms are rejected on purpose: a compound range (`>=5.0.12 <6`) is a
+	 * ceiling wearing a floor's clothes, and a pre-release floor (`>=5.0.12-0`)
+	 * forces every consumer onto a pre-release. If one is genuinely needed, widen
+	 * the pattern here -- `/^>=\d+\.\d+\.\d+(-[\w.]+)?$/` -- rather than working
+	 * around this check at the call site.
+	 */
 	const isFloorRange = (range: string): boolean => /^>=\d+\.\d+\.\d+$/.test(range.trim());
 
 	/**
@@ -111,10 +118,13 @@ describe("package.json security constraints", () => {
 		}
 	});
 
-	it("the floor check rejects a pin and a caret range", () => {
+	it("the floor check accepts only a bare `>=` floor", () => {
 		expect(isFloorRange("5.0.9"), "a bare version is a pin").toBe(false);
 		expect(isFloorRange("^5.0.12"), "a caret range caps at the next major").toBe(false);
 		expect(isFloorRange("~5.0.12"), "a tilde range caps at the next minor").toBe(false);
+		// Both are rejected deliberately rather than by omission -- see isFloorRange.
+		expect(isFloorRange(">=5.0.12 <6"), "a compound range still has a ceiling").toBe(false);
+		expect(isFloorRange(">=5.0.12-0"), "a pre-release floor forces a pre-release").toBe(false);
 		expect(isFloorRange(">=5.0.12")).toBe(true);
 	});
 });
