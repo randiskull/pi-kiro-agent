@@ -96,15 +96,19 @@ fails quietly — see the transport section of the
 
 ## Security scanning
 
-**Known accepted findings (upstream-frozen):** `@earendil-works/pi-coding-agent` publishes an
-`npm-shrinkwrap.json`, freezing its dependency subtree — consumer `overrides`/`npm audit fix`
-cannot modify it. Two DoS-class advisories currently live there: `brace-expansion` 5.0.6
-(GHSA-3jxr-9vmj-r5cp / GHSA-mh99-v99m-4gvg, via minimatch — glob patterns here are
-developer-controlled) and `protobufjs` 7.6.4 (GHSA-j3f2-48v5-ccww, via @google/genai — unused
-by this provider). Both are unreachable in pi-kiro-agent's usage; the fix owner is upstream via a
-republished shrinkwrap. Top-level instances are pinned safe via `overrides`
-(`brace-expansion@5.0.9`, `protobufjs@7.6.5`); `@modelcontextprotocol/sdk` is kept ≥1.30
-(clears the @hono/node-server path-traversal chain).
+**Known accepted findings: none** — `.audit-allowlist.json` is empty. Through 1.0.x,
+`@earendil-works/pi-coding-agent` published an `npm-shrinkwrap.json` that froze its dependency
+subtree, so three DoS-class advisories living there (`brace-expansion` GHSA-3jxr-9vmj-r5cp /
+GHSA-mh99-v99m-4gvg via minimatch, `protobufjs` GHSA-j3f2-48v5-ccww via @google/genai) were
+unfixable by a consumer and were accepted instead. 1.2.0 ships no shrinkwrap, the subtree resolves
+normally, and those findings are gone from the tree.
+
+**No consumer `overrides` either, deliberately.** A fixed version in `overrides` is a ceiling, not
+a floor. The `brace-expansion@5.0.9` pin that once cleared an advisory is what later made
+`npm audit` report three of them: upstream had moved to the patched 5.0.12 and the pin dragged it
+back into the vulnerable range. Version floors belong in `dependencies` — which is where
+`@modelcontextprotocol/sdk` is kept at ≥1.30, clearing the @hono/node-server path-traversal
+chain.
 
 
 Three layers, matching the posture upstream projects use:

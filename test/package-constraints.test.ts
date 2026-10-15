@@ -25,6 +25,7 @@ const packageJson = JSON.parse(
 	publishConfig?: { registry?: string; access?: string };
 	files?: string[];
 	pi?: { extensions?: string[] };
+	overrides?: Record<string, string>;
 };
 
 const changelog = readFileSync(resolve(__dirname, "..", "CHANGELOG.md"), "utf8");
@@ -53,6 +54,68 @@ describe("package.json security constraints", () => {
 			`@modelcontextprotocol/sdk constraint "${constraint}" allows versions below 1.30.0. ` +
 				"Must be at least ^1.30.0 to prevent @hono/node-server path-traversal chain (see README).",
 		).toBe(true);
+	});
+
+	/**
+	 * `overrides` pins a transitive dependency to one exact version, which makes it
+	 * a ceiling as well as a floor. The block these tests replace was added to clear
+	 * an advisory (`brace-expansion@5.0.9`) and later became the reason three new
+	 * ones were reported: upstream had already moved to the patched 5.0.12 and the
+	 * pin dragged it back into the vulnerable range (4.0.0 - 5.0.11). Nothing warns
+	 * about that. `npm ls` prints a neutral "overridden", and the dependency the pin
+	 * applies to is dev-only here, so `npm audit --omit=dev` -- which is what CI
+	 * gates on -- never sees it either.
+	 *
+	 * Two assertions rather than one, because the exception path is where this kind
+	 * of gate usually dies: a bare `toEqual([])` has no way to admit a legitimate
+	 * override, so the first contributor who needs one deletes the test instead. The
+	 * name goes in ALLOWED_OVERRIDES with its reason, and the range it names still
+	 * has to be a floor -- so the exception cannot reintroduce the pin this exists
+	 * to prevent.
+	 */
+	/** `>=x.y.z` only. `^`/`~`/bare versions all cap the dependency somewhere. */
+	const isFloorRange = (range: string): boolean => /^>=\d+\.\d+\.\d+$/.test(range.trim());
+
+	/**
+	 * Dependencies allowed an `overrides` entry. Empty on purpose. Add a name here
+	 * with the advisory it covers and why upstream cannot fix it; the floor check
+	 * below then applies to its range.
+	 */
+	const ALLOWED_OVERRIDES: string[] = [];
+
+	it("declares no unapproved dependency overrides (an exact pin is a ceiling)", () => {
+		const unapproved = Object.keys(packageJson.overrides ?? {}).filter(
+			(name) => !ALLOWED_OVERRIDES.includes(name),
+		);
+		expect(
+			unapproved,
+			"package.json overrides a dependency that is not in ALLOWED_OVERRIDES. An exact pin " +
+				"there blocks the upstream security patches it was added to anticipate; prefer a " +
+				"floor in `dependencies`, or add the name to ALLOWED_OVERRIDES in this test with " +
+				"the reason (see README 'Security scanning').",
+		).toEqual([]);
+	});
+
+	// Vacuous while ALLOWED_OVERRIDES is empty, which is the point of the next
+	// test: the predicate is pinned against a known-bad and a known-good range so
+	// a typo in the regex cannot make this pass by matching everything.
+	it("an approved override names a floor, never a pinned version", () => {
+		for (const name of ALLOWED_OVERRIDES) {
+			const range = packageJson.overrides?.[name];
+			expect(range, `ALLOWED_OVERRIDES names ${name}, which has no overrides entry`).toBeDefined();
+			expect(
+				isFloorRange(range as string),
+				`overrides["${name}"] is "${range}". An approved override must be a floor ` +
+					'(">=x.y.z"), so upstream patches above it still resolve.',
+			).toBe(true);
+		}
+	});
+
+	it("the floor check rejects a pin and a caret range", () => {
+		expect(isFloorRange("5.0.9"), "a bare version is a pin").toBe(false);
+		expect(isFloorRange("^5.0.12"), "a caret range caps at the next major").toBe(false);
+		expect(isFloorRange("~5.0.12"), "a tilde range caps at the next minor").toBe(false);
+		expect(isFloorRange(">=5.0.12")).toBe(true);
 	});
 });
 

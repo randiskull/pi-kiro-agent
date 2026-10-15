@@ -5,6 +5,35 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Security
+
+- **Removed the `overrides` block, which had become the reason `npm audit` reported three high
+  advisories rather than the fix for one.** `brace-expansion` was pinned to 5.0.9 to clear an
+  earlier advisory; three later advisories (GHSA-q2hr-2g5m-vwhr, GHSA-qhr7-859c-m2p7,
+  GHSA-6j4f-fj2g-mc7p) cover 4.0.0 - 5.0.11, and `@earendil-works/pi-coding-agent` 1.2.0 already
+  depends on the patched 5.0.12 exactly -- so the pin was dragging a dependency upstream had
+  already fixed back into the vulnerable range. A fixed version inside `overrides` is a ceiling,
+  not a floor: it silently blocks the upstream patches it was added to anticipate.
+  `protobufjs@7.6.5` went with it for the same reason (`@google/genai` asks for `^7.5.4`).
+  `npm audit` including dev dependencies is now 0, down from 3 high. Production dependencies were
+  never affected -- the published package declares only `@modelcontextprotocol/sdk`, so
+  `npm audit --omit=dev`, which is what CI gates on, was already clean. That is why this never
+  failed a build.
+- **`.audit-allowlist.json` is now empty.** pi-coding-agent 1.2.0 no longer publishes an
+  `npm-shrinkwrap.json`, so its subtree resolves normally and the three advisories accepted as
+  upstream-frozen (GHSA-3jxr-9vmj-r5cp, GHSA-mh99-v99m-4gvg, GHSA-j3f2-48v5-ccww) are gone from
+  the tree. Findings there are fixable by a dependency bump now, rather than accepted.
+- **A gate so the ceiling cannot come back** (`test/package-constraints.test.ts`). An override has
+  to be named in an `ALLOWED_OVERRIDES` list in the test, and the range it names has to be a floor
+  (`>=x.y.z`) rather than a pinned version. Two assertions instead of one because the exception path
+  is where this kind of gate usually dies: a bare "no overrides" check has no way to admit a
+  legitimate override, so the first contributor who needs one deletes the test. The floor predicate
+  is itself pinned against a known-bad and a known-good range, since it is vacuous while the
+  allowlist is empty. Mutation-tested three ways: an unapproved pin fails, an approved name that is
+  still an exact pin fails, an approved name with a floor passes.
+
 ## 0.3.0 - 2026-10-15
 
 ### Added
