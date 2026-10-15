@@ -159,11 +159,11 @@ describe("version and changelog agree (docs/releasing.md)", () => {
 
 	it("package.json version is the newest released changelog heading", () => {
 		expect(
-			releaseHeadings[0]?.version,
+			packageJson.version,
 			`package.json is ${packageJson.version} but the newest release in CHANGELOG.md is ` +
 				`${releaseHeadings[0]?.version}. Bump and cut the changelog in the same commit: ` +
 				"rename `## Unreleased` to `## <version> - <date>` (docs/releasing.md).",
-		).toBe(packageJson.version);
+		).toBe(releaseHeadings[0]?.version);
 	});
 
 	it("release headings descend, with no duplicates", () => {
