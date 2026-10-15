@@ -340,6 +340,26 @@ function selftest() {
     }
     if (!threw) failures.push(`  parseBridgeToolList accepted a ${label} source instead of throwing`);
   }
+  // A malformed invocation must stop the run, not pick up a default and report
+  // numbers for a bridged set nobody asked for.
+  const badArgs = [
+    ['value flag at the end of argv', ['--sessions']],
+    ['value flag followed by another flag', ['--bridged', '--json']],
+    ['misspelled flag', ['--session', '/tmp']],
+  ];
+  for (const [label, argv] of badArgs) {
+    let threw = false;
+    try {
+      parseArgs(argv);
+    } catch {
+      threw = true;
+    }
+    if (!threw) failures.push(`  parseArgs accepted ${label} instead of throwing`);
+  }
+  const good = parseArgs(['--sessions', '/tmp/x', '--bridged', 'a,b', '--json']);
+  if (good.sessions !== '/tmp/x' || good.bridged !== 'a,b' || good.json !== true || good.selftest !== false) {
+    failures.push(`  parseArgs mangled a valid invocation: ${JSON.stringify(good)}`);
+  }
   if (failures.length > 0) {
     console.error('selftest FAILED');
     console.error(failures.join('\n'));
@@ -348,17 +368,51 @@ function selftest() {
   console.log(`selftest ok (${live.length} bridged tools parsed from src/bridge.ts)`);
 }
 
-function main(argv) {
-  const flag = (name, fallback) => {
-    const i = argv.indexOf(name);
-    return i === -1 ? fallback : argv[i + 1];
-  };
-  if (argv.includes('--selftest')) return selftest();
+const USAGE = '[--sessions DIR] [--bridged a,b] [--json] | --selftest';
 
-  const root = flag('--sessions', join(homedir(), '.pi', 'agent', 'sessions'));
-  const bridgedArg = flag('--bridged', undefined);
+/**
+ * Reject a malformed invocation rather than falling back to a default.
+ * `--bridged` with its value missing, or misspelled, would otherwise scan with
+ * a different bridged set than the caller asked for and report numbers that
+ * look fine: the bridged/not-bridged split is the report's main conclusion.
+ */
+export function parseArgs(argv) {
+  const opts = { sessions: undefined, bridged: undefined, json: false, selftest: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (token === '--json' || token === '--selftest') {
+      opts[token.slice(2)] = true;
+      continue;
+    }
+    if (token === '--sessions' || token === '--bridged') {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) {
+        throw new Error(`${token} needs a value; usage: ${USAGE}`);
+      }
+      opts[token.slice(2)] = value;
+      i += 1;
+      continue;
+    }
+    throw new Error(`unknown argument ${token}; usage: ${USAGE}`);
+  }
+  return opts;
+}
+
+function main(argv) {
+  let opts;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  if (opts.selftest) return selftest();
+
+  const root = opts.sessions ?? join(homedir(), '.pi', 'agent', 'sessions');
   const bridged = new Set(
-    bridgedArg === undefined ? defaultBridgedTools() : bridgedArg.split(',').map((s) => s.trim()).filter(Boolean),
+    opts.bridged === undefined
+      ? defaultBridgedTools()
+      : opts.bridged.split(',').map((name) => name.trim()).filter(Boolean),
   );
 
   let files;
@@ -377,7 +431,7 @@ function main(argv) {
   for (const file of files) {
     scanSession(parseTranscript(readFileSync(file, 'utf8')), bridged, stats);
   }
-  if (argv.includes('--json')) {
+  if (opts.json) {
     console.log(JSON.stringify({ ...stats, argBytes: undefined, bridged: [...bridged] }, null, 2));
   } else {
     console.log(report(stats, bridged));
