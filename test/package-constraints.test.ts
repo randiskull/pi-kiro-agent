@@ -187,9 +187,13 @@ describe("version and changelog agree (docs/releasing.md)", () => {
 	// heading still satisfies every check above.
 	it("the newest release has a non-empty body", () => {
 		const version = packageJson.version ?? "";
-		const start = changelog.indexOf(`## ${version}`);
-		expect(start, `no heading for ${version} in CHANGELOG.md`).toBeGreaterThan(-1);
-		const rest = changelog.slice(start + `## ${version}`.length);
+		// Line-anchored, and the version must be followed by a separator, so
+		// `## 0.3.0` cannot match inside a `## 0.3.0-rc1` heading above it and
+		// slice the wrong section. Matches the anchoring used for releaseHeadings.
+		const heading = new RegExp(`^## ${version.replace(/\./g, "\\.")}( |$)`, "m");
+		const found = heading.exec(changelog);
+		expect(found, `no heading for ${version} in CHANGELOG.md`).not.toBeNull();
+		const rest = changelog.slice(found!.index + `## ${version}`.length);
 		const end = rest.search(/^## /m);
 		const body = end === -1 ? rest : rest.slice(0, end);
 		expect(
