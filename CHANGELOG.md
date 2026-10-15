@@ -5,9 +5,14 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.3.0 - 2026-10-15
 
 ### Added
+
+- **Verified against pi 1.2.0.** The pi SDK dev dependencies move from 1.0.0 to 1.2.0, so CI exercises
+  the extension against the host version users actually run. They had been pinned at 1.0.0 in the
+  lockfile while the shipped CLI moved on two minor versions, which meant every gate was green against
+  an SDK no one had installed. The caret range already allowed 1.2, so only the lockfile was stale.
 
 - **`kiro/router`, an opt-in virtual model (pi >= 1.0).** Selected with `/model kiro/router`, next to
   `kiro/auto` and never the default. The thinking level picks a tier, anchored on kiro's credit
@@ -172,6 +177,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The bridge capture shim no-ops `registerToolRenderer` (new in pi 1.2.0).** The shim's must-no-op
+  set is an explicit allowlist, so a host mutator added by a newer pi reaches the REAL host until it is
+  named: a sibling extension re-run inside a delegated turn could register a tool renderer against the
+  calling session. `registerTool` is special-cased by an equality check, which is why a method merely
+  starting with `registerTool` was not already covered. Caught by the existing drift test, which
+  derives the mutator set from the installed pi's own `ExtensionAPI` type rather than a hardcoded list.
 - **ACP turns run the model pi selected.** kiro v2 ignores `model` on `session/prompt` and runs the
   user's kiro default, so with `PI_KIRO_TRANSPORT=acp` every turn ran (and was billed as) that
   default whatever `/model` said, while the identity line named the selected one. Measured on

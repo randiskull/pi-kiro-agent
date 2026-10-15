@@ -92,6 +92,10 @@ const NOOP_METHODS = new Set([
 	"registerMarkdownTransformer",
 	"setLabel",
 	"setSessionName",
+	// pi 1.2.0. Named explicitly because the `registerTool` capture above is an
+	// EQUALITY check, so a new method that merely starts with "registerTool"
+	// is not covered by it and would reach the real host.
+	"registerToolRenderer",
 ]);
 
 function makeCaptureShim(realPi: ExtensionAPI, sink: CapturedTool[]): ExtensionAPI {
