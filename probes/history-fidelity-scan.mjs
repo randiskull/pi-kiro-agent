@@ -23,19 +23,31 @@ const CAP = 200; // byte cap floated for a truncated args attribute
  * The bridged tool set, parsed out of src/bridge.ts rather than copied here: a
  * second hand-written list would drift, and the scan's whole conclusion turns
  * on which tools kiro can re-issue as @pi/<name>.
+ *
+ * A PARTIAL parse is the failure to guard, not an empty one: the array
+ * terminator is matched non-greedily, so a stray bracket would end the capture
+ * early and yield a shorter list that still looks plausible. Anything but
+ * quoted strings, commas and whitespace in the captured block is therefore an
+ * error, not something to work around.
  */
-function defaultBridgedTools() {
-  const path = new URL('../src/bridge.ts', import.meta.url);
-  const src = readFileSync(path, 'utf8');
+export function parseBridgeToolList(src) {
   const block = src.match(/export const DEFAULT_BRIDGE_TOOLS\s*=\s*\[([\s\S]*?)\]/);
   if (!block) {
     throw new Error('could not find DEFAULT_BRIDGE_TOOLS in src/bridge.ts; fix the parse, do not hard-code the list');
   }
-  const names = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  const body = block[1];
+  if (/[[\]]/.test(body) || body.replace(/"[^"]*"|,|\s/g, '') !== '') {
+    throw new Error(`DEFAULT_BRIDGE_TOOLS did not parse cleanly, so the list may be truncated: ${JSON.stringify(body)}`);
+  }
+  const names = [...body.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   if (names.length === 0) {
     throw new Error('DEFAULT_BRIDGE_TOOLS parsed empty; fix the parse, do not hard-code the list');
   }
   return names;
+}
+
+function defaultBridgedTools() {
+  return parseBridgeToolList(readFileSync(new URL('../src/bridge.ts', import.meta.url), 'utf8'));
 }
 
 /** Content blocks of a pi message, with the string shorthand normalized. */
@@ -310,6 +322,23 @@ function selftest() {
   const live = defaultBridgedTools();
   if (!live.includes('ask_user_question')) {
     failures.push(`  DEFAULT_BRIDGE_TOOLS parse: expected ask_user_question among ${JSON.stringify(live)}`);
+  }
+  // And a source shape that would truncate the list must throw, not return a
+  // short list: a silently shortened set would move every bridged/not-bridged
+  // number in the report.
+  const rejects = [
+    ['nested array', 'export const DEFAULT_BRIDGE_TOOLS = [\n\t"a",\n\t["b"],\n];'],
+    ['missing declaration', 'export const SOMETHING_ELSE = ["a"];'],
+    ['unquoted entry', 'export const DEFAULT_BRIDGE_TOOLS = [\n\tNAME,\n];'],
+  ];
+  for (const [label, source] of rejects) {
+    let threw = false;
+    try {
+      parseBridgeToolList(source);
+    } catch {
+      threw = true;
+    }
+    if (!threw) failures.push(`  parseBridgeToolList accepted a ${label} source instead of throwing`);
   }
   if (failures.length > 0) {
     console.error('selftest FAILED');
