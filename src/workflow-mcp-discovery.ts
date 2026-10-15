@@ -127,6 +127,13 @@ function readWorkflowMcpEntry(cwd: string): { entry: WorkflowMcpEntry; configPat
 const announcedMcpConfigPaths = new Set<string>();
 
 /**
+ * Project dirs already warned about by announceMissingGsdProject, keyed by the
+ * same value findGsdProjectRoot starts its walk from. Discovery runs once per
+ * turn, so without this the line repeats for every turn of a session.
+ */
+const announcedMissingProjectDirs = new Set<string>();
+
+/**
  * Audit line for the trust boundary above: a project-supplied `.mcp.json`
  * command is about to be mounted into a kiro run launched `--trust-all-tools`,
  * WITHOUT passing through pi's project-trust prompt. Stderr (not stdout) so it
@@ -142,9 +149,10 @@ function announceFileSourcedEntry(configPath: string): void {
 	);
 }
 
-/** Test hook: forget which config paths have been announced. */
+/** Test hook: forget which config paths and project dirs have been announced. */
 export function _resetWorkflowMcpNoticesForTest(): void {
 	announcedMcpConfigPaths.clear();
+	announcedMissingProjectDirs.clear();
 }
 
 /**
@@ -329,6 +337,39 @@ export function synthesizeWorkflowMcpEntry(
 }
 
 /**
+ * Explain a declined mount when the cause is specifically that this is not a
+ * GSD project (issue #39). The delegated model then has no `gsd_*` tools in any
+ * form, and the only symptom reaching the operator is kiro reporting an unknown
+ * tool -- with no hint that a missing `.gsd/` is why.
+ *
+ * Deliberately narrow, because a wrong diagnosis is worse than none:
+ *  - fires only when findGsdProjectRoot finds nothing, the one cause this text
+ *    describes. A real GSD project whose *install* is unresolvable is a
+ *    different failure and must never be told it is "not a GSD project";
+ *  - and only when a GSD install is actually resolvable, so users who do not
+ *    have GSD are never told about tools they were never going to get.
+ *
+ * Mounting is NOT the blocker this points at: GSD's server starts fine without
+ * `.gsd/` and lists all its tools, but every memory write then fails with
+ * "GSD database is not available". Only a real project fixes it, and GSD has no
+ * non-interactive way to create one (`gsd headless init` refuses and tells you
+ * to run `gsd` interactively), so the remedy named here is the interactive one.
+ *
+ * Stderr, never stdout, so it cannot land in parsed model output. Once per
+ * project dir for the life of the process.
+ */
+function announceMissingGsdProject(cwd: string, env: NodeJS.ProcessEnv): void {
+	if (findGsdProjectRoot(cwd)) return;
+	if (!resolveGsdCliPath(env)) return;
+	const key = stripWorktreeSuffix(cwd);
+	if (announcedMissingProjectDirs.has(key)) return;
+	announcedMissingProjectDirs.add(key);
+	console.error(
+		`[pi-kiro] gsd_* workflow tools are not mounted: no GSD project at ${key} (no .gsd/ directory at or above it, and no gsd-workflow entry in a .mcp.json). GSD has no "init" subcommand: run gsd in this directory, then /gsd start. Set PI_KIRO_WORKFLOW_MCP=off to silence this.`,
+	);
+}
+
+/**
  * Discover the project's `gsd-workflow` MCP server and translate it for a kiro
  * agent profile. An explicit `.mcp.json` entry always wins; a GSD project
  * without one gets a synthesized entry (see synthesizeWorkflowMcpEntry).
@@ -343,7 +384,10 @@ export function discoverWorkflowMcpServers(
 	try {
 		const fromFile = readWorkflowMcpEntry(cwd);
 		const entry = fromFile?.entry ?? synthesizeWorkflowMcpEntry(cwd, env);
-		if (!entry) return undefined;
+		if (!entry) {
+			announceMissingGsdProject(cwd, env);
+			return undefined;
+		}
 		const servers = translateEntry(entry);
 		// Announce only once we know a project-supplied command is really mounted.
 		if (servers && fromFile) announceFileSourcedEntry(fromFile.configPath);

@@ -34,6 +34,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allowlist is empty. Mutation-tested three ways: an unapproved pin fails, an approved name that is
   still an exact pin fails, an approved name with a floor passes.
 
+### Fixed
+
+- **A non-GSD project no longer loses its `gsd_*` tools silently** (#39). GSD's workflow MCP server
+  is mounted into a delegated kiro run only when the project is a GSD project; without a `.gsd/`
+  directory nothing is mounted, so a model told to call `gsd_capture_thought` gets an unknown-tool
+  error and nothing anywhere says why. `discoverWorkflowMcpServers` now writes a one-time stderr
+  line naming the directory and the remedy. Narrow on purpose, in both directions: it fires only
+  when `findGsdProjectRoot` finds nothing, so a real GSD project whose *install* is unresolvable is
+  never told it is "not a GSD project", and only when a `gsd` is actually resolvable, so users
+  without GSD are never told about tools they were never going to get. Mutation-tested three ways
+  (each guard removed turns the suite red).
+
+  No behaviour change: the tool surface and the mount decision are exactly as before. Mounting was
+  never the blocker, which is why the issue's other two options were rejected. GSD's server does
+  start without `.gsd/` and does list all 66 tools including `gsd_capture_thought`, but the call
+  then fails `GSD database is not available`, so mounting unconditionally would swap one opaque
+  error for another while adding 66 always-failing tools to every non-GSD turn. Auto-initializing
+  is not available either: `gsd` has no `init` subcommand, and `gsd headless init` refuses and tells
+  you to run `gsd` interactively, so the message names the interactive remedy (`/gsd start`).
+  Also worth recording, since the issue said otherwise: `gsd_capture_thought` **is** a planning
+  mutation in gsd 1.22.0 and does require `_meta["io.opengsd/idempotency-key"]`; that error is a
+  real ordered gate, not a red herring.
+
 ## 0.3.0 - 2026-10-15
 
 ### Added

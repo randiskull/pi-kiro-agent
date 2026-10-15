@@ -250,11 +250,14 @@ describe("discoverWorkflowMcpServers", () => {
 		expect(console.error).toHaveBeenCalledTimes(1);
 	});
 
-	it("announces nothing when there is no entry to mount or discovery is off", () => {
-		expect(discoverWorkflowMcpServers(dir)).toBeUndefined();
+	it("announces no FILE-SOURCED command when there is no entry or discovery is off", () => {
+		// PATH is pinned empty so no `gsd` resolves: that suppresses the OTHER
+		// notice on this path (announceMissingGsdProject, own describe below) and
+		// keeps this test about the file-sourced audit line only. Inheriting the
+		// machine's PATH would make it pass in CI and fail on a dev box with GSD.
+		expect(discoverWorkflowMcpServers(dir, { PATH: "" })).toBeUndefined();
 		writeConfig({ mcpServers: { "gsd-workflow": { command: "gsd-mcp" } } });
-		process.env.PI_KIRO_WORKFLOW_MCP = "off";
-		expect(discoverWorkflowMcpServers(dir)).toBeUndefined();
+		expect(discoverWorkflowMcpServers(dir, { PATH: "", PI_KIRO_WORKFLOW_MCP: "off" })).toBeUndefined();
 		expect(console.error).not.toHaveBeenCalled();
 	});
 
@@ -513,5 +516,96 @@ describe("createToolUseStreamParser (live progress)", () => {
 		expect(parser.feed("rkflow/gsd_doctor\n[tool] status: Completed\n")).toEqual([
 			{ name: "gsd_doctor", server: "gsdworkflow" },
 		]);
+	});
+});
+
+/**
+ * The missing-GSD-project notice (issue #39). The reported symptom was a
+ * delegated model calling gsd_capture_thought in a project that never ran GSD
+ * and getting an unknown-tool error, with nothing anywhere saying why.
+ *
+ * The notice must be narrow in BOTH directions, so every test here is paired
+ * with its silent counterpart: a wrong diagnosis ("not a GSD project" shouted
+ * at a real GSD project) is worse than the silence it replaces.
+ */
+describe("announceMissingGsdProject", () => {
+	let root: string;
+	let projectDir: string;
+	let env: NodeJS.ProcessEnv;
+
+	beforeEach(() => {
+		root = realpathSync(mkdtempSync(join(tmpdir(), "pi-kiro-nogsd-")));
+		projectDir = join(root, "project");
+		mkdirSync(projectDir, { recursive: true });
+		// A `gsd` on PATH is all resolveGsdCliPath needs; it is never executed.
+		mkdirSync(join(root, "bin"), { recursive: true });
+		writeFileSync(join(root, "bin", "gsd"), "#!/bin/sh\n");
+		env = { PATH: join(root, "bin") };
+	});
+
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	function lines(): string[] {
+		return vi.mocked(console.error).mock.calls.map((call) => call[0] as string);
+	}
+
+	it("warns once, naming the dir and the real remedy, when there is no GSD project", () => {
+		expect(discoverWorkflowMcpServers(projectDir, env)).toBeUndefined();
+		expect(console.error).toHaveBeenCalledTimes(1);
+		const line = lines()[0] as string;
+		expect(line).toContain(projectDir);
+		expect(line).toContain(".gsd/");
+		// GSD has no `init` subcommand, so the remedy must be the interactive one.
+		expect(line).toContain("/gsd start");
+		expect(line).not.toContain("gsd init");
+		expect(line).toContain("PI_KIRO_WORKFLOW_MCP=off");
+		// Discovery runs once per turn; the line must not repeat every turn.
+		expect(discoverWorkflowMcpServers(projectDir, env)).toBeUndefined();
+		expect(console.error).toHaveBeenCalledTimes(1);
+	});
+
+	it("stays silent when GSD is not installed at all", () => {
+		expect(discoverWorkflowMcpServers(projectDir, { PATH: "" })).toBeUndefined();
+		expect(console.error).not.toHaveBeenCalled();
+	});
+
+	it("stays silent for a REAL GSD project whose install is unresolvable", () => {
+		// The mutation that matters: a notice fired on every !entry would tell a
+		// genuine GSD project it is "not a GSD project". Here .gsd/ exists, so
+		// synthesis gets past findGsdProjectRoot and fails later, on the install
+		// root -- a different failure, and not this notice's to report.
+		mkdirSync(join(projectDir, ".gsd"), { recursive: true });
+		expect(discoverWorkflowMcpServers(projectDir, env)).toBeUndefined();
+		expect(console.error).not.toHaveBeenCalled();
+	});
+
+	it("stays silent when discovery is opted out", () => {
+		const off = { ...env, PI_KIRO_WORKFLOW_MCP: "off" };
+		expect(discoverWorkflowMcpServers(projectDir, off)).toBeUndefined();
+		expect(console.error).not.toHaveBeenCalled();
+	});
+
+	it("stays silent when a mount actually succeeds from .mcp.json", () => {
+		writeFileSync(
+			join(projectDir, ".mcp.json"),
+			JSON.stringify({ mcpServers: { "gsd-workflow": { command: "gsd-mcp" } } }),
+		);
+		expect(discoverWorkflowMcpServers(projectDir, env)).toBeDefined();
+		// One line, and it is the file-sourced audit notice -- not this one.
+		expect(console.error).toHaveBeenCalledTimes(1);
+		expect(lines()[0]).toContain("--trust-all-tools");
+		expect(lines()[0]).not.toContain("no GSD project at");
+	});
+
+	it("warns per project dir, so a second project is not silenced by the first", () => {
+		const other = join(root, "other");
+		mkdirSync(other, { recursive: true });
+		expect(discoverWorkflowMcpServers(projectDir, env)).toBeUndefined();
+		expect(discoverWorkflowMcpServers(other, env)).toBeUndefined();
+		expect(console.error).toHaveBeenCalledTimes(2);
+		expect(lines()[0]).toContain(projectDir);
+		expect(lines()[1]).toContain(other);
 	});
 });
