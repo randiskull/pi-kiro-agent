@@ -36,18 +36,22 @@ jobs:
       # Trusted publishing needs npm >= 11.5.1; do not rely on the bundled npm.
       - run: npm install -g npm@latest
 
-      - name: Tag must match the package version
+      # Validated once and exported, rather than re-derived per step. The shape
+      # check has to be anchored: a `case` glob like [0-9]*.[0-9]*.[0-9]* accepts
+      # 1.2.3-rc1, 1.2.3.4 and 1.2.3+build, because the trailing * matches anything.
+      - name: Validate the tag and derive the version
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag $GITHUB_REF_NAME is not vX.Y.Z (see docs/releasing.md)" >&2
+            exit 1
+          fi
           pkg="$(node -p "require('./package.json').version")"
-          if [ "$tag" != "$pkg" ]; then
+          if [ "$version" != "$pkg" ]; then
             echo "tag $GITHUB_REF_NAME does not match package.json version $pkg" >&2
             exit 1
           fi
-          case "$tag" in
-            [0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "version $tag is not a plain X.Y.Z (see docs/releasing.md)" >&2; exit 1 ;;
-          esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
 
       # Without this, a tag on ANY branch publishes: the tag is the only trigger, so
       # unreviewed code reaches npm with every branch protection intact and bypassed.
@@ -65,10 +69,14 @@ jobs:
       # only superseded.
       - name: Changelog must have a section for this version
         run: |
-          tag="${GITHUB_REF_NAME#v}"
-          esc="$(printf '%s' "$tag" | sed 's/\./\\./g')"
+          # VERSION is already validated as digits and dots, so escaping the dots is
+          # provably sufficient: no other regex-active character can reach here.
+          # Note the step does not SANITIZE the version by stripping characters,
+          # which would silently match a different section; a bad tag is rejected
+          # above instead.
+          esc="${VERSION//./\\.}"
           if ! grep -qE "^## ${esc}( |\$)" CHANGELOG.md; then
-            echo "CHANGELOG.md has no '## $tag' section (see docs/releasing.md)" >&2
+            echo "CHANGELOG.md has no '## $VERSION' section (see docs/releasing.md)" >&2
             exit 1
           fi
 

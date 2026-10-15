@@ -20,6 +20,7 @@ const packageJson = JSON.parse(
 ) as {
 	version?: string;
 	dependencies?: Record<string, string>;
+	peerDependencies?: Record<string, string>;
 	scripts?: Record<string, string>;
 	publishConfig?: { registry?: string; access?: string };
 	files?: string[];
@@ -201,11 +202,7 @@ describe("version and changelog agree (docs/releasing.md)", () => {
 	// of which host CI tests against, and why raising it is a minor. If the peer range
 	// is ever narrowed, that reasoning is void and the doc is wrong.
 	it("keeps the pi peer dependencies unpinned", () => {
-		const peers = (
-			JSON.parse(readFileSync(resolve(__dirname, "..", "package.json"), "utf8")) as {
-				peerDependencies?: Record<string, string>;
-			}
-		).peerDependencies;
+		const peers = packageJson.peerDependencies;
 		for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai"]) {
 			expect(
 				peers?.[name],
