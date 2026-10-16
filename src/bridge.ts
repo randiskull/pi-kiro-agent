@@ -414,6 +414,7 @@ export function buildBridgeServer(
 	tools: CapturedTool[],
 	getCtx: () => ExtensionContext | undefined,
 	signal: AbortSignal,
+	onCall?: BridgeCallListener,
 ): { instance: McpServer; toolNames: string[] } | undefined {
 	if (tools.length === 0) return undefined;
 
@@ -514,6 +515,12 @@ export function buildBridgeServer(
 		// model that chose to call it twice by counting the calls that actually
 		// arrived here.
 		trace("bridge.call", { callId, tool: tool.name, args: request.params.arguments ?? {}, singleFlight });
+		// Display hook only: a listener must never fail or delay the call.
+		try {
+			onCall?.(tool.name, request.params.arguments ?? {});
+		} catch {
+			// ignore
+		}
 		// extra.signal fires when the CALLER cancels or drops the connection.
 		// Passing only the bridge-lifetime signal meant a call whose caller had
 		// already given up kept running, holding a question in the user's queue
@@ -561,6 +568,9 @@ export function buildBridgeServer(
 	return { instance, toolNames: tools.map((tool) => tool.name) };
 }
 
+/** Observes a bridged tools/call as it arrives, before the tool executes. */
+export type BridgeCallListener = (toolName: string, args: Record<string, unknown>) => void;
+
 export interface HttpBridgeHandle {
 	/** Loopback MCP endpoint, e.g. http://127.0.0.1:53412/mcp (use with the Authorization header). */
 	url: string;
@@ -588,6 +598,14 @@ export interface HttpBridgeHandle {
 	 * bridge can ignore it.
 	 */
 	rebindOrigin?: () => void;
+	/**
+	 * Subscribe to bridged calls; returns the unsubscribe. The chat transport
+	 * uses it to put real arguments on its live toolCall placeholders: kiro's
+	 * compact `[tool] Running: @pi/<name>` line carries none, and this is the
+	 * only place in the process that sees them. Optional so hand-built handles
+	 * (tests, wrappers) need not supply it.
+	 */
+	onToolCall?: (listener: BridgeCallListener) => () => void;
 }
 
 /**
@@ -683,6 +701,10 @@ export async function serveBridgeHttp(
 	const maxBodyBytes = bridgeMaxBodyBytes();
 	// Assigned once listen() resolves; no request can arrive before that.
 	let port = 0;
+	const callListeners = new Set<BridgeCallListener>();
+	const notifyCall: BridgeCallListener = (toolName, args) => {
+		for (const listener of callListeners) listener(toolName, args);
+	};
 
 	// Stateless Streamable-HTTP: a transport instance serves exactly one
 	// request, so build a fresh McpServer + transport per POST (the MCP SDK's
@@ -696,7 +718,7 @@ export async function serveBridgeHttp(
 		// per-SESSION, because a session reset has to cancel calls in flight
 		// (docs/design/acp-transport.md section 5e.3). Resolved per request, not
 		// captured, so a reset mid-turn still cancels correctly.
-		const built = buildBridgeServer(tools, getCtx, getCallSignal?.() ?? signal);
+		const built = buildBridgeServer(tools, getCtx, getCallSignal?.() ?? signal, notifyCall);
 		if (!built) {
 			res.writeHead(500).end();
 			return;
@@ -763,5 +785,11 @@ export async function serveBridgeHttp(
 		token,
 		toolNames,
 		close,
+		onToolCall: (listener) => {
+			callListeners.add(listener);
+			return () => {
+				callListeners.delete(listener);
+			};
+		},
 	};
 }

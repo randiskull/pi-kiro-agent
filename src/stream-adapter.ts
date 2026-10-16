@@ -22,6 +22,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type {
 	AssistantMessage,
 	AssistantMessageEventStream,
@@ -73,11 +74,66 @@ const MAX_ATTEMPTS = 3;
  * ALREADY executed must be marked and stripped. */
 export const LIVE_TOOL_ID_PREFIX = "kiro-live-";
 
+type LiveToolCall = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
+
+function isLivePlaceholder(block: AssistantMessage["content"][number]): block is LiveToolCall {
+	return block.type === "toolCall" && String(block.id).startsWith(LIVE_TOOL_ID_PREFIX);
+}
+
 /** Drop live-progress placeholder toolCall blocks (matched by LIVE_TOOL_ID_PREFIX). */
 export function stripLivePlaceholders(content: AssistantMessage["content"]): AssistantMessage["content"] {
-	return content.filter(
-		(block) => !(block.type === "toolCall" && String(block.id).startsWith(LIVE_TOOL_ID_PREFIX)),
-	);
+	return content.filter((block) => !isLivePlaceholder(block));
+}
+
+/**
+ * Live toolCall placeholders for one chat attempt.
+ *
+ * pi's TUI draws a row per toolCall id the first time it sees one on a
+ * partial, and only ever refreshes that row's arguments under the SAME id.
+ * kiro's tool-use line names the tool but (in the 2.21+ compact form) carries
+ * no arguments, so a placeholder starts as `{}` -- which a tool's renderCall
+ * shows as e.g. "todo undefined" -- and nothing used to fill it. For bridged
+ * tools the bridge sees the real arguments; `fill` puts them on the oldest
+ * unfilled placeholder of that name and emits a toolcall_delta so pi redraws
+ * the row. A call that reaches the bridge before its line is parsed is held
+ * and applied when `surface` creates the placeholder.
+ */
+function createLiveToolCalls(
+	output: AssistantMessage,
+	stream: AssistantMessageEventStream,
+	pushThinking: (delta: string) => void,
+) {
+	const unfilled = new Set<string>();
+	const early = new Map<string, Array<Record<string, unknown>>>();
+	return {
+		surface(name: string): void {
+			const args = early.get(name)?.shift();
+			// Random, not a per-turn counter: pi keys rows by id, so ids must not
+			// repeat across turns.
+			const id = `${LIVE_TOOL_ID_PREFIX}${randomUUID()}-${name}`;
+			output.content.push({ type: "toolCall", id, name, arguments: (args ?? {}) as LiveToolCall["arguments"] });
+			if (!args) unfilled.add(id);
+			pushThinking(`\n⚙ ${name}\n`);
+		},
+		fill(name: string, args: Record<string, unknown>): void {
+			const index = output.content.findIndex((block) => isLivePlaceholder(block) && block.name === name && unfilled.has(block.id));
+			const block = output.content[index];
+			if (!block || !isLivePlaceholder(block)) {
+				const queued = early.get(name) ?? [];
+				queued.push(args);
+				early.set(name, queued);
+				return;
+			}
+			unfilled.delete(block.id);
+			block.arguments = args as LiveToolCall["arguments"];
+			// `index` is looked up now, not cached at surface time: while a bridge
+			// listener is subscribed (one attempt), output.content is append-only --
+			// its only reassignments are runAttempt's strip before subscribing and
+			// reconcileToolCalls after unsubscribing -- so this is the block's
+			// current slot in the partial being pushed.
+			stream.push({ type: "toolcall_delta", contentIndex: index, delta: JSON.stringify(args), partial: output });
+		},
+	};
 }
 
 /**
@@ -402,6 +458,7 @@ async function runAttempt(
 	output: AssistantMessage,
 	pushThinking: (delta: string) => void,
 	abortSignal: AbortSignal | undefined,
+	live: { stream: AssistantMessageEventStream; bridge?: HttpBridgeHandle },
 ): Promise<{ exitCode: number; raw: string; stderrText: string; timedOut: boolean }> {
 	let turnTimedOut = false;
 	// detached: own process group, so aborts can kill kiro's helper
@@ -455,21 +512,14 @@ async function runAttempt(
 	// turn by the authoritative synthesizeToolCallBlocks pass.
 	// Per-attempt: a retried attempt drops its predecessor's live blocks.
 	output.content = stripLivePlaceholders(output.content);
+	const liveCalls = createLiveToolCalls(output, live.stream, pushThinking);
+	const stopListening = live.bridge?.onToolCall?.(liveCalls.fill);
 	const liveParser = createToolUseStreamParser();
-	let liveCount = 0;
 	child.stdout.on("data", (chunk: Buffer) => {
 		const text = chunk.toString("utf8");
 		raw += text;
 		pushThinking(stripAnsi(text));
-		for (const use of liveParser.feed(stripAnsi(text))) {
-			output.content.push({
-				type: "toolCall",
-				id: `${LIVE_TOOL_ID_PREFIX}${liveCount++}-${use.name}`,
-				name: use.name,
-				arguments: {},
-			});
-			pushThinking(`\n⚙ ${use.name}\n`);
-		}
+		for (const use of liveParser.feed(stripAnsi(text))) liveCalls.surface(use.name);
 	});
 	// Tool-use lines arrive HERE on kiro-cli 2.21+ (see toolUseTranscript),
 	// so stderr gets its own parser instance: one line only ever lands on
@@ -479,15 +529,7 @@ async function runAttempt(
 	child.stderr.on("data", (chunk: Buffer) => {
 		const text = chunk.toString("utf8");
 		stderrText += text;
-		for (const use of liveStderrParser.feed(stripAnsi(text))) {
-			output.content.push({
-				type: "toolCall",
-				id: `${LIVE_TOOL_ID_PREFIX}${liveCount++}-${use.name}`,
-				name: use.name,
-				arguments: {},
-			});
-			pushThinking(`\n⚙ ${use.name}\n`);
-		}
+		for (const use of liveStderrParser.feed(stripAnsi(text))) liveCalls.surface(use.name);
 	});
 
 	const exitCode: number = await new Promise((resolve, reject) => {
@@ -498,6 +540,7 @@ async function runAttempt(
 		child.on("exit", (code) => resolve(code ?? -1));
 	});
 	abortSignal?.removeEventListener("abort", onAbort);
+	stopListening?.();
 	clearTimeout(ceilingTimer);
 	if (killTimer) clearTimeout(killTimer);
 	unregisterChildForCleanup(child);
@@ -536,22 +579,41 @@ function salvageOrThrow(exitCode: number, body: string, stderrText: string, tool
  * pi sees it. pi's agent loop (agent-loop.ts:228) dispatches on the PRESENCE
  * of toolCall blocks, not on stopReason; any block without the prefix
  * triggers redispatch of work kiro already executed.
+ *
+ * A block whose call was already surfaced live takes over that placeholder's
+ * id (oldest same-name first), so pi refreshes the existing row instead of
+ * drawing a second one. Parsed arguments win when the transcript has them
+ * (legacy ⋮ form); otherwise the placeholder's bridge-filled ones are kept.
  */
 function reconcileToolCalls(
 	output: AssistantMessage,
 	toolTranscript: string,
 	pushThinking: (delta: string) => void,
 ): void {
+	const unclaimed = output.content.filter(isLivePlaceholder);
 	output.content = stripLivePlaceholders(output.content);
 	for (const block of synthesizeToolCallBlocks(toolTranscript)) {
-		output.content.push({
-			...block,
-			id: `${LIVE_TOOL_ID_PREFIX}${block.id}`,
-		});
-		pushThinking(`\n⚙ ${block.name}\n`);
-		trace("chat.toolcall.surfaced", { tool: block.name, displayOnly: true });
+		const match = unclaimed.findIndex((placeholder) => placeholder.name === block.name);
+		const placeholder = match === -1 ? undefined : unclaimed.splice(match, 1)[0];
+		if (placeholder) {
+			const parsed = Object.keys(block.arguments).length > 0;
+			output.content.push({ ...block, id: placeholder.id, arguments: parsed ? block.arguments : placeholder.arguments });
+		} else {
+			output.content.push({ ...block, id: `${LIVE_TOOL_ID_PREFIX}${block.id}` });
+			pushThinking(`\n⚙ ${block.name}\n`);
+		}
+		trace("chat.toolcall.surfaced", { tool: block.name, displayOnly: true, reusedLiveRow: placeholder !== undefined });
+	}
+	// A live row the end-of-turn transcript has no call for is dropped with the
+	// rest of the placeholders; trace it so a tool that appeared mid-turn and
+	// then vanished can be diagnosed.
+	for (const leftover of unclaimed) {
+		trace("chat.toolcall.dropped", { tool: leftover.name, id: leftover.id });
 	}
 }
+
+/** Test hook: the end-of-turn reconciliation pass. */
+export const _reconcileToolCalls = reconcileToolCalls;
 
 /**
  * Record/advance the kiro session bookkeeping BEFORE the caller emits `done`,
@@ -681,7 +743,10 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						prompt: redactSecrets(promptText),
 					});
 
-					const attemptResult = await runAttempt(args, deps.binaryPath, output, pushThinking, options?.signal);
+					const attemptResult = await runAttempt(args, deps.binaryPath, output, pushThinking, options?.signal, {
+						stream,
+						bridge,
+					});
 					raw = attemptResult.raw;
 					stderrText = attemptResult.stderrText;
 					exitCode = attemptResult.exitCode;
