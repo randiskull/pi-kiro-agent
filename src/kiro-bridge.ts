@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync }
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { HttpBridgeHandle } from "./bridge.js";
+import { envMs } from "./transport-utils.js";
 
 export function bridgeEnabled(): boolean {
 	return process.env.PI_KIRO_BRIDGE !== "off";
@@ -95,6 +96,31 @@ export function writeAgentProfile(
 const INHERIT_KEY = "chat.disableInheritingDefaultResources";
 const RESTORE_SENTINEL = ".pi-kiro-settings-restore.json";
 
+/**
+ * What the sentinel records: who changed the file, when, what it held before
+ * (null = absent) and exactly what was written. `pid: null` marks a change whose
+ * own restore failed, which any later turn may retry.
+ */
+interface RestoreRecord {
+	pid?: number | null;
+	ts?: number;
+	original?: string | null;
+	written?: string;
+}
+
+/** Settings dirs this process changed and has not restored yet: their sentinels are live. */
+const activeDirs = new Set<string>();
+
+/**
+ * Age past which a sentinel is stale even if its pid is alive, because pids are
+ * reused: a dead owner's pid recycled by an unrelated process would otherwise
+ * keep the setting stranded indefinitely. Comfortably above the longest turn
+ * the chat transport allows (PI_KIRO_CHAT_TIMEOUT_MS, 45 min by default).
+ */
+function sentinelMaxAgeMs(): number {
+	return Math.max(3 * 60 * 60 * 1000, 2 * envMs("PI_KIRO_CHAT_TIMEOUT_MS", 45 * 60 * 1000));
+}
+
 export interface WorkspaceSettingsHandle {
 	path: string;
 	restore: () => void;
@@ -128,6 +154,10 @@ function pidAlive(pid: number): boolean {
 	}
 }
 
+function writeSentinel(dir: string, record: RestoreRecord): void {
+	writeFileSync(join(dir, RESTORE_SENTINEL), `${JSON.stringify(record)}\n`, "utf8");
+}
+
 function restoreFrom(settingsPath: string, original: string | null): void {
 	if (original !== null) {
 		writeFileSync(settingsPath, original, "utf8");
@@ -147,35 +177,94 @@ function restoreFrom(settingsPath: string, original: string | null): void {
 }
 
 /**
+ * Undo our change to `settingsPath`. When the file is exactly what we wrote, put
+ * the original back (bytes, or absence). When it changed under us -- the user or
+ * another tool edited it mid-turn -- keep their edit and take back only our key,
+ * and only while it still holds the value we set. Throws on a filesystem error.
+ */
+function undoChange(settingsPath: string, original: string | null, written: string | undefined): void {
+	const current = readIfPresent(settingsPath);
+	if (written === undefined || current === written) {
+		restoreFrom(settingsPath, original);
+		return;
+	}
+	if (current === undefined) return;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(current);
+	} catch {
+		return;
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+	const record = parsed as Record<string, unknown>;
+	if (record[INHERIT_KEY] !== true) return;
+	const { [INHERIT_KEY]: _ours, ...theirs } = record;
+	if (original === null && Object.keys(theirs).length === 0) {
+		restoreFrom(settingsPath, null);
+		return;
+	}
+	writeFileSync(settingsPath, `${JSON.stringify(theirs, null, "\t")}\n`, "utf8");
+}
+
+/**
+ * Restore and clear the sentinel. The sentinel goes FIRST because restoreFrom()
+ * tidies away an empty settings dir and a sentinel still in it makes that rmdir
+ * fail. If the restore itself fails, the sentinel is written back as orphaned
+ * (`pid: null`) so the next delegated turn here retries, and the failure is
+ * reported: left silent, the user's interactive kiro loses all steering and
+ * skills with nothing pointing at pi.
+ */
+function finishRestore(dir: string, record: RestoreRecord): void {
+	const settingsPath = join(dir, "cli.json");
+	rmSync(join(dir, RESTORE_SENTINEL), { force: true });
+	try {
+		undoChange(settingsPath, record.original ?? null, record.written);
+	} catch (error) {
+		try {
+			mkdirSync(dir, { recursive: true });
+			writeSentinel(dir, { ...record, pid: null, ts: Date.now() });
+		} catch {
+			// the warning below is the remaining signal
+		}
+		console.error(
+			`[pi-kiro] could not restore ${settingsPath} (${error instanceof Error ? error.message : String(error)}); the next delegated turn in this directory retries. To fix it now, remove "${INHERIT_KEY}" from that file. Set PI_KIRO_WORKSPACE_SETTINGS=off to stop pi-kiro writing it.`,
+		);
+	}
+}
+
+/**
  * Undo a setting left behind by a pi process that was SIGKILLed before its
  * `finally` ran. Without this, a crash leaves
  * `chat.disableInheritingDefaultResources: true` in the user's own project and
  * their interactive kiro sessions silently lose all steering and skills --
  * exactly the kind of quiet, misattributed breakage the orphan reaper exists to
  * prevent for processes. Runs on the next delegated turn in that cwd.
+ *
+ * A sentinel is live, and left alone, while its owner is mid-turn: for this
+ * process that means the dir is still in `activeDirs` (concurrent turns in one
+ * cwd share a pid); for another process, a live pid on a sentinel younger than
+ * sentinelMaxAgeMs().
  */
 function reapStaleRestore(dir: string): void {
 	const sentinelPath = join(dir, RESTORE_SENTINEL);
 	const raw = readIfPresent(sentinelPath);
 	if (raw === undefined) return;
-	let parsed: { pid?: number; original?: string | null };
+	let parsed: RestoreRecord;
 	try {
-		parsed = JSON.parse(raw) as { pid?: number; original?: string | null };
+		parsed = JSON.parse(raw) as RestoreRecord;
 	} catch {
 		rmSync(sentinelPath, { force: true });
 		return;
 	}
-	// A live owner is mid-turn and will restore for itself.
-	if (typeof parsed.pid === "number" && parsed.pid !== process.pid && pidAlive(parsed.pid)) return;
-	// Remove the sentinel FIRST: restoreFrom() tidies away an empty settings dir,
-	// and a sentinel still sitting in it makes that rmdir fail silently, leaving
-	// the litter this is supposed to clear.
-	rmSync(sentinelPath, { force: true });
-	try {
-		restoreFrom(join(dir, "cli.json"), parsed.original ?? null);
-	} catch {
-		// best effort
+	if (typeof parsed.pid === "number") {
+		if (parsed.pid === process.pid) {
+			if (activeDirs.has(dir)) return;
+		} else {
+			const fresh = typeof parsed.ts !== "number" || Date.now() - parsed.ts < sentinelMaxAgeMs();
+			if (fresh && pidAlive(parsed.pid)) return;
+		}
 	}
+	finishRestore(dir, parsed);
 }
 
 /**
@@ -212,13 +301,12 @@ export function disableInheritedResources(cwd: string): WorkspaceSettingsHandle 
 		if (INHERIT_KEY in parsed) return undefined;
 	}
 
+	const written = `${JSON.stringify({ ...parsed, [INHERIT_KEY]: true }, null, "\t")}\n`;
+	const record: RestoreRecord = { pid: process.pid, ts: Date.now(), original: original ?? null, written };
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(
-		join(dir, RESTORE_SENTINEL),
-		`${JSON.stringify({ pid: process.pid, original: original ?? null })}\n`,
-		"utf8",
-	);
-	writeFileSync(path, `${JSON.stringify({ ...parsed, [INHERIT_KEY]: true }, null, "\t")}\n`, "utf8");
+	writeSentinel(dir, record);
+	writeFileSync(path, written, "utf8");
+	activeDirs.add(dir);
 
 	let done = false;
 	return {
@@ -226,13 +314,8 @@ export function disableInheritedResources(cwd: string): WorkspaceSettingsHandle 
 		restore: () => {
 			if (done) return;
 			done = true;
-			// Before restoreFrom, for the rmdir reason in reapStaleRestore.
-			rmSync(join(dir, RESTORE_SENTINEL), { force: true });
-			try {
-				restoreFrom(path, original ?? null);
-			} catch {
-				// best effort
-			}
+			activeDirs.delete(dir);
+			finishRestore(dir, record);
 		},
 	};
 }

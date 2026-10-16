@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { HttpBridgeHandle } from "../src/bridge.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	agentProfilesDir,
 	bridgeEnabled,
@@ -188,6 +188,115 @@ describe("disableInheritedResources", () => {
 		expect(existsSync(sentinel)).toBe(true);
 		rmSync(ws, { recursive: true, force: true });
 	});
+
+	// Concurrent turns in one cwd (pi-subagents fan-out) share a pid, so the pid
+	// alone cannot tell a live in-process owner from a stale leftover.
+	it("a second turn in the same process does not restore the first turn's live change", () => {
+		const ws = mkws();
+		const path = settings(ws);
+		const first = disableInheritedResources(ws);
+		expect(first).toBeDefined();
+		const second = disableInheritedResources(ws);
+		// The key is already set (by the first), so the second owns nothing...
+		expect(second).toBeUndefined();
+		// ...and the first's change and sentinel survived the second's reap pass.
+		expect(JSON.parse(readFileSync(path, "utf8"))["chat.disableInheritingDefaultResources"]).toBe(true);
+		expect(existsSync(join(dirname(path), ".pi-kiro-settings-restore.json"))).toBe(true);
+		first?.restore();
+		expect(existsSync(join(ws, ".kiro"))).toBe(false);
+		rmSync(ws, { recursive: true, force: true });
+	});
+
+	it("keeps an edit made to the settings file mid-turn, taking back only our key", () => {
+		const ws = mkws();
+		const path = settings(ws);
+		const handle = disableInheritedResources(ws);
+		writeFileSync(
+			path,
+			`${JSON.stringify({ "chat.disableInheritingDefaultResources": true, "chat.defaultModel": "claude-sonnet-4-5" })}\n`,
+			"utf8",
+		);
+		handle?.restore();
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ "chat.defaultModel": "claude-sonnet-4-5" });
+		rmSync(ws, { recursive: true, force: true });
+	});
+
+	it("leaves the file alone when our key was changed mid-turn", () => {
+		const ws = mkws();
+		const path = settings(ws);
+		const handle = disableInheritedResources(ws);
+		const theirs = `${JSON.stringify({ "chat.disableInheritingDefaultResources": false })}\n`;
+		writeFileSync(path, theirs, "utf8");
+		handle?.restore();
+		expect(readFileSync(path, "utf8")).toBe(theirs);
+		rmSync(ws, { recursive: true, force: true });
+	});
+
+	// pids are reused: a dead owner's pid recycled by an unrelated live process
+	// must not keep the setting stranded forever.
+	it("reaps a sentinel whose pid is alive but which is older than any turn", () => {
+		const ws = mkws();
+		const path = settings(ws);
+		mkdirSync(dirname(path), { recursive: true });
+		const written = `${JSON.stringify({ "chat.disableInheritingDefaultResources": true })}\n`;
+		writeFileSync(path, written, "utf8");
+		const sentinel = join(dirname(path), ".pi-kiro-settings-restore.json");
+		const old = Date.now() - 24 * 60 * 60 * 1000;
+		writeFileSync(sentinel, `${JSON.stringify({ pid: process.ppid, ts: old, original: null, written })}\n`, "utf8");
+		const handle = disableInheritedResources(ws);
+		// Rolled back first, so this turn found a clean project and set the key itself.
+		expect(handle).toBeDefined();
+		handle?.restore();
+		expect(existsSync(join(ws, ".kiro"))).toBe(false);
+		rmSync(ws, { recursive: true, force: true });
+	});
+
+	it("leaves a fresh sentinel from a live pid alone", () => {
+		const ws = mkws();
+		const path = settings(ws);
+		mkdirSync(dirname(path), { recursive: true });
+		const written = `${JSON.stringify({ "chat.disableInheritingDefaultResources": true })}\n`;
+		writeFileSync(path, written, "utf8");
+		const sentinel = join(dirname(path), ".pi-kiro-settings-restore.json");
+		writeFileSync(sentinel, `${JSON.stringify({ pid: process.ppid, ts: Date.now(), original: null, written })}\n`, "utf8");
+		expect(disableInheritedResources(ws)).toBeUndefined();
+		expect(readFileSync(path, "utf8")).toBe(written);
+		expect(existsSync(sentinel)).toBe(true);
+		rmSync(ws, { recursive: true, force: true });
+	});
+
+	// chmod does not stop root, so the failure cannot be provoked there.
+	it.skipIf(process.getuid?.() === 0)(
+		"a restore that fails warns, keeps the sentinel, and the next turn retries it",
+		() => {
+			const ws = mkws();
+			const path = settings(ws);
+			mkdirSync(dirname(path), { recursive: true });
+			const before = `${JSON.stringify({ "chat.defaultModel": "claude-sonnet-4-5" })}\n`;
+			writeFileSync(path, before, "utf8");
+			const sentinel = join(dirname(path), ".pi-kiro-settings-restore.json");
+			const warn = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				const handle = disableInheritedResources(ws);
+				chmodSync(path, 0o444);
+				handle?.restore();
+				expect(warn).toHaveBeenCalledTimes(1);
+				expect(String(warn.mock.calls[0]?.[0])).toContain(`could not restore ${path}`);
+				expect(JSON.parse(readFileSync(sentinel, "utf8"))).toMatchObject({ pid: null, original: before });
+
+				chmodSync(path, 0o644);
+				const next = disableInheritedResources(ws);
+				// The orphaned sentinel was retried first: the file was back to the
+				// user's bytes before this turn set the key again.
+				next?.restore();
+				expect(readFileSync(path, "utf8")).toBe(before);
+				expect(existsSync(sentinel)).toBe(false);
+			} finally {
+				warn.mockRestore();
+				rmSync(ws, { recursive: true, force: true });
+			}
+		},
+	);
 
 	it("keeps a settings dir the user also uses", () => {
 		const ws = mkws();
