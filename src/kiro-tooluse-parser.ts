@@ -25,7 +25,8 @@ import { displayToolName } from "./tool-names.js";
 /** One MCP tool invocation parsed from kiro's non-interactive output. */
 export interface KiroToolUse {
 	name: string;
-	server: string;
+	/** The MCP server the tool came from; undefined when the line names none. */
+	server: string | undefined;
 	arguments: Record<string, unknown>;
 }
 
@@ -48,11 +49,11 @@ const MCP_TOOL_LINE = /^\s*\[tool\]\s+Running:\s+@([^/\s]+)\/(\S+)\s*$/;
  * Match either tool-use grammar kiro has emitted. Returning a normalized
  * {name, server} keeps the two capture-group orders from leaking into callers.
  */
-function matchToolUseLine(line: string): { name: string; server: string } | undefined {
+function matchToolUseLine(line: string): { name: string; server: string | undefined } | undefined {
 	const legacy = line.match(TOOL_USE_LINE);
-	if (legacy) return { name: legacy[1] ?? "", server: legacy[2] ?? "" };
+	if (legacy) return { name: legacy[1] ?? "", server: legacy[2] || undefined };
 	const compact = line.match(MCP_TOOL_LINE);
-	if (compact) return { name: compact[2] ?? "", server: compact[1] ?? "" };
+	if (compact) return { name: compact[2] ?? "", server: compact[1] || undefined };
 	return undefined;
 }
 

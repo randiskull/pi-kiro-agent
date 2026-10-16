@@ -354,6 +354,9 @@ export interface PromptBuildOpts {
 	toolAliases?: Record<string, string>;
 }
 
+/** The MCP tool-name alphabet; anything else is kept out of the prompt's alias line. */
+const PROMPT_SAFE_TOOL_NAME = /^[A-Za-z0-9_.-]+$/;
+
 /** The fixed preamble + tool-context scaffolding shared by full and delta prompts. */
 function buildScaffolding(bridgedTools?: string[], workflowMcp?: boolean, opts?: PromptBuildOpts): string[] {
 	const includeSentinel = opts?.sentinel !== false; // default true
@@ -366,9 +369,12 @@ function buildScaffolding(bridgedTools?: string[], workflowMcp?: boolean, opts?:
 		toolContextLines.push(
 			`These calling-session tools ARE available to you as MCP tools from the "${BRIDGE_MCP_SERVER_KEY}" server — call them as @${BRIDGE_MCP_SERVER_KEY}/<tool_name>: ${bridgedTools.join(", ")}.`,
 		);
+		// Names are spliced into the prompt, so only MCP-name-shaped ones are: a
+		// name carrying a newline or a closing tag would break the block's structure.
 		const aliases = bridgedTools
-			.filter((name) => opts?.toolAliases?.[name] !== undefined)
-			.map((name) => `the caller's ${opts?.toolAliases?.[name]} is available as @${BRIDGE_MCP_SERVER_KEY}/${name}`);
+			.map((name) => [name, opts?.toolAliases?.[name]] as const)
+			.filter(([name, original]) => original !== undefined && PROMPT_SAFE_TOOL_NAME.test(original) && PROMPT_SAFE_TOOL_NAME.test(name))
+			.map(([name, original]) => `the caller's ${original} is available as @${BRIDGE_MCP_SERVER_KEY}/${name}`);
 		if (aliases.length > 0) {
 			toolContextLines.push(
 				`They are exposed under origin-prefixed names; a tool the prior context names the caller's way maps to its exposed name: ${aliases.join("; ")}.`,

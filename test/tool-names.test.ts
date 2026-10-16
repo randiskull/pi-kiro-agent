@@ -14,6 +14,12 @@ describe("bridgePrefixFor / bridgedToolName", () => {
 		expect(bridgePrefixFor("@acme/pi-web.tools")).toBe("web_tools_");
 	});
 
+	it("falls back to ext_ when nothing is left to derive a prefix from", () => {
+		expect(bridgePrefixFor("")).toBe("ext_");
+		expect(bridgePrefixFor("@scope/")).toBe("ext_");
+		expect(bridgePrefixFor("pi-")).toBe("ext_");
+	});
+
 	it("keeps the tool's own case and never double-prefixes", () => {
 		expect(bridgedToolName("@tintinweb/pi-subagents", "Agent")).toBe("subagents_Agent");
 		expect(bridgedToolName("@juicesharp/rpiv-todo", "todo")).toBe("rpiv_todo");

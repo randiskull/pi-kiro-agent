@@ -28,12 +28,16 @@ function withPrefix(prefix: string, name: string): string {
 /**
  * Prefix for tools registered by `source` (a package name): `rpiv_` for any
  * `rpiv-*` package, otherwise the unscoped name minus a leading `pi-`,
- * sanitized, plus `_` (`@tintinweb/pi-subagents` -> `subagents_`).
+ * sanitized, plus `_` (`@tintinweb/pi-subagents` -> `subagents_`). A source
+ * with nothing left to derive from (`""`, `@scope/`, `pi-`) gets `ext_` rather
+ * than a bare `_`; it falls back instead of throwing because capture runs
+ * every source in one pass, and one bad name must not cost the others.
  */
 export function bridgePrefixFor(source: string): string {
 	const unscoped = source.replace(/^@[^/]+\//, "");
 	if (unscoped.startsWith("rpiv-")) return "rpiv_";
-	return `${sanitize(unscoped.replace(/^pi-/, ""))}_`;
+	const base = sanitize(unscoped.replace(/^pi-/, ""));
+	return `${base || "ext"}_`;
 }
 
 /** The name the bridge exposes for tool `name` registered by package `source`. */
