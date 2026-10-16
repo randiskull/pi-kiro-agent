@@ -126,6 +126,11 @@ function createLiveToolCalls(
 			}
 			unfilled.delete(block.id);
 			block.arguments = args as LiveToolCall["arguments"];
+			// `index` is looked up now, not cached at surface time: while a bridge
+			// listener is subscribed (one attempt), output.content is append-only --
+			// its only reassignments are runAttempt's strip before subscribing and
+			// reconcileToolCalls after unsubscribing -- so this is the block's
+			// current slot in the partial being pushed.
 			stream.push({ type: "toolcall_delta", contentIndex: index, delta: JSON.stringify(args), partial: output });
 		},
 	};
@@ -599,7 +604,16 @@ function reconcileToolCalls(
 		}
 		trace("chat.toolcall.surfaced", { tool: block.name, displayOnly: true, reusedLiveRow: placeholder !== undefined });
 	}
+	// A live row the end-of-turn transcript has no call for is dropped with the
+	// rest of the placeholders; trace it so a tool that appeared mid-turn and
+	// then vanished can be diagnosed.
+	for (const leftover of unclaimed) {
+		trace("chat.toolcall.dropped", { tool: leftover.name, id: leftover.id });
+	}
 }
+
+/** Test hook: the end-of-turn reconciliation pass. */
+export const _reconcileToolCalls = reconcileToolCalls;
 
 /**
  * Record/advance the kiro session bookkeeping BEFORE the caller emits `done`,

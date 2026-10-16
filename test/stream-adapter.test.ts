@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AssistantMessageEvent, Context, Model } from "@earendil-works/pi-ai";
+import { type AssistantMessageEvent, type AssistantMessageEventStream, type Context, createAssistantMessageEventStream, type Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildPromptFromContext,
@@ -11,6 +11,7 @@ import {
 	extractFinal,
 	FINAL_CLOSE,
 	FINAL_OPEN,
+	_reconcileToolCalls,
 	LIVE_TOOL_ID_PREFIX,
 	makeStreamViaKiro,
 	mapEffort,
@@ -684,6 +685,8 @@ describe("live rows: bridged arguments and one row per call", () => {
 		const child = new FakeChild();
 		spawnMock.mockImplementation(() => {
 			queueMicrotask(() => {
+				// Prose first, so a thinking block sits ahead of the placeholder.
+				child.stdout.emit("data", Buffer.from("Working on it.\n"));
 				if (bridgeCallFirst) listener?.("todo", ARGS);
 				child.stderr.emit("data", Buffer.from("[tool] Running: @pi/todo\n"));
 				if (!bridgeCallFirst) listener?.("todo", ARGS);
@@ -702,7 +705,22 @@ describe("live rows: bridged arguments and one row per call", () => {
 
 	it("fills the live row from the bridge under the same id, then reuses that id at end of turn", async () => {
 		scriptCompactTurn(false);
+		// Read contentIndex at PUSH time: a consumer reads events later, after the
+		// end-of-turn pass has rebuilt the content array.
+		const streamProto = Object.getPrototypeOf(createAssistantMessageEventStream()) as AssistantMessageEventStream;
+		const originalPush = streamProto.push;
+		let deltaTargetId: string | undefined;
+		const pushSpy = vi.spyOn(streamProto, "push").mockImplementation(function (
+			this: AssistantMessageEventStream,
+			event: AssistantMessageEvent,
+		) {
+			if (event.type === "toolcall_delta") {
+				deltaTargetId = (event.partial.content[event.contentIndex] as { id?: string } | undefined)?.id;
+			}
+			return originalPush.call(this, event);
+		});
 		const snapshots = await collectSnapshots(true);
+		pushSpy.mockRestore();
 
 		const firstSeen = snapshots.find((s) => s.toolCalls.length > 0);
 		expect(firstSeen?.toolCalls).toHaveLength(1);
@@ -711,6 +729,8 @@ describe("live rows: bridged arguments and one row per call", () => {
 
 		const delta = snapshots.find((s) => s.type === "toolcall_delta");
 		expect(delta?.toolCalls).toEqual([{ type: "toolCall", id: rowId, name: "todo", arguments: ARGS }]);
+		// contentIndex names the placeholder's current slot (after the thinking block).
+		expect(deltaTargetId).toBe(rowId);
 
 		// After reconciliation (text events): still ONE row, same id, args kept
 		// even though the compact transcript parses to {}.
@@ -747,5 +767,32 @@ describe("live rows: bridged arguments and one row per call", () => {
 		expect(rows[0]?.arguments).toEqual({ cmd: "cargo test" });
 		expect(rows[0]?.id).not.toContain("kiro-mcp-");
 		expect(thinkingOf(events).match(/⚙ gsd_exec/g)).toHaveLength(1);
+	});
+});
+
+describe("reconcileToolCalls: a live row with no end-of-turn call", () => {
+	it("is dropped and traced as chat.toolcall.dropped", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-kiro-dropped-"));
+		const tracePath = join(dir, "trace.jsonl");
+		const savedTrace = process.env.PI_KIRO_TRACE;
+		process.env.PI_KIRO_TRACE = tracePath;
+		resetTraceTarget();
+		try {
+			const output = {
+				content: [{ type: "toolCall", id: `${LIVE_TOOL_ID_PREFIX}abc-todo`, name: "todo", arguments: {} }],
+			} as never as Parameters<typeof _reconcileToolCalls>[0];
+			_reconcileToolCalls(output, "no tool lines here", () => undefined);
+			expect(output.content.filter((b) => b.type === "toolCall")).toHaveLength(0);
+			const dropped = readFileSync(tracePath, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l))
+				.filter((e) => e.event === "chat.toolcall.dropped");
+			expect(dropped).toEqual([expect.objectContaining({ tool: "todo", id: `${LIVE_TOOL_ID_PREFIX}abc-todo` })]);
+		} finally {
+			if (savedTrace === undefined) delete process.env.PI_KIRO_TRACE;
+			else process.env.PI_KIRO_TRACE = savedTrace;
+			resetTraceTarget();
+		}
 	});
 });
