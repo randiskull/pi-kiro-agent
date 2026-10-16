@@ -57,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mutation in gsd 1.22.0 and does require `_meta["io.opengsd/idempotency-key"]`; that error is a
   real ordered gate, not a red herring.
 
+- **Chat transport: a bridged tool call shows its real arguments, on one row.** kiro-cli 2.21+ prints
+  tool use in a compact form (`[tool] Running: @pi/todo`) with no arguments, so the live toolCall
+  placeholder stayed `{}` for the whole turn and a tool's renderer drew it as e.g. `todo undefined`.
+  The end-of-turn pass then added a second row (and a second `⚙` marker) under a new id, because pi
+  only refreshes a row whose id it already knows. The bridge now reports each call's arguments as it
+  arrives (`HttpBridgeHandle.onToolCall`); they fill the oldest empty placeholder of that name and a
+  `toolcall_delta` redraws it, and end-of-turn blocks reuse the live placeholder's id. Placeholder ids
+  are random rather than a per-turn counter. Tools on other MCP servers (`gsd_*`) still have no
+  arguments on this transport until `stream-json`, but no longer get a duplicate row.
+
 ### Changed
 
 - **Comment audit across `src/` and `test/`: housekeeping prose out, functional comments only.**

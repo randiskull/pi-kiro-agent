@@ -192,6 +192,34 @@ describe("serveBridgeHttp", () => {
 			fetch(handle.url, { method: "POST", body: "{}" }).then((response) => response.status),
 		).rejects.toThrow();
 	});
+
+	it("onToolCall reports each call's name and arguments, and a throwing listener does not fail the call", async () => {
+		const handle = await serveBridgeHttp([makeTool()], () => FAKE_CTX, new AbortController().signal);
+		if (!handle?.onToolCall) throw new Error("expected handle with onToolCall");
+		const seen: Array<[string, Record<string, unknown>]> = [];
+		const stop = handle.onToolCall((name, args) => seen.push([name, args]));
+		handle.onToolCall(() => {
+			throw new Error("listener bug");
+		});
+		const client = new Client({ name: "test-client", version: "1.0.0" });
+		try {
+			await client.connect(
+				new StreamableHTTPClientTransport(new URL(handle.url), {
+					requestInit: { headers: { Authorization: `Bearer ${handle.token}` } },
+				}),
+			);
+			const result = await client.callTool({ name: "todo", arguments: { op: "create" } });
+			expect(result.isError ?? false).toBe(false);
+			expect(seen).toEqual([["todo", { op: "create" }]]);
+
+			stop();
+			await client.callTool({ name: "todo", arguments: { op: "list" } });
+			expect(seen).toHaveLength(1);
+		} finally {
+			await client.close();
+			await handle.close();
+		}
+	});
 });
 
 describe("bridge request body limit", () => {

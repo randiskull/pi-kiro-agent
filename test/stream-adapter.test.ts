@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessageEvent, Context, Model } from "@earendil-works/pi-ai";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildPromptFromContext,
 	cleanBody,
@@ -630,5 +630,122 @@ describe("live tool-use streaming + end-of-turn reconciliation", () => {
 			else process.env.PI_KIRO_TRACE = savedTrace;
 			resetTraceTarget();
 		}
+	});
+});
+
+describe("live rows: bridged arguments and one row per call", () => {
+	type Snapshot = { type: string; toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> };
+	const ARGS = { action: "create", subject: "Model evolution paths" };
+	let savedHome: string | undefined;
+	let listener: ((name: string, args: Record<string, unknown>) => void) | undefined;
+
+	const fakeBridge = {
+		url: "http://127.0.0.1:1/mcp",
+		urlWithToken: "http://127.0.0.1:1/mcp/t",
+		token: "t",
+		toolNames: ["todo"],
+		close: async () => undefined,
+		onToolCall: (l: (name: string, args: Record<string, unknown>) => void) => {
+			listener = l;
+			return () => {
+				listener = undefined;
+			};
+		},
+	};
+
+	beforeEach(() => {
+		spawnMock.mockReset();
+		listener = undefined;
+		// writeAgentProfile writes under ~/.kiro/agents; keep it out of the real home.
+		savedHome = process.env.HOME;
+		process.env.HOME = mkdtempSync(join(tmpdir(), "pi-kiro-home-"));
+	});
+	afterEach(() => {
+		process.env.HOME = savedHome;
+	});
+
+	/** Partials are one mutated object, so snapshot the toolCall blocks at each event. */
+	async function collectSnapshots(withBridge: boolean): Promise<Snapshot[]> {
+		const stream = makeStreamViaKiro({
+			binaryPath: "kiro-cli",
+			getBridge: withBridge ? async () => fakeBridge : undefined,
+		})(MODEL, { systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
+		const snapshots: Snapshot[] = [];
+		for await (const event of stream) {
+			const partial = (event as { partial?: { content: Array<{ type: string }> } }).partial;
+			const toolCalls = (partial?.content ?? []).filter((b) => b.type === "toolCall") as unknown as Snapshot["toolCalls"];
+			snapshots.push({ type: event.type, toolCalls: structuredClone(toolCalls) });
+		}
+		return snapshots;
+	}
+
+	/** Compact (2.21+) kiro output on stderr; `bridgeCallFirst` reorders the bridge hit and the line. */
+	function scriptCompactTurn(bridgeCallFirst: boolean): void {
+		const child = new FakeChild();
+		spawnMock.mockImplementation(() => {
+			queueMicrotask(() => {
+				if (bridgeCallFirst) listener?.("todo", ARGS);
+				child.stderr.emit("data", Buffer.from("[tool] Running: @pi/todo\n"));
+				if (!bridgeCallFirst) listener?.("todo", ARGS);
+				child.stderr.emit("data", Buffer.from("[tool] status: Completed\n"));
+				child.stdout.emit("data", Buffer.from(`> ${FINAL_OPEN}done${FINAL_CLOSE}\n`));
+				queueMicrotask(() => child.emit("exit", 0));
+			});
+			return child;
+		});
+	}
+
+	function thinkingOf(events: AssistantMessageEvent[]): string {
+		const done = events.find((e) => e.type === "done") as { message: { content: Array<{ type: string; thinking?: string }> } };
+		return done.message.content.find((b) => b.type === "thinking")?.thinking ?? "";
+	}
+
+	it("fills the live row from the bridge under the same id, then reuses that id at end of turn", async () => {
+		scriptCompactTurn(false);
+		const snapshots = await collectSnapshots(true);
+
+		const firstSeen = snapshots.find((s) => s.toolCalls.length > 0);
+		expect(firstSeen?.toolCalls).toHaveLength(1);
+		const rowId = firstSeen!.toolCalls[0]!.id;
+		expect(rowId.startsWith(LIVE_TOOL_ID_PREFIX)).toBe(true);
+
+		const delta = snapshots.find((s) => s.type === "toolcall_delta");
+		expect(delta?.toolCalls).toEqual([{ type: "toolCall", id: rowId, name: "todo", arguments: ARGS }]);
+
+		// After reconciliation (text events): still ONE row, same id, args kept
+		// even though the compact transcript parses to {}.
+		const afterReconcile = snapshots.filter((s) => s.type === "text_delta").at(-1);
+		expect(afterReconcile?.toolCalls).toHaveLength(1);
+		expect(afterReconcile?.toolCalls[0]).toMatchObject({ id: rowId, name: "todo", arguments: ARGS });
+
+		const done = snapshots.find((s) => s.type === "done");
+		expect(done).toBeDefined();
+	});
+
+	it("applies a bridge call that arrives before kiro's tool-use line when the row is created", async () => {
+		scriptCompactTurn(true);
+		const snapshots = await collectSnapshots(true);
+		const firstSeen = snapshots.find((s) => s.toolCalls.length > 0);
+		expect(firstSeen?.toolCalls[0]?.arguments).toEqual(ARGS);
+		expect(snapshots.some((s) => s.type === "toolcall_delta")).toBe(false);
+	});
+
+	it("without a bridge, a legacy-form call still yields one row (live id reused) and one ⚙ marker", async () => {
+		const out = [
+			"Running tool gsd_exec with the param (from mcp server: gsdworkflow)",
+			' ⋮  { "cmd": "cargo test" }',
+			" - Completed in 2s",
+			`${FINAL_OPEN}done${FINAL_CLOSE}`,
+		].join("\n");
+		scriptSpawn(out, 0);
+		const events = await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
+		const live = events.find((e) => e.type === "thinking_delta" && e.delta.includes("⚙ gsd_exec"));
+		expect(live).toBeDefined();
+		const textDelta = events.find((e) => e.type === "text_delta") as { partial: { content: Array<{ type: string; id?: string; arguments?: unknown }> } };
+		const rows = textDelta.partial.content.filter((b) => b.type === "toolCall");
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.arguments).toEqual({ cmd: "cargo test" });
+		expect(rows[0]?.id).not.toContain("kiro-mcp-");
+		expect(thinkingOf(events).match(/⚙ gsd_exec/g)).toHaveLength(1);
 	});
 });
