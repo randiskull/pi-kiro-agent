@@ -34,7 +34,12 @@ import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
 import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
-import { type KiroAgentProfile, writeAgentProfile } from "./kiro-bridge.js";
+import {
+	disableInheritedResources,
+	type KiroAgentProfile,
+	type WorkspaceSettingsHandle,
+	writeAgentProfile,
+} from "./kiro-bridge.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import { createToolUseStreamParser, parseKiroToolUses, synthesizeToolCallBlocks } from "./kiro-tooluse-parser.js";
@@ -599,6 +604,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 		(async () => {
 			let bridge: HttpBridgeHandle | undefined;
 			let profile: KiroAgentProfile | undefined;
+			let workspaceSettings: WorkspaceSettingsHandle | undefined;
 			try {
 				stream.push({ type: "start", partial: output });
 
@@ -619,6 +625,10 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				// server inside kiro so GSD units can actually call gsd_* tools.
 				const workflowServers = discoverWorkflowMcpServers(process.cwd());
 				if (bridge || workflowServers) profile = writeAgentProfile(bridge, workflowServers);
+				// Only worth doing behind a custom profile: kiro's built-in agents keep
+				// inheriting regardless of the setting, so with no profile there is
+				// nothing to save and no reason to touch the user's project.
+				if (profile) workspaceSettings = disableInheritedResources(process.cwd());
 
 				// Incremental context: resume the kiro session that mirrors this Pi
 				// conversation and send only the delta, instead of re-serializing the
@@ -750,6 +760,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				});
 				stream.end();
 			} finally {
+				workspaceSettings?.restore();
 				profile?.remove();
 				await bridge?.close().catch(() => undefined);
 			}
