@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The chat transport reads stream-json by default on kiro-cli 2.21.4 or newer (#48).** With
+  `PI_KIRO_CHAT_FORMAT` unset, the version readiness found decides, compared numerically per component (so
+  2.9.0 is below the floor). Older or unparseable versions keep the text scrape and write one
+  `chat.format.fallback` trace per process (`{ kiroVersion, floor }`); there is no user-facing notice. An
+  explicit `PI_KIRO_CHAT_FORMAT=stream-json` or `text` is honoured on any version.
 - **Breaking: tool names carry their origin (#46).** A tool row in a delegated turn did not say which
   implementation ran: `read` could be kiro's built-in or pi's, `todo` pi's native tool or rpiv's
   through the bridge. Every name pi-kiro shows or exposes is now origin-prefixed.

@@ -262,6 +262,13 @@ The roadmap is: probe the three unknowns above, add a stream-json reader beside 
 behind an env flag, run the live suite against both, then make stream-json the default and keep the
 text parser only for kiro-cli versions that lack the flag.
 
+**Shipped (2026-10-16, #46-#48).** The three unknowns were probed on kiro-cli 2.32.0 (captures and
+findings: `probes/stream-json-2.32/`), the reader landed behind `PI_KIRO_CHAT_FORMAT=stream-json` (#47),
+and stream-json is now the chat transport's default on kiro-cli 2.21.4 or newer (#48), compared
+numerically against the version readiness parses. Older or unparseable versions fall back to the text
+parser, with one `chat.format.fallback` trace per process; an explicit `PI_KIRO_CHAT_FORMAT` wins on
+any version. The text parser stays until support for pre-2.21.4 kiro-cli is dropped.
+
 ## 5d. Field evidence, 2026-09-20: surfaced tool calls were being executed a second time
 
 The single worst defect found in this transport so far, and it had been mistaken for four
