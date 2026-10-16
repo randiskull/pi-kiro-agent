@@ -1,0 +1,2 @@
+{"type":"runStarted","data":{"payloadSchema":"acp","acpProtocolVersion":1,"engine":"v2"}}
+{"type":"runError","data":{"sessionId":null,"stage":"init","message":"Internal error: \"Failed to start session: Session not found: 00000000-0000-0000-0000-000000000000\""}}

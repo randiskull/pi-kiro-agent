@@ -23,6 +23,7 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import type {
 	AssistantMessage,
 	AssistantMessageEventStream,
@@ -45,6 +46,7 @@ import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-rea
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import { createToolUseStreamParser, parseKiroToolUses, synthesizeToolCallBlocks } from "./kiro-tooluse-parser.js";
 import { BRIDGE_MCP_SERVER_KEY, displayToolName } from "./tool-names.js";
+import { createStreamJsonReader, type StreamJsonTurn } from "./stream-json-reader.js";
 import { trace } from "./trace.js";
 import { currentSystemPrompt } from "./system-prompt.js";
 import { KIRO_PROVIDER } from "./models.js";
@@ -56,6 +58,7 @@ import {
 	makeListSessions,
 	planTurn,
 	recordFreshSession,
+	recordKnownSession,
 	resumeEnabled,
 	snapshotSessions,
 } from "./session-manager.js";
@@ -147,6 +150,24 @@ function createLiveToolCalls(
 function chatTimeoutMs(): number {
 	return envMs("PI_KIRO_CHAT_TIMEOUT_MS", 45 * 60 * 1000);
 }
+
+export type ChatFormat = "text" | "stream-json";
+
+/**
+ * PI_KIRO_CHAT_FORMAT (#47): `text` (the default) scrapes kiro's prose;
+ * `stream-json` reads `--output-format stream-json` (stream-json-reader.ts).
+ * Matched exactly after trimming; anything else fails the turn before kiro is
+ * spawned, rather than silently picking a transport the user did not ask for.
+ */
+export function chatFormat(): ChatFormat {
+	const raw = (process.env.PI_KIRO_CHAT_FORMAT ?? "").trim();
+	if (raw === "" || raw === "text") return "text";
+	if (raw === "stream-json") return "stream-json";
+	throw new Error(`unknown PI_KIRO_CHAT_FORMAT "${raw}" (expected text or stream-json)`);
+}
+
+/** Upper bound on waiting for stdout to drain after a stream-json child exits. */
+const STREAM_JSON_DRAIN_MS = 1_000;
 
 export const FINAL_OPEN = "<pi_final>";
 export const FINAL_CLOSE = "</pi_final>";
@@ -479,8 +500,8 @@ async function runAttempt(
 	output: AssistantMessage,
 	pushThinking: (delta: string) => void,
 	abortSignal: AbortSignal | undefined,
-	live: { stream: AssistantMessageEventStream; bridge?: HttpBridgeHandle },
-): Promise<{ exitCode: number; raw: string; stderrText: string; timedOut: boolean }> {
+	live: { stream: AssistantMessageEventStream; bridge?: HttpBridgeHandle; format: ChatFormat },
+): Promise<{ exitCode: number; raw: string; stderrText: string; timedOut: boolean; streamJson?: StreamJsonTurn }> {
 	let turnTimedOut = false;
 	// detached: own process group, so aborts can kill kiro's helper
 	// children too (a lone SIGTERM to the parent leaves grandchildren
@@ -533,25 +554,68 @@ async function runAttempt(
 	// turn by the authoritative synthesizeToolCallBlocks pass.
 	// Per-attempt: a retried attempt drops its predecessor's live blocks.
 	output.content = stripLivePlaceholders(output.content);
-	const liveCalls = createLiveToolCalls(output, live.stream, pushThinking);
-	const stopListening = live.bridge?.onToolCall?.(liveCalls.fill);
-	const liveParser = createToolUseStreamParser();
-	child.stdout.on("data", (chunk: Buffer) => {
-		const text = chunk.toString("utf8");
-		raw += text;
-		pushThinking(stripAnsi(text));
-		for (const use of liveParser.feed(stripAnsi(text))) liveCalls.surface(displayToolName(use.name, use.server));
-	});
-	// Tool-use lines arrive HERE on kiro-cli 2.21+ (see toolUseTranscript),
-	// so stderr gets its own parser instance: one line only ever lands on
-	// one stream, and a shared instance would splice the two streams'
-	// partial trailing lines into each other.
-	const liveStderrParser = createToolUseStreamParser();
-	child.stderr.on("data", (chunk: Buffer) => {
-		const text = chunk.toString("utf8");
-		stderrText += text;
-		for (const use of liveStderrParser.feed(stripAnsi(text))) liveCalls.surface(displayToolName(use.name, use.server));
-	});
+	let stopListening: (() => void) | undefined;
+	let reader: ReturnType<typeof createStreamJsonReader> | undefined;
+	let finishReader = () => undefined as void;
+	let stdoutEnded: Promise<void> = Promise.resolve();
+	if (live.format === "stream-json") {
+		// Structured events: rows carry kiro's own ids and complete
+		// rawInput, so neither the text parser nor the bridge fill is needed.
+		// StringDecoder because a chunk can end mid-UTF-8 sequence.
+		const decoder = new StringDecoder("utf8");
+		const streamReader = createStreamJsonReader(output, live.stream, pushThinking, {
+			engine: CHAT_ENGINE,
+			livePrefix: LIVE_TOOL_ID_PREFIX,
+		});
+		reader = streamReader;
+		let finished = false;
+		finishReader = () => {
+			if (finished) return;
+			finished = true;
+			streamReader.feed(decoder.end());
+			streamReader.end();
+		};
+		let violationKilled = false;
+		child.stdout.on("data", (chunk: Buffer) => {
+			const text = decoder.write(chunk);
+			raw += text;
+			streamReader.feed(text);
+			// A broken envelope fails the turn; stop kiro rather than let it run on.
+			if (streamReader.violation && !violationKilled) {
+				violationKilled = true;
+				killTree("SIGTERM");
+				killTimer = setTimeout(() => killTree("SIGKILL"), 1_500);
+				killTimer.unref?.();
+			}
+		});
+		stdoutEnded = new Promise((resolve) => {
+			child.stdout.once("end", () => resolve());
+			child.once("close", () => resolve());
+		});
+		child.stderr.on("data", (chunk: Buffer) => {
+			stderrText += chunk.toString("utf8");
+		});
+	} else {
+		const liveCalls = createLiveToolCalls(output, live.stream, pushThinking);
+		stopListening = live.bridge?.onToolCall?.(liveCalls.fill);
+		const liveParser = createToolUseStreamParser();
+		child.stdout.on("data", (chunk: Buffer) => {
+			const text = chunk.toString("utf8");
+			raw += text;
+			pushThinking(stripAnsi(text));
+			for (const use of liveParser.feed(stripAnsi(text))) liveCalls.surface(displayToolName(use.name, use.server));
+		});
+		// Tool-use lines arrive HERE on kiro-cli 2.21+ (see toolUseTranscript),
+		// so stderr gets its own parser instance: one line only ever lands on
+		// one stream, and a shared instance would splice the two streams'
+		// partial trailing lines into each other.
+		const liveStderrParser = createToolUseStreamParser();
+		child.stderr.on("data", (chunk: Buffer) => {
+			const text = chunk.toString("utf8");
+			stderrText += text;
+			for (const use of liveStderrParser.feed(stripAnsi(text))) liveCalls.surface(displayToolName(use.name, use.server));
+		});
+	}
 
 	const exitCode: number = await new Promise((resolve, reject) => {
 		child.on("error", reject);
@@ -560,13 +624,45 @@ async function runAttempt(
 		// aborted run doesn't hang on a grandchild holding the pipes.
 		child.on("exit", (code) => resolve(code ?? -1));
 	});
+	if (reader) {
+		// "exit" can fire before stdout drains, and runFinished is the LAST line.
+		// Bounded: a grandchild holding the pipe must not stall the turn.
+		await Promise.race([stdoutEnded, new Promise((resolve) => setTimeout(resolve, STREAM_JSON_DRAIN_MS).unref?.())]);
+		finishReader();
+	}
 	abortSignal?.removeEventListener("abort", onAbort);
 	stopListening?.();
 	clearTimeout(ceilingTimer);
 	if (killTimer) clearTimeout(killTimer);
 	unregisterChildForCleanup(child);
 
-	return { exitCode, raw, stderrText, timedOut: turnTimedOut };
+	return { exitCode, raw, stderrText, timedOut: turnTimedOut, streamJson: reader?.result() };
+}
+
+/**
+ * Settle a stream-json turn once the attempt loop is done:
+ * a broken envelope, a non-success finish, a runError or a stream with no
+ * terminal event fails the turn; otherwise the answer is extractFinal over the
+ * reassembled message chunks (the sentinel still applies -- finalText is ALL of
+ * the turn's message text, narration included).
+ */
+function settleStreamJsonTurn(turn: StreamJsonTurn | undefined, exitCode: number): { final: string; credits: number | undefined } {
+	const textHint = "set PI_KIRO_CHAT_FORMAT=text to use the text transport.";
+	if (turn?.violation) throw new Error(`${turn.violation}; ${textHint}`);
+	const terminal = turn?.terminal;
+	if (!turn || !terminal) {
+		throw new Error(`kiro-cli stream-json ended without runFinished or runError (exit ${exitCode}); ${textHint}`);
+	}
+	if (terminal.type === "runError") throw new Error(`kiro-cli run failed (${terminal.stage}): ${terminal.message}`);
+	if (terminal.status !== "success") throw new Error(`kiro-cli run finished with status ${terminal.status}`);
+	if (terminal.finalText !== turn.messageText) {
+		trace("chat.stream.finaltext_mismatch", {
+			finalTextChars: terminal.finalText.length,
+			messageChars: turn.messageText.length,
+			finalTextTruncated: terminal.finalTextTruncated,
+		});
+	}
+	return { final: extractFinal(turn.messageText).final, credits: turn.credits };
 }
 
 /**
@@ -664,6 +760,21 @@ async function recordSession(
 	}
 }
 
+/**
+ * Session bookkeeping for a stream-json turn: kiro names the session in its
+ * own events, so record that id directly instead of diffing session lists.
+ * Best-effort, like recordSession.
+ */
+function recordStreamJsonSession(sessionId: string | undefined, resumeId: string | undefined, cwd: string, messages: Message[]): void {
+	if (!resumeEnabled()) return;
+	try {
+		if (sessionId) recordKnownSession(sessionId, cwd, messages);
+		else if (resumeId) advanceSession(resumeId, messages);
+	} catch {
+		// opportunistic -- the next turn re-sends full context
+	}
+}
+
 interface StreamDeps {
 	binaryPath: string | undefined;
 	/**
@@ -694,6 +805,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				// Parity with built-in providers: fires before_provider_request so
 				// extensions (including our own ctx capture) see the turn.
 				await options?.onPayload?.({ provider: "kiro", model: model.id }, model);
+				const format = chatFormat();
 
 				const identity = identityLine({
 					piVersion: await resolvePiVersion(),
@@ -701,7 +813,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					engine: CHAT_ENGINE,
 					model: model.id,
 				});
-				trace("identity", { transport: "chat", line: identity, auth: authMethod() });
+				trace("identity", { transport: "chat", format, line: identity, auth: authMethod() });
 
 				bridge = await deps.getBridge?.(options?.signal ?? new AbortController().signal);
 				// GSD workflow-MCP transport: mount the project's gsd-workflow stdio
@@ -728,7 +840,10 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				// stream-json is default -- metadata.data.sessionId is in the output
 				// directly. The --resume-id/prefix-hash resume logic STAYS regardless.
 				// See docs/design/acp-transport.md section 5c.
-				let preSnapshot = useResume ? new Set<string>() : await snapshotSessions(cwd, listSessions);
+				// stream-json reports its session id directly: it never lists sessions.
+				const snapshot = () => (format === "stream-json" ? Promise.resolve(new Set<string>()) : snapshotSessions(cwd, listSessions));
+				let preSnapshot = useResume ? new Set<string>() : await snapshot();
+				let streamJson: StreamJsonTurn | undefined;
 
 				let raw = "";
 				let stderrText = "";
@@ -742,6 +857,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					// "the pre-3.0 default", so a kiro upgrade would otherwise switch engines
 					// silently and make the identity line (engine CHAT_ENGINE) wrong.
 					const args = ["chat", "--no-interactive", "--trust-all-tools", "--agent-engine", CHAT_ENGINE];
+					if (format === "stream-json") args.push("--output-format", "stream-json");
 					if (useResume && plan.resumeId) args.push("--resume-id", plan.resumeId);
 					if (profile) args.push("--agent", profile.name, "--require-mcp-startup");
 					if (model.id !== "auto") args.push("--model", model.id);
@@ -757,6 +873,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					// is the only way to tell that apart from a model choosing to re-call.
 					trace("chat.prompt.send", {
 						attempt,
+						format,
 						mode: useResume ? "resume" : "fresh",
 						deltaStart: plan.deltaStart,
 						messageCount: context.messages.length,
@@ -767,15 +884,20 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					const attemptResult = await runAttempt(args, deps.binaryPath, output, pushThinking, options?.signal, {
 						stream,
 						bridge,
+						format,
 					});
 					raw = attemptResult.raw;
 					stderrText = attemptResult.stderrText;
 					exitCode = attemptResult.exitCode;
 					turnTimedOut = attemptResult.timedOut;
+					streamJson = attemptResult.streamJson;
 
 					// A ceiling kill is terminal for this turn: never retried (a fresh
 					// attempt would just burn another 45 min) and never exit-salvaged.
 					if (turnTimedOut) break;
+					// stream-json precedence: a broken envelope or a finished
+					// run settles the attempt; only then do the retries below apply.
+					if (streamJson?.violation || streamJson?.terminal?.type === "runFinished") break;
 					// MCP-startup readiness gate: with --require-mcp-startup kiro
 					// exits 3 when the bridge didn't connect. Retry once.
 					if (
@@ -789,11 +911,15 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					}
 					// Resume fallback: a --resume-id spawn failed (stale/unusable
 					// session). Drop it and retry this turn with the full context, so a
-					// bad session never hard-fails the turn.
-					if (useResume && exitCode !== 0 && attempt + 1 < MAX_ATTEMPTS && !options?.signal?.aborted) {
+					// bad session never hard-fails the turn. Under stream-json the
+					// signal is explicit: a runError at stage "init" (probes p2b).
+					const resumeFailed = streamJson
+						? streamJson.terminal?.type === "runError" && streamJson.terminal.stage === "init"
+						: exitCode !== 0;
+					if (useResume && resumeFailed && attempt + 1 < MAX_ATTEMPTS && !options?.signal?.aborted) {
 						if (plan.resumeId) dropSession(plan.resumeId);
 						useResume = false;
-						preSnapshot = await snapshotSessions(cwd, listSessions);
+						preSnapshot = await snapshot();
 						pushThinking("\n[kiro resume failed -- retrying with full context]\n");
 						continue;
 					}
@@ -809,12 +935,18 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					);
 				}
 
-				const { body, credits } = cleanBody(raw);
-				const toolTranscript = toolUseTranscript(body, stderrText);
-				salvageOrThrow(exitCode, body, stderrText, toolTranscript, pushThinking);
-
-				const { final } = extractFinal(body);
-				reconcileToolCalls(output, toolTranscript, pushThinking);
+				let final: string;
+				let credits: number | undefined;
+				if (format === "stream-json") {
+					({ final, credits } = settleStreamJsonTurn(streamJson, exitCode));
+				} else {
+					const cleaned = cleanBody(raw);
+					credits = cleaned.credits;
+					const toolTranscript = toolUseTranscript(cleaned.body, stderrText);
+					salvageOrThrow(exitCode, cleaned.body, stderrText, toolTranscript, pushThinking);
+					final = extractFinal(cleaned.body).final;
+					reconcileToolCalls(output, toolTranscript, pushThinking);
+				}
 				output.content.push({ type: "text", text: "" });
 				const textIndex = output.content.length - 1;
 				stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
@@ -828,7 +960,11 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					output.usage.cost.total = Number.isFinite(usdPerCredit) ? credits * usdPerCredit : 0;
 				}
 
-				await recordSession(useResume, plan.resumeId, cwd, context.messages, preSnapshot, listSessions);
+				if (format === "stream-json") {
+					recordStreamJsonSession(streamJson?.sessionId, useResume ? plan.resumeId : undefined, cwd, context.messages);
+				} else {
+					await recordSession(useResume, plan.resumeId, cwd, context.messages, preSnapshot, listSessions);
+				}
 
 				output.stopReason = "stop";
 				stream.push({ type: "done", reason: "stop", message: { ...output, content: stripLivePlaceholders(output.content) } });

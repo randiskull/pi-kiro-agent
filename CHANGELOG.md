@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **Opt-in stream-json reader for the chat transport (#47): `PI_KIRO_CHAT_FORMAT=stream-json`.** kiro-cli's
+  `--output-format stream-json` emits the turn as versioned ACP events, so the reader gets what the text
+  scrape cannot: complete arguments for every tool call (gsd_* rows were `{}` since kiro 2.21's compact
+  lines), kiro's built-in tools as `kiro_*` rows, failed calls marked `⚙ <tool> — failed`, and the session
+  id directly (no `--list-sessions` diff). The answer still comes from the `<pi_final>` sentinel, because
+  `finalText` holds all of the turn's message text, narration included. The envelope is strict: an
+  unrecognized `runStarted`, a non-JSON line or a stream with no `runFinished`/`runError` fails the turn
+  and says how to fall back to text; unknown events are ignored. Text stays the default. Built on the
+  kiro-cli 2.32.0 captures in `probes/stream-json-2.32/`.
+
 ### Security
 
 - **Removed the `overrides` block, which had become the reason `npm audit` reported three high

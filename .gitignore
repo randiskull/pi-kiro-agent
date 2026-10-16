@@ -20,6 +20,11 @@ probes/*.json
 # every bridged tool call, so a stray trace in the worktree is a secret leak that
 # scripts/secret-scan.mjs cannot catch (it only scans tracked files).
 *.jsonl
+# Exception: reviewed stream-json probe captures (#47), replayed by the unit
+# tests. Paths redacted to <probe-proj>, no prompts beyond the probe's own, and
+# tracked, so the secret scan covers them. Scoped to this one directory: a new
+# capture set gets its own reviewed exception, not a broader negation.
+!probes/stream-json-2.32/*.jsonl
 
 # Local MCP wiring and env files. `.mcp.json` records server commands and often a
 # token; `.env*` is where a kiro credential ends up. `scripts/secret-scan.mjs` only

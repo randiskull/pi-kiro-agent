@@ -1,0 +1,27 @@
+{"type":"runStarted","data":{"payloadSchema":"acp","acpProtocolVersion":1,"engine":"v2"}}
+{"type":"metadata","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","contextUsagePercentage":1.1368000507354736,"reasoning":{"support":"toggleable","effort":"high","effortLevels":["low","medium","high","max"]}}}
+{"type":"metadata","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","contextUsagePercentage":5.684000015258789,"reasoning":{"support":"unavailable","effortLevels":[]}}}
+{"type":"metadata","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","contextUsagePercentage":5.684000015258789,"reasoning":{"support":"unavailable","effortLevels":[]}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Let"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" me work"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" through this:"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\n\nLet"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" x"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" = ball's"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" price"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\nThen bat"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"'s"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" price = x + 1.00"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\n\nTotal:"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" x + (x + 1."}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"00) = 1"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".10"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\n2x + 1.00 "}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"= 1.10\n2x"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" = 0.10\nx ="}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" 0.05\n\nThe"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" ball"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" costs $0.05."}}}}
+{"type":"metadata","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","contextUsagePercentage":8.742500305175781,"reasoning":{"support":"unavailable","effortLevels":[]}}}
+{"type":"metadata","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","contextUsagePercentage":8.742500305175781,"meteringUsage":[{"value":0.01600136305140962,"unit":"credit","unitPlural":"credits"}],"turnDurationMs":1746,"reasoning":{"support":"unavailable","effortLevels":[]}}}
+{"type":"runFinished","data":{"sessionId":"4d6f293f-aee1-400b-9c1f-9390df9d8242","status":"success","stopReason":"end_turn","finalText":"Let me work through this:\n\nLet x = ball's price\nThen bat's price = x + 1.00\n\nTotal: x + (x + 1.00) = 1.10\n2x + 1.00 = 1.10\n2x = 0.10\nx = 0.05\n\nThe ball costs $0.05.","finalTextTruncated":false}}
