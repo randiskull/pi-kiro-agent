@@ -26,6 +26,21 @@ describe("writeAgentProfile", () => {
 		profile.remove(); // idempotent
 	});
 
+	// A custom agent that OMITS `resources` inherits kiro's default resource set
+	// (global/workspace steering, every skill, AGENTS.md) because
+	// chat.disableInheritingDefaultResources defaults to false. That measured
+	// 39 files / ~30,000 tokens per delegated turn on a developer machine, and it
+	// outranks the caller's own AGENTS.md. Assert the key is PRESENT and empty:
+	// `toEqual([])` alone would also be satisfied by a missing key reading as
+	// undefined on some matchers, so the `in` check is the real gate.
+	it("opts out of inherited steering/skills/AGENTS.md with an empty resources list", () => {
+		const profile = writeAgentProfile(HANDLE);
+		const parsed = JSON.parse(readFileSync(profile.path, "utf8"));
+		expect("resources" in parsed).toBe(true);
+		expect(parsed.resources).toEqual([]);
+		profile.remove();
+	});
+
 	it("issues unique names per call", () => {
 		const first = writeAgentProfile(HANDLE);
 		const second = writeAgentProfile(HANDLE);
