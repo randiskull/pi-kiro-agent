@@ -164,7 +164,7 @@ describe.skipIf(!LIVE)("live MCP bridge", () => {
 		expect(new Set(names).size, "captured names must be deduped").toBe(names.length);
 		if (tuiResolvable) {
 			// The siblings' peer deps are present, so capture is expected to work.
-			expect(names, "pi-tui is resolvable, so the siblings should have loaded").toContain("todo");
+			expect(names, "pi-tui is resolvable, so the siblings should have loaded").toContain("rpiv_todo");
 		}
 	}, 60_000);
 

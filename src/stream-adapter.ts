@@ -44,6 +44,7 @@ import {
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import { createToolUseStreamParser, parseKiroToolUses, synthesizeToolCallBlocks } from "./kiro-tooluse-parser.js";
+import { BRIDGE_MCP_SERVER_KEY, displayToolName } from "./tool-names.js";
 import { trace } from "./trace.js";
 import { currentSystemPrompt } from "./system-prompt.js";
 import { KIRO_PROVIDER } from "./models.js";
@@ -345,6 +346,12 @@ export interface PromptBuildOpts {
 	 * identity is restated on every turn, not just the first.
 	 */
 	identity?: string;
+	/**
+	 * Exposed bridge name -> the caller-session name it was registered under
+	 * (HttpBridgeHandle.toolAliases). The history names tools the caller's way
+	 * (`todo`); kiro must call the exposed one (`@pi/rpiv_todo`).
+	 */
+	toolAliases?: Record<string, string>;
 }
 
 /** The fixed preamble + tool-context scaffolding shared by full and delta prompts. */
@@ -357,19 +364,27 @@ function buildScaffolding(bridgedTools?: string[], workflowMcp?: boolean, opts?:
 	];
 	if (bridgedTools && bridgedTools.length > 0) {
 		toolContextLines.push(
-			`These calling-session tools ARE available to you as MCP tools from the "pi" server — call them as @pi/<tool_name>: ${bridgedTools.join(", ")}.`,
+			`These calling-session tools ARE available to you as MCP tools from the "${BRIDGE_MCP_SERVER_KEY}" server — call them as @${BRIDGE_MCP_SERVER_KEY}/<tool_name>: ${bridgedTools.join(", ")}.`,
 		);
-		if (bridgedTools.includes("ask_user_question")) {
+		const aliases = bridgedTools
+			.filter((name) => opts?.toolAliases?.[name] !== undefined)
+			.map((name) => `the caller's ${opts?.toolAliases?.[name]} is available as @${BRIDGE_MCP_SERVER_KEY}/${name}`);
+		if (aliases.length > 0) {
 			toolContextLines.push(
-				"- For structured user questions call @pi/ask_user_question instead of guessing at ambiguous requirements.",
+				`They are exposed under origin-prefixed names; a tool the prior context names the caller's way maps to its exposed name: ${aliases.join("; ")}.`,
 			);
 		}
-		if (bridgedTools.includes("todo")) {
-			toolContextLines.push("- Track task progress with @pi/todo (same contract as the caller's todo tool).");
-		}
-		if (bridgedTools.includes("Agent")) {
+		if (bridgedTools.includes("rpiv_ask_user_question")) {
 			toolContextLines.push(
-				"- Dispatch specialist subagents with @pi/Agent; collect results with @pi/get_subagent_result.",
+				"- For structured user questions call @pi/rpiv_ask_user_question instead of guessing at ambiguous requirements.",
+			);
+		}
+		if (bridgedTools.includes("rpiv_todo")) {
+			toolContextLines.push("- Track task progress with @pi/rpiv_todo (same contract as the caller's todo tool).");
+		}
+		if (bridgedTools.includes("subagents_Agent")) {
+			toolContextLines.push(
+				"- Dispatch specialist subagents with @pi/subagents_Agent; collect results with @pi/subagents_get_subagent_result.",
 			);
 		}
 	}
@@ -519,7 +534,7 @@ async function runAttempt(
 		const text = chunk.toString("utf8");
 		raw += text;
 		pushThinking(stripAnsi(text));
-		for (const use of liveParser.feed(stripAnsi(text))) liveCalls.surface(use.name);
+		for (const use of liveParser.feed(stripAnsi(text))) liveCalls.surface(displayToolName(use.name, use.server));
 	});
 	// Tool-use lines arrive HERE on kiro-cli 2.21+ (see toolUseTranscript),
 	// so stderr gets its own parser instance: one line only ever lands on
@@ -529,7 +544,7 @@ async function runAttempt(
 	child.stderr.on("data", (chunk: Buffer) => {
 		const text = chunk.toString("utf8");
 		stderrText += text;
-		for (const use of liveStderrParser.feed(stripAnsi(text))) liveCalls.surface(use.name);
+		for (const use of liveStderrParser.feed(stripAnsi(text))) liveCalls.surface(displayToolName(use.name, use.server));
 	});
 
 	const exitCode: number = await new Promise((resolve, reject) => {
@@ -727,8 +742,8 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					const effort = mapEffort(options?.reasoning);
 					if (effort) args.push("--effort", effort);
 					const promptText = useResume
-						? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridge?.toolNames, !!workflowServers, { identity })
-						: buildPromptFromContext(context, bridge?.toolNames, !!workflowServers, { identity });
+						? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridge?.toolNames, !!workflowServers, { identity, toolAliases: bridge?.toolAliases })
+						: buildPromptFromContext(context, bridge?.toolNames, !!workflowServers, { identity, toolAliases: bridge?.toolAliases });
 					args.push(promptText);
 					// attempt is traced explicitly: this loop re-sends the whole prompt on
 					// an MCP-startup retry or a resume fallback, so a bridged tool already

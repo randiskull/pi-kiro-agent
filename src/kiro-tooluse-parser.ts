@@ -20,6 +20,7 @@
 
 import { createHash } from "node:crypto";
 import type { ToolCall } from "@earendil-works/pi-ai";
+import { displayToolName } from "./tool-names.js";
 
 /** One MCP tool invocation parsed from kiro's non-interactive output. */
 export interface KiroToolUse {
@@ -139,7 +140,8 @@ export function synthesizeToolCallBlocks(body: string): ToolCall[] {
 	return parseKiroToolUses(body).map((use, index) => ({
 		type: "toolCall",
 		id: `kiro-mcp-${bodyDigest}-${index}-${use.name}`,
-		name: use.name,
+		// Origin-prefixed for display (tool-names.ts); the id keeps kiro's name.
+		name: displayToolName(use.name, use.server),
 		// Parsed from JSON text, so every value is already JSON; pi >= 0.86 types
 		// ToolCall.arguments as JsonObject rather than Record<string, unknown>.
 		arguments: use.arguments as ToolCall["arguments"],

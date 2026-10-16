@@ -382,7 +382,8 @@ describe("makeStreamViaKiro", () => {
 			url: "http://127.0.0.1:6666/mcp",
 			urlWithToken: "http://127.0.0.1:6666/mcp/tok",
 			token: "tok",
-			toolNames: ["todo", "Agent", "ask_user_question"],
+			toolNames: ["rpiv_todo", "subagents_Agent", "rpiv_ask_user_question"],
+			toolAliases: { rpiv_todo: "todo", subagents_Agent: "Agent", rpiv_ask_user_question: "ask_user_question" },
 			close: vi.fn(async () => undefined),
 		};
 		// First spawn exits 3 (MCP startup failure), second succeeds.
@@ -412,8 +413,14 @@ describe("makeStreamViaKiro", () => {
 		expect(args).toContain("--require-mcp-startup");
 		const prompt = args.at(-1) as string;
 		expect(prompt).toContain("@pi/<tool_name>");
-		expect(prompt).toContain("@pi/ask_user_question");
-		expect(prompt).toContain("@pi/Agent");
+		expect(prompt).toContain("@pi/rpiv_ask_user_question");
+		expect(prompt).toContain("@pi/subagents_Agent");
+		expect(prompt).toContain("@pi/subagents_get_subagent_result");
+		expect(prompt).toContain("the caller's todo is available as @pi/rpiv_todo");
+		// No bare bridged names remain for kiro to call.
+		expect(prompt).not.toContain("@pi/todo");
+		expect(prompt).not.toContain("@pi/Agent");
+		expect(prompt).not.toContain("@pi/ask_user_question");
 		const done = events.find((event) => event.type === "done");
 		if (done?.type !== "done") throw new Error("expected done after retry");
 		const text = done.message.content.find((block) => block.type === "text");
@@ -644,7 +651,7 @@ describe("live rows: bridged arguments and one row per call", () => {
 		url: "http://127.0.0.1:1/mcp",
 		urlWithToken: "http://127.0.0.1:1/mcp/t",
 		token: "t",
-		toolNames: ["todo"],
+		toolNames: ["rpiv_todo"],
 		close: async () => undefined,
 		onToolCall: (l: (name: string, args: Record<string, unknown>) => void) => {
 			listener = l;
@@ -687,9 +694,9 @@ describe("live rows: bridged arguments and one row per call", () => {
 			queueMicrotask(() => {
 				// Prose first, so a thinking block sits ahead of the placeholder.
 				child.stdout.emit("data", Buffer.from("Working on it.\n"));
-				if (bridgeCallFirst) listener?.("todo", ARGS);
-				child.stderr.emit("data", Buffer.from("[tool] Running: @pi/todo\n"));
-				if (!bridgeCallFirst) listener?.("todo", ARGS);
+				if (bridgeCallFirst) listener?.("rpiv_todo", ARGS);
+				child.stderr.emit("data", Buffer.from("[tool] Running: @pi/rpiv_todo\n"));
+				if (!bridgeCallFirst) listener?.("rpiv_todo", ARGS);
 				child.stderr.emit("data", Buffer.from("[tool] status: Completed\n"));
 				child.stdout.emit("data", Buffer.from(`> ${FINAL_OPEN}done${FINAL_CLOSE}\n`));
 				queueMicrotask(() => child.emit("exit", 0));
@@ -728,7 +735,7 @@ describe("live rows: bridged arguments and one row per call", () => {
 		expect(rowId.startsWith(LIVE_TOOL_ID_PREFIX)).toBe(true);
 
 		const delta = snapshots.find((s) => s.type === "toolcall_delta");
-		expect(delta?.toolCalls).toEqual([{ type: "toolCall", id: rowId, name: "todo", arguments: ARGS }]);
+		expect(delta?.toolCalls).toEqual([{ type: "toolCall", id: rowId, name: "rpiv_todo", arguments: ARGS }]);
 		// contentIndex names the placeholder's current slot (after the thinking block).
 		expect(deltaTargetId).toBe(rowId);
 
@@ -736,7 +743,7 @@ describe("live rows: bridged arguments and one row per call", () => {
 		// even though the compact transcript parses to {}.
 		const afterReconcile = snapshots.filter((s) => s.type === "text_delta").at(-1);
 		expect(afterReconcile?.toolCalls).toHaveLength(1);
-		expect(afterReconcile?.toolCalls[0]).toMatchObject({ id: rowId, name: "todo", arguments: ARGS });
+		expect(afterReconcile?.toolCalls[0]).toMatchObject({ id: rowId, name: "rpiv_todo", arguments: ARGS });
 
 		const done = snapshots.find((s) => s.type === "done");
 		expect(done).toBeDefined();
@@ -794,5 +801,31 @@ describe("reconcileToolCalls: a live row with no end-of-turn call", () => {
 			else process.env.PI_KIRO_TRACE = savedTrace;
 			resetTraceTarget();
 		}
+	});
+});
+
+describe("text transport: rows are origin-prefixed", () => {
+	beforeEach(() => {
+		spawnMock.mockReset();
+	});
+
+	async function rowNames(stderr: string): Promise<string[]> {
+		const child = new FakeChild();
+		spawnMock.mockImplementation(() => {
+			queueMicrotask(() => {
+				child.stderr.emit("data", Buffer.from(stderr));
+				child.stdout.emit("data", Buffer.from(`> ${FINAL_OPEN}done${FINAL_CLOSE}\n`));
+				queueMicrotask(() => child.emit("exit", 0));
+			});
+			return child;
+		});
+		const events = await collect({ systemPrompt: "", messages: [{ role: "user", content: "go", timestamp: 0 }] });
+		const textDelta = events.find((e) => e.type === "text_delta") as { partial: { content: Array<{ type: string; name?: string }> } };
+		return textDelta.partial.content.filter((b) => b.type === "toolCall").map((b) => b.name ?? "");
+	}
+
+	it("names a workflow-server tool gsd_ and another server's tool by that server", async () => {
+		const names = await rowNames("[tool] Running: @gsdworkflow/doctor\n[tool] Running: @gsdworkflow/gsd_exec\n[tool] Running: @other/x\n");
+		expect(names).toEqual(["gsd_doctor", "gsd_exec", "other_x"]);
 	});
 });
