@@ -3,7 +3,8 @@
 Status: **design, not implemented.** Measured against kiro-cli 2.32.0 / KAS 0.66.43 and
 pi 1.3.0 on 2026-10-17. None of the code it proposes has been written. A second probe
 pass the same day (a tool-using turn and a `--resume-id` turn, section 3.7) settled S2
-and S4 and found the tool-naming break behind R12.
+and S4 and found the tool-naming break behind R12; a third pass checked every claim here
+against the current source and closed R12's open end by finding the name v3 does send.
 
 ## 1. Where we are
 
@@ -163,10 +164,21 @@ A turn that had to read a file drew one internal call and one real call:
 update-only failed call that has no `toolName`. So on v3 every built-in row would read
 `kiro_unknown`, update-only failures would vanish, and pi's own bridged tools, which
 show their bare names only when `mcpServerName` matches the bridge key, are at risk too
-(S1). `rawInput` is complete on v3, so arguments survive; only the name is lost. The
-tool's own name does appear once, after the fact: the turn's `promptTurnSummaries` entry
-carried `"usedTools":["read_file"]`. That arrives with the credits, too late to name a
-row while it is live, but it is the only place the probes show it.
+(S1). `rawInput` is complete on v3, so arguments survive; only the `toolName` key is
+lost. The tool's own name is recoverable, and from two independent places that agree:
+
+- **live, from `title`.** `"Read File"`, lowercased with every non-alphanumeric run
+  collapsed to `_`, is `read_file`. That transform is already in the tree as `sanitize()`
+  in `src/tool-names.ts`, used today to normalise an MCP server name.
+- **after the fact, from the credits.** The turn's `promptTurnSummaries` entry carried
+  `"usedTools":["read_file"]` -- the canonical tool id.
+
+The two match exactly, which is what makes `title` a name source rather than a guess:
+`usedTools` is the check on it, and `kind` (`"read"`) is a coarser cross-check. Two
+caveats. `KiroUpdate` in `src/stream-json-reader.ts` does not declare `title`, so using
+it widens that type. And the agreement is one sample on one tool; S1's bridged-tool
+payload is where it has to hold a second time, because a bridged tool's `title` is set by
+whoever wrote the MCP server, not by kiro.
 
 The two calls differ on every field that could tell them apart:
 
@@ -185,6 +197,14 @@ turns' `runFinished.sessionId` carried the same id. The reader takes the session
 read 0.060 after the first turn's 0.106, with no entry for the prior turn, so summing a
 turn's entries does not double-charge on resume. Neither the tool turn nor the resumed
 turn sent a `metadata` event (S3, two more samples).
+
+That settles the structure, not the magnitude. 3.2's one-word turn priced at **0.529**
+credits and this pass's comparable one-word turn at **0.106**, five times apart on the
+same prompt and the same engine. The recorded difference is the working directory, so the
+two turns ingested different amounts of steering and project context; 3.2's reported
+7.62% context usage is the only figure we have on that. Read the field as the turn's
+cost and do not read either number as reproducible: a credits test must assert the
+plumbing against a fixture, never a price.
 
 ## 4. Requirements
 
@@ -239,9 +259,13 @@ Numbered so they can be argued with individually. Each one is meant to be testab
   list. Adding v3 then forces its driver rather than allowing it to pass by omission.
   See D3 for the shape.
 - **R12** Tool rows on v3 carry a real name. v3 sends no `toolName`, so the name comes
-  from what it does send, and the choice is pinned against the 3.7 payloads: a built-in
-  row is never `kiro_unknown`, an update-only failure still draws its row, and a bridged
-  tool still shows its bare name (S1 supplies that payload).
+  from `title` run through the existing `sanitize()` in `src/tool-names.ts`: `"Read File"`
+  becomes `read_file`, which is the canonical id the same turn reports in `usedTools`
+  (3.7). `KiroUpdate` gains the field. The choice is pinned against the 3.7 payloads: a
+  built-in row is never `kiro_unknown`, an update-only failure still draws its row, and a
+  bridged tool still shows its bare name (S1 supplies that payload; a bridged `title` is
+  authored by the MCP server, so if it does not sanitize to the bridged name, the fallback
+  order is named there and not left to the implementer).
 
 **Bridge**
 
@@ -262,7 +286,7 @@ Each names the question and the measurement that settles it. None is a code chan
   `src/kiro-bridge.ts` does, run a v3 turn whose prompt can only be answered by calling a
   bridged tool, and assert the tool was called. Record the bridged call's `tool_call`
   payload: R12 needs to know what v3 sends in place of `toolName` and `mcpServerName` for
-  an MCP tool. Also confirm whether v3 reads
+  an MCP tool, and whether its `title` sanitizes to the bridged name. Also confirm whether v3 reads
   `~/.kiro/agents/*.json` at all, or wants a different schema or location: the working
   note that v3 configs support header auth and `${VAR}` expansion implies a different
   file format, which would make R11 a rewrite rather than a flag.
