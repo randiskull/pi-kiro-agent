@@ -14,7 +14,13 @@ probes/*.json
 .gsd
 .gsd-id
 .rpiv
+# A kiro-cli v3-engine start rewrites `.kiro/agents/*.json` in place into the
+# "universal format both engines load" (what `kiro-cli agent upgrade` does,
+# stamped `kiroUpgrade.revision`) and drops a backup beside each file. v2 starts
+# leave them alone. The first backup is `<name>.json.bak`; each later rewrite of
+# a v2-form file writes `.bak.1`, `.bak.2`, ..., which `*.bak` does NOT match.
 *.bak
+*.json.bak.*
 
 # Trace output. PI_KIRO_TRACE records full prompt text and the raw arguments of
 # every bridged tool call, so a stray trace in the worktree is a secret leak that
