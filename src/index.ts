@@ -25,7 +25,7 @@ import {
 	serveBridgeHttp,
 	setBridgeNotice,
 } from "./bridge.js";
-import { bridgeEnabled } from "./kiro-bridge.js";
+import { bridgeEnabled, sweepStaleAgentProfiles } from "./kiro-bridge.js";
 import { trace } from "./trace.js";
 import {
 	addTurnToTotals,
@@ -391,6 +391,13 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 		reapOrphanedKiroChildren();
 	} catch {
 		// ignore — worst case the orphans survive until the next activation
+	}
+	// The same crash leaves the turn's agent profile, and any backup kiro wrote
+	// beside it, in ~/.kiro/agents with the bridge token in it (kiro-bridge.ts).
+	try {
+		sweepStaleAgentProfiles();
+	} catch {
+		// ignore — they are swept again on the next activation
 	}
 
 	// Bridge advisories go through the host, not stderr: under the TUI a raw

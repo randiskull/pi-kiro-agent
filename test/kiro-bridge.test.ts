@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { HttpBridgeHandle } from "../src/bridge.js";
@@ -8,6 +8,7 @@ import {
 	agentProfilesDir,
 	bridgeEnabled,
 	disableInheritedResources,
+	sweepStaleAgentProfiles,
 	writeAgentProfile,
 } from "../src/kiro-bridge.js";
 
@@ -50,12 +51,106 @@ describe("writeAgentProfile", () => {
 		profile.remove();
 	});
 
+	// A kiro-cli v3-engine start converts every top-level ~/.kiro/agents/*.json
+	// and saves the original, tokenized bridge URL included, as <name>.json.bak,
+	// then .bak.1, .bak.2 on later conversions (kiro-cli 2.32.0 / KAS 0.66.43).
+	it("removes the backups kiro writes beside the profile, and only this profile's", () => {
+		const profile = writeAgentProfile(HANDLE);
+		const sibling = writeAgentProfile(HANDLE);
+		const dir = agentProfilesDir();
+		for (const suffix of [".bak", ".bak.1", ".bak.12"]) {
+			writeFileSync(`${profile.path}${suffix}`, "original", "utf8");
+			writeFileSync(`${sibling.path}${suffix}`, "original", "utf8");
+		}
+		// Same pid, a counter that shares a prefix: `-1` must not take `-12`'s files.
+		const prefixTwin = join(dir, `${profile.name}2.json.bak`);
+		writeFileSync(prefixTwin, "original", "utf8");
+
+		profile.remove();
+		const left = readdirSync(dir);
+		expect(left.filter((entry) => entry.startsWith(`${profile.name}.`))).toEqual([]);
+		expect(left).toEqual(expect.arrayContaining([`${sibling.name}.json`, `${sibling.name}.json.bak`, `${sibling.name}.json.bak.1`]));
+		expect(existsSync(prefixTwin)).toBe(true);
+
+		sibling.remove();
+		rmSync(prefixTwin);
+	});
+
+	it.skipIf(process.platform === "win32")("writes the profile owner-only, because it carries the bridge token", () => {
+		const profile = writeAgentProfile(HANDLE);
+		expect(statSync(profile.path).mode & 0o777).toBe(0o600);
+		profile.remove();
+	});
+
+	// The counter restarts at 1 in every process, so a reused pid lands on a dead
+	// predecessor's name. Its file must not keep its old mode or its backups.
+	it.skipIf(process.platform === "win32")("replaces a predecessor's file under the same name, backups included", () => {
+		const probe = writeAgentProfile(HANDLE);
+		probe.remove();
+		const [, pid, n] = /^pi-kiro-bridge-(\d+)-(\d+)$/.exec(probe.name) ?? [];
+		const next = join(agentProfilesDir(), `pi-kiro-bridge-${pid}-${Number(n) + 1}.json`);
+		writeFileSync(next, "{}", { mode: 0o644 });
+		chmodSync(next, 0o644);
+		writeFileSync(`${next}.bak`, "old token", "utf8");
+
+		const profile = writeAgentProfile(HANDLE);
+		expect(profile.path).toBe(next);
+		expect(statSync(next).mode & 0o777).toBe(0o600);
+		expect(existsSync(`${next}.bak`)).toBe(false);
+		profile.remove();
+	});
+
 	it("issues unique names per call", () => {
 		const first = writeAgentProfile(HANDLE);
 		const second = writeAgentProfile(HANDLE);
 		expect(first.name).not.toBe(second.name);
 		first.remove();
 		second.remove();
+	});
+});
+
+describe("sweepStaleAgentProfiles", () => {
+	const deadPid = (): number => {
+		const child = spawnSync(process.execPath, ["-e", "0"]);
+		if (typeof child.pid !== "number") throw new Error("no pid from spawnSync");
+		return child.pid;
+	};
+	const seed = (dir: string, pid: number, n: number): string[] => {
+		const files = [`pi-kiro-bridge-${pid}-${n}.json`, `pi-kiro-bridge-${pid}-${n}.json.bak`, `pi-kiro-bridge-${pid}-${n}.json.bak.2`];
+		for (const file of files) writeFileSync(join(dir, file), "{}", "utf8");
+		return files;
+	};
+
+	it("removes a dead pi's profiles and backups, and leaves a live one's mid-turn files", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-kiro-agents-"));
+		const dead = seed(dir, deadPid(), 1);
+		// process.ppid is a live process that is not this one: another pi mid-turn.
+		const live = seed(dir, process.ppid, 4);
+		const foreign = ["code-reviewer.json", "code-reviewer.json.bak", "pi-kiro-bridge-notes.json"];
+		for (const file of foreign) writeFileSync(join(dir, file), "{}", "utf8");
+
+		expect(sweepStaleAgentProfiles(dir)).toBe(dead.length);
+		expect(readdirSync(dir).sort()).toEqual([...live, ...foreign].sort());
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	// Pids are reused. At activation nothing in this process is mid-turn, so a file
+	// carrying our own pid belongs to a dead predecessor; and a live pid on a file
+	// older than any turn can run is an unrelated process that inherited the pid.
+	it("treats this process's own pid, and a live pid on an ancient file, as stale", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-kiro-agents-"));
+		const own = seed(dir, process.pid, 7);
+		const ancient = seed(dir, process.ppid, 9);
+		const longAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+		for (const file of ancient) utimesSync(join(dir, file), longAgo, longAgo);
+
+		expect(sweepStaleAgentProfiles(dir)).toBe(own.length + ancient.length);
+		expect(readdirSync(dir)).toEqual([]);
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("is a no-op on a missing directory", () => {
+		expect(sweepStaleAgentProfiles(join(tmpdir(), "pi-kiro-no-such-dir", "agents"))).toBe(0);
 	});
 });
 
