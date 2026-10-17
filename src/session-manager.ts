@@ -152,6 +152,15 @@ export async function recordFreshSession(
 	return sessionId;
 }
 
+/**
+ * Record a session whose id kiro reported itself (stream-json's metadata /
+ * runFinished), fresh or resumed: no list-sessions diff is needed.
+ */
+export function recordKnownSession(sessionId: string, cwd: string, messages: Message[]): void {
+	if (!resumeEnabled()) return;
+	upsert({ sessionId, cwd, sentMessageCount: messages.length, prefixHash: hashMessages(messages) });
+}
+
 /** After a successful RESUME spawn, advance the session to cover `messages`. */
 export function advanceSession(sessionId: string, messages: Message[]): void {
 	const session = sessions.find((s) => s.sessionId === sessionId);
