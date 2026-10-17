@@ -14,6 +14,7 @@ import {
 	manifestExtensionEntries,
 	serveBridgeHttp,
 	toJsonSchema,
+	setBridgeNotice,
 	warnOnMissingBridgeTools,
 } from "../src/bridge.js";
 
@@ -376,6 +377,31 @@ describe("warnOnMissingBridgeTools", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+	});
+
+	it("goes to the host's notifier when one is installed, and never to stderr", () => {
+		// Under the TUI a raw stderr write is painted into the chrome above the
+		// prompt and STAYS there for the whole session, so a one-off mount-time
+		// advisory read as a permanent banner. The host installs a transient
+		// channel (ctx.ui.notify); stderr is only the no-UI fallback.
+		const spy = spyOnStderr();
+		const seen: string[] = [];
+		setBridgeNotice((message) => seen.push(message));
+		warnOnMissingBridgeTools(new Set(["todo", "advisor"]), [{ name: "todo" }]);
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toContain("`advisor`");
+		expect(spy).not.toHaveBeenCalled();
+	});
+
+	it("falls back to stderr once the notifier is uninstalled", () => {
+		const spy = spyOnStderr();
+		setBridgeNotice(() => {
+			throw new Error("uninstalled notifier must not be called");
+		});
+		setBridgeNotice(undefined);
+		warnOnMissingBridgeTools(new Set(["advisor"]), []);
+		expect(spy).toHaveBeenCalledTimes(1);
+		expect(String(spy.mock.calls[0]?.[0])).toContain("`advisor`");
 	});
 
 	it("a bare name in PI_KIRO_BRIDGE_TOOLS matches nothing and is named as missing", () => {

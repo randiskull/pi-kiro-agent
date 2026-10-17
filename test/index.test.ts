@@ -32,6 +32,7 @@ vi.mock("../src/stream-adapter.js", () => ({
 vi.mock("../src/bridge.js", () => ({
 	captureBridgeTools: vi.fn(async () => []),
 	serveBridgeHttp: vi.fn(),
+	setBridgeNotice: vi.fn(),
 }));
 vi.mock("../src/kiro-bridge.js", () => ({ bridgeEnabled: vi.fn(() => false) }));
 vi.mock("../src/subagent-wiring.js", () => ({
@@ -417,6 +418,45 @@ describe("credit status line", () => {
 		const setStatus = vi.fn();
 		await fake.emit("message_end", turnEnd(1.5), { hasUI: false, ui: { setStatus, notify: vi.fn() } });
 		expect(setStatus).not.toHaveBeenCalled();
+	});
+});
+
+describe("bridge advisories", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	const advisoryCtx = (hasUI: boolean, notify: ReturnType<typeof vi.fn>, sessionId: string) => ({
+		hasUI,
+		model: { provider: "kiro", id: "auto" },
+		ui: { notify, setStatus: vi.fn() },
+		sessionManager: { getSessionId: () => sessionId },
+	});
+
+	it("reach the user through ctx.ui.notify under a UI host, and stderr only when headless", async () => {
+		// A raw stderr write under the TUI is painted into the chrome above the
+		// prompt and STAYS there for the rest of the session, so a mount-time
+		// advisory read as a permanent banner (measured 2026-10-17, pi 1.3.0).
+		const { setBridgeNotice } = await import("../src/bridge.js");
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const notice = vi.mocked(setBridgeNotice).mock.calls.at(-1)?.[0];
+		expect(notice).toBeTypeOf("function");
+
+		const notify = vi.fn();
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		await fake.emit("before_provider_request", {}, advisoryCtx(true, notify, "advisory-ui"));
+		notice?.("[pi-kiro] bridge: tool `x` was requested");
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("tool `x`"), "warning");
+		expect(stderr).not.toHaveBeenCalled();
+
+		notify.mockClear();
+		await fake.emit("before_provider_request", {}, advisoryCtx(false, notify, "advisory-headless"));
+		notice?.("[pi-kiro] bridge: headless advisory");
+		expect(notify).not.toHaveBeenCalled();
+		expect(stderr).toHaveBeenCalledWith("[pi-kiro] bridge: headless advisory");
+		stderr.mockRestore();
 	});
 });
 

@@ -23,6 +23,7 @@
 import type { AssistantMessage, AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { sumCredits } from "./metering.js";
 import { displayToolName } from "./tool-names.js";
+import { announceToolRow } from "./transport-utils.js";
 
 /** The `runStarted.data` this reader understands. `engine` is the pinned chat engine. */
 export interface StreamJsonEnvelope {
@@ -107,7 +108,9 @@ export function createStreamJsonReader(
 		};
 		output.content.push(block);
 		rows.set(id, block);
-		pushThinking(`\n⚙ ${name}\n`);
+		// The row announces itself; a "⚙ <tool>" thinking line here as well
+		// drew every call twice (announceToolRow).
+		announceToolRow(stream, output, output.content.length - 1);
 		return block;
 	};
 

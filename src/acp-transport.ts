@@ -49,7 +49,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ChildScopedHttpBridgeHandle, HttpBridgeHandle } from "./bridge.js";
-import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
+import { announceToolRow, createBlockWriter, createTagStripper, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import {
 	buildDeltaPrompt,
@@ -1083,11 +1083,17 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				const currentSessionId = await resolveSession(deps, acpEntry, useResume, workflowServers);
 				await ensureSessionModel(acpEntry, currentSessionId, model.id);
 
-				// Thinking block management
-				const thinkingWriter = createThinkingWriter(stream, output);
-				const pushThinking = thinkingWriter.push;
-
-				let textAccum = "";
+				// Content block management. The answer streams as TEXT, interleaved
+				// with thinking, rather than being mirrored into the thinking feed
+				// and then emitted again at end of turn (which printed every answer
+				// twice -- see createBlockWriter).
+				const writer = createBlockWriter(stream, output);
+				const pushThinking = writer.pushThinking;
+				// Defensive only: ACP never injects the chat transport's sentinel, but
+				// a model carried over from a chat session may still wrap its answer
+				// in <pi_final>. The tags are dropped as the text streams, so they
+				// never reach the answer.
+				const answer = createTagStripper(["<pi_final>", "</pi_final>"], writer.pushText);
 				let creditsTotal: number | undefined;
 				let creditsUnitPlural: string | undefined;
 				let creditsOtherUnits: Record<string, number> | undefined;
@@ -1105,10 +1111,18 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					const u = params.update;
 					switch (u.sessionUpdate) {
 						case "agent_message_chunk":
-							if (u.content?.type === "text" && u.content.text) {
-								pushThinking(u.content.text); // stream as thinking (interim view)
-								textAccum += u.content.text;
-							}
+							// kiro's ANSWER channel (agent_thought_chunk is its thinking
+							// channel). Streamed straight to the text block so the user
+							// watches the answer arrive once, as the answer.
+							if (u.content?.type === "text" && u.content.text) answer.push(u.content.text);
+							break;
+						case "agent_thought_chunk":
+							// kiro's REASONING channel. Parity with the stream-json
+							// reader (stream-json-reader.ts), which has always routed
+							// it to thinking; ACP dropped it on the floor, so a turn
+							// that reasoned before answering showed nothing until the
+							// answer landed.
+							if (u.content?.type === "text" && u.content.text) pushThinking(u.content.text);
 							break;
 						case "tool_call": {
 							// DISPLAY ONLY. Under ACP kiro has already EXECUTED this tool by
@@ -1147,12 +1161,10 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 								name: rowName,
 								arguments: (u.rawInput as Record<string, unknown>) ?? {},
 							} as AssistantMessage["content"][number]);
-							// Full parity with the chat transport (stream-adapter.ts:404):
-							// pushing onto output.content alone is invisible to the consumer,
-							// because nothing carries `partial` until the next stream event.
-							// The thinking marker both emits that event and gives the user the
-							// same "⚙ <tool>" progress line the chat transport shows.
-							pushThinking(`\n⚙ ${rowName}\n`);
+							// The row announces itself (see announceToolRow). It used to be
+							// announced by a "⚙ <tool>" thinking line as well, which drew
+							// every call twice.
+							announceToolRow(stream, output, output.content.length - 1);
 							break;
 						}
 						case "tool_call_update":
@@ -1234,25 +1246,12 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					throw new Error(`kiro-cli acp session/prompt failed: ${detail}`);
 				}
 
-				// Close thinking block
-				thinkingWriter.end();
-
-				// Push text block
-				// Defensive sentinel strip: a model that previously ran under the chat
-				// transport (which injects a sentinel instruction) may still emit
-				// <pi_final>…</pi_final> wrapper tags. Under ACP these are never parsed —
-				// strip them so they don't leak verbatim into the assistant text.
-				const finalText = textAccum
-					.replace(/<pi_final>/g, "")
-					.replace(/<\/pi_final>/g, "")
-					.trim();
-				output.content.push({ type: "text", text: "" });
-				const textIndex = output.content.length - 1;
-				stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
-				const textBlock = output.content[textIndex];
-				if (textBlock.type === "text") textBlock.text = finalText;
-				stream.push({ type: "text_delta", contentIndex: textIndex, delta: finalText, partial: output });
-				stream.push({ type: "text_end", contentIndex: textIndex, content: finalText, partial: output });
+				// Release any tag fragment held back by the stripper, then close the
+				// open block. `end` also guarantees a text block exists, so a turn
+				// that produced no message chunks still carries an empty answer
+				// rather than no answer at all.
+				answer.flush();
+				writer.end();
 
 				// Credits
 				const metering: TurnMetering = {

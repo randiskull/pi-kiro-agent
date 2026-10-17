@@ -23,8 +23,10 @@ import {
 	captureBridgeTools,
 	type ChildScopedHttpBridgeHandle,
 	serveBridgeHttp,
+	setBridgeNotice,
 } from "./bridge.js";
 import { bridgeEnabled } from "./kiro-bridge.js";
+import { trace } from "./trace.js";
 import {
 	addTurnToTotals,
 	createMeteringTotals,
@@ -336,6 +338,18 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 	} catch {
 		// ignore — worst case the orphans survive until the next activation
 	}
+
+	// Bridge advisories go through the host, not stderr: under the TUI a raw
+	// stderr write is painted above the prompt and stays there for the whole
+	// session, so a mount-time advisory read as a permanent banner. notify is
+	// transient; stderr remains the fallback for print/RPC mode, where there is
+	// no UI to notify. Always traced, so the detail survives either way.
+	setBridgeNotice((message) => {
+		trace("bridge.notice", { message });
+		const ctx = latestCtx;
+		if (ctx?.hasUI) ctx.ui.notify(message, "warning");
+		else console.error(message);
+	});
 
 	pi.on("context", (_event, ctx) => {
 		latestCtx = ctx;

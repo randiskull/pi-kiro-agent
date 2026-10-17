@@ -156,7 +156,10 @@ describe("probe replays", () => {
 		expect(rows[0]).toMatchObject({ name: "kiro_read", id: "kiro-live-tooluse_hZWyHXuzY0mAGUa4LGYFX5" });
 		expect(rows[0]?.arguments.operations).toEqual([{ mode: "Line", path: "note.txt" }]);
 		expect(answerOf(events)).toBe("STARTING\n\nLet me read the file:PELICAN");
-		expect(thinkingOf(events).match(/⚙ kiro_read/g)).toHaveLength(1);
+		// The row announces itself as a toolCall, once, instead of as a
+		// "⚙ <tool>" line in the thinking feed on top of the row (announceToolRow).
+		expect(events.filter((e) => e.type === "toolcall_end").map((e) => (e as { toolCall: { name: string }}).toolCall.name)).toEqual(["kiro_read"]);
+		expect(thinkingOf(events)).not.toContain("⚙ kiro_read");
 		expect(thinkingOf(events)).not.toContain('{"type"');
 		// Display-only: pi never sees the rows.
 		expect(doneOf(events).content.filter((b) => b.type === "toolCall")).toHaveLength(0);
