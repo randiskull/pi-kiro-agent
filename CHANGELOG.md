@@ -14,9 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dimensions for a spec in `docs/specs/`, and `scripts/spec-lint.mjs` checks the part a script can:
   structure, defect or feature typing, attribution, and that cited paths, commits, `§` sections and
   npm scripts exist, with near-miss detection for misspelled symbols. A six-case calibration set
-  (`spec-review/calibration/`) holds the rubric to known answers, and `test/spec-lint.test.ts` pins
-  the linter against it. Contributor tooling only: nothing under `spec-review/` or `scripts/` is in
-  the published package. Design: `docs/specs/spec-review-bus.md`.
+  (`spec-review/calibration/`) measures whether two independent reviewers reach the same gate
+  decisions on it, with the two real specs two cases were frozen from committed beside them
+  (`spec-review/calibration/originals/`); `test/spec-lint.test.ts` pins the linter against the set,
+  and `test/rubric-anchors.test.ts` holds that no rubric anchor quotes a case it has to catch.
+  **Rubric 1 has no passing calibration result yet:** the first reported one was scored against an
+  answer key that had been relabelled to match those same runs, and is withdrawn
+  (`spec-review/calibration/runs/SCORE.md`). The queue, verdict validation and the CI gate are
+  specified and not built. Contributor tooling only: nothing under `spec-review/` or `scripts/` is
+  in the published package. Design: `docs/specs/spec-review-bus.md`.
 
 ### Changed
 
