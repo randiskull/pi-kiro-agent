@@ -37,7 +37,7 @@ Bridged when installed: pi-subagents' `Agent` / `get_subagent_result` / `steer_s
 
 On kiro-cli **2.21.4 or newer** the **chat transport** reads `--output-format stream-json`: kiro's turn as versioned ACP events (complete tool arguments, built-in tools as `kiro_*` rows, the session id, credits), with a strict envelope check that fails loudly if the format changes. On older kiro-cli, or with `PI_KIRO_CHAT_FORMAT=text`, it scrapes kiro's text output instead. Both paths use a sentinel protocol — the model wraps its final answer in `<pi_final>…</pi_final>`, everything else (ANSI-stripped) streams as a live thinking block, and the `Credits:` footer parses into Pi's cost tracking (see [Credits](#credits)). Token counts are not reported by the CLI. The **ACP transport** (`PI_KIRO_TRANSPORT=acp`) already uses structured NDJSON protocol events (`session/update` and `_kiro.dev/metadata`) instead of sentinel parsing — no wrapping is required. When #5423 ships in the chat transport, the sentinel path swaps for structured parsing there too.
 
-Kiro v3 note (chat transport): v3's agent config (env-expanded URLs, header auth) would allow one stable profile, but v3 currently has no working headless mode — the extension targets v2 agent profiles until that changes.
+Kiro v3 note (chat transport): v3 does run headless (`chat --no-interactive` answers correctly, and under `--output-format stream-json` its `[INFO] kas.*` logs go to stderr, leaving stdout valid JSON Lines), but it sends no `metadata` event, so credits and context usage move into `session_info_update._meta.kiro`, and it runs an internal tool call on every turn. The extension targets v2 until that is handled: design and measurements in [docs/design/v3-engine.md](docs/design/v3-engine.md).
 
 ## Credits
 

@@ -6,8 +6,11 @@
  * (concurrent subagent fan-out must not collide) and removed afterwards.
  *
  * v3 note: kiro v3 agent configs support header auth + ${VAR} expansion,
- * which would allow one stable profile — but v3 has no working headless
- * mode yet (the legacy non-TUI path is v2-only), so v2 is the target.
+ * which would allow one stable profile. v3 DOES run headless (measured: see
+ * docs/design/v3-engine.md), so the blocker is no longer the mode -- it is that
+ * a missing profile fails SOFT on v3 ("agent X not found, using default"),
+ * which is the one failure this bridge cannot tolerate: the turn would run with
+ * none of pi's tools. v2 stays the target until that is settled (spike S1).
  */
 
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
