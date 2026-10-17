@@ -319,7 +319,16 @@ describe("route conformance: an answer is painted exactly once", () => {
 	});
 
 	describe.each(KIRO_ROUTES.map((route) => [route]))("%s", (route) => {
-		const driver = DRIVERS[route];
+		const driver: RouteDriver | undefined = DRIVERS[route];
+		// The coverage test above names the missing route, but describe.each
+		// registers this block first: without the guard, a route with no driver
+		// would crash registration on `driver.retry` instead of failing as a test.
+		if (!driver) {
+			it("has a driver", () => {
+				throw new Error(`no driver for route "${route}": add one to DRIVERS in test/painted-once.test.ts`);
+			});
+			return;
+		}
 
 		it("draws the answer once in the snapshot", async () => {
 			expectSnapshotPaintedOnce(finalMessage(await driver.answer()));

@@ -310,6 +310,12 @@ describe("version and changelog agree (docs/releasing.md)", () => {
 		const fixture = [
 			"## Unreleased",
 			"",
+			// Keep a Changelog orders Added and Changed before Fixed, so the parser
+			// must find ### Fixed past other subsections, not just the first one.
+			"### Added",
+			"",
+			"- `src/metering.ts` is new, not a fix, so it needs no citation.",
+			"",
 			"### Fixed",
 			"",
 			"- **Cited.** The router in `src/transport-utils.ts` resets on retry",
