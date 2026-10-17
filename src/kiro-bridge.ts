@@ -74,7 +74,8 @@ function removeProfileFiles(dir: string, name: string): void {
  * whose pid was reused: nothing is mid-turn yet at activation), when its pid
  * is dead, or when it is older than any turn can run, since a dead owner's pid
  * can be recycled by an unrelated process. Files of a live pi mid-turn are left
- * alone.
+ * alone. Age is judged per file, not per pid: a live pid can own an ancient
+ * leftover it inherited and its own current profile at the same time.
  */
 export function sweepStaleAgentProfiles(dir: string = agentProfilesDir()): number {
 	let removed = 0;

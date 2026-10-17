@@ -149,6 +149,22 @@ describe("sweepStaleAgentProfiles", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
+	// Age is judged per FILE, never per pid: a live pid can own both an ancient
+	// leftover (from a dead process whose pid it inherited) and its own profile
+	// for the turn it is running now. Deciding once per pid from whichever file
+	// is listed first would delete that live profile mid-turn.
+	it("ages each file on its own, so a live pid's current profile survives its ancient namesake", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-kiro-agents-"));
+		const ancient = seed(dir, process.ppid, 1);
+		const current = seed(dir, process.ppid, 2);
+		const longAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+		for (const file of ancient) utimesSync(join(dir, file), longAgo, longAgo);
+
+		expect(sweepStaleAgentProfiles(dir)).toBe(ancient.length);
+		expect(readdirSync(dir).sort()).toEqual([...current].sort());
+		rmSync(dir, { recursive: true, force: true });
+	});
+
 	it("is a no-op on a missing directory", () => {
 		expect(sweepStaleAgentProfiles(join(tmpdir(), "pi-kiro-no-such-dir", "agents"))).toBe(0);
 	});
