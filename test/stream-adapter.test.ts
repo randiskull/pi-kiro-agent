@@ -70,6 +70,18 @@ function scriptSpawn(stdout: string, exitCode = 0): FakeChild {
 	return child;
 }
 
+function scriptChunks(chunks: string[], exitCode = 0): FakeChild {
+	const child = new FakeChild();
+	spawnMock.mockImplementation(() => {
+		queueMicrotask(() => {
+			for (const chunk of chunks) child.stdout.emit("data", Buffer.from(chunk));
+			queueMicrotask(() => child.emit("exit", exitCode));
+		});
+		return child;
+	});
+	return child;
+}
+
 async function collect(
 	context: Context,
 	options?: { signal?: AbortSignal; reasoning?: string },
@@ -391,6 +403,75 @@ describe("makeStreamViaKiro", () => {
 		expect(error.error.stopReason).toBe("aborted");
 	});
 
+	describe("sentinel routing: the answer streams as the answer, once", () => {
+		const notesOf = (events: AssistantMessageEvent[]) =>
+			events.filter((e) => e.type === "thinking_delta").map((e) => (e as { delta: string }).delta).join("");
+		const doneOf = (events: AssistantMessageEvent[]) => {
+			const done = events.find((e) => e.type === "done");
+			if (done?.type !== "done") throw new Error("expected done");
+			return done;
+		};
+		const renderedOf = (events: AssistantMessageEvent[]) =>
+			doneOf(events)
+				.message.content.map((b) => (b.type === "text" ? b.text : b.type === "thinking" ? b.thinking : ""))
+				.join("\n");
+
+		it("keeps the answer out of the working notes, and streams it before done", async () => {
+			scriptSpawn(RAW_SAMPLE);
+			const events = await collect({ messages: [] });
+			// The bug: stdout was pushed WHOLE into the thinking feed for a live
+			// view and the extracted span was emitted again as the answer, so the
+			// answer (and its raw tags) appeared twice.
+			expect(notesOf(events)).not.toContain("KIRO-OK");
+			expect(notesOf(events)).not.toContain(FINAL_OPEN);
+			expect(renderedOf(events).match(/KIRO-OK/g)).toHaveLength(1);
+			// ...and it arrives as text WHILE the turn runs, not only at settle.
+			const deltaIndex = events.findIndex((e) => e.type === "text_delta" && (e as { delta: string }).delta.includes("KIRO-OK"));
+			const doneIndex = events.findIndex((e) => e.type === "done");
+			expect(deltaIndex).toBeGreaterThan(-1);
+			expect(deltaIndex).toBeLessThan(doneIndex);
+			// The MESSAGE can be right while the PAINTED stream still duplicates: pi
+			// renders text from the deltas, so the deltas must sum to the answer and
+			// no more (settle must not re-emit what the route already streamed).
+			const painted = events.filter((e) => e.type === "text_delta").map((e) => (e as { delta: string }).delta).join("");
+			expect(painted).toBe("KIRO-OK");
+		});
+
+		it("routes a sentinel tag split across chunk boundaries", async () => {
+			scriptChunks(["> working on it\n", "<pi_", "final>SPLIT-OK</pi_", "final>\n ▸ Credits: 0.01 • Time: 1s"]);
+			const events = await collect({ messages: [] });
+			const text = doneOf(events).message.content.find((b) => b.type === "text");
+			expect(text && "text" in text ? text.text : "").toBe("SPLIT-OK");
+			expect(notesOf(events)).toContain("working on it");
+			expect(notesOf(events)).not.toContain("SPLIT-OK");
+			// The held-back partial tag must not leak into the notes either.
+			expect(notesOf(events)).not.toContain("<pi_");
+		});
+
+		it("keeps an answer that quotes the tags whole, and only once", async () => {
+			// Routine when kiro works on THIS repo. The live router cannot know
+			// which closing tag balances, so extractFinal is the arbiter and the
+			// block is reconciled rather than appended to.
+			const quoted = `wrap it in ${FINAL_OPEN}X${FINAL_CLOSE} like so`;
+			scriptSpawn(`> ${FINAL_OPEN}${quoted}${FINAL_CLOSE}\n ▸ Credits: 0.01 • Time: 1s`);
+			const events = await collect({ messages: [] });
+			const texts = doneOf(events).message.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text);
+			expect(texts).toEqual([quoted]);
+			expect(renderedOf(events).match(/like so/g)).toHaveLength(1);
+		});
+
+		it("falls back to the whole body as the answer when the model omits the sentinel", async () => {
+			// The one shape that still shows twice: nothing marks the answer, so it
+			// cannot be told from working notes until the stream has ended, and
+			// what was already painted as notes cannot be unpainted. The MESSAGE is
+			// right -- one text block holding the answer.
+			scriptSpawn("> PLAIN ANSWER\n ▸ Credits: 0.01 • Time: 1s");
+			const events = await collect({ messages: [] });
+			const text = doneOf(events).message.content.find((b) => b.type === "text");
+			expect(text && "text" in text ? text.text : "").toBe("PLAIN ANSWER");
+		});
+	});
+
 	it("wires the bridge: agent profile args, @pi tool context, and exit-3 retry", async () => {
 		const bridge = {
 			url: "http://127.0.0.1:6666/mcp",
@@ -401,7 +482,9 @@ describe("makeStreamViaKiro", () => {
 			close: vi.fn(async () => undefined),
 		};
 		// First spawn exits 3 (MCP startup failure), second succeeds.
-		const outputs = ["", `> ${FINAL_OPEN}BRIDGED${FINAL_CLOSE}\n ▸ Credits: 0.02 • Time: 1s`];
+		// Attempt 1 streams a partial answer before dying: it must be DROPPED, not
+		// concatenated with attempt 2's (writer.resetText).
+		const outputs = [`> ${FINAL_OPEN}ABANDONED`, `> ${FINAL_OPEN}BRIDGED${FINAL_CLOSE}\n ▸ Credits: 0.02 • Time: 1s`];
 		const codes = [3, 0];
 		spawnMock.mockImplementation(() => {
 			const child = new FakeChild();
@@ -439,6 +522,7 @@ describe("makeStreamViaKiro", () => {
 		if (done?.type !== "done") throw new Error("expected done after retry");
 		const text = done.message.content.find((block) => block.type === "text");
 		expect(text && "text" in text ? text.text : "").toBe("BRIDGED");
+		expect(JSON.stringify(done.message.content)).not.toContain("ABANDONED");
 		expect(bridge.close).toHaveBeenCalled();
 	});
 

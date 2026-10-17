@@ -41,7 +41,7 @@ import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
 import { creditCostUsd, meteringDiagnostic, type TurnMetering } from "./metering.js";
-import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
+import { createBlockWriter, createSentinelRouter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import {
 	disableInheritedResources,
 	type KiroAgentProfile,
@@ -547,7 +547,13 @@ async function runAttempt(
 	output: AssistantMessage,
 	pushThinking: (delta: string) => void,
 	abortSignal: AbortSignal | undefined,
-	live: { stream: AssistantMessageEventStream; bridge?: HttpBridgeHandle; format: ChatFormat },
+	live: {
+		stream: AssistantMessageEventStream;
+		bridge?: HttpBridgeHandle;
+		format: ChatFormat;
+		/** Text-format stdout sink: routes the sentinel span to the answer feed. */
+		onStdout?: (text: string) => void;
+	},
 ): Promise<{ exitCode: number; raw: string; stderrText: string; timedOut: boolean; streamJson?: StreamJsonTurn }> {
 	let turnTimedOut = false;
 	// detached: own process group, so aborts can kill kiro's helper
@@ -649,7 +655,10 @@ async function runAttempt(
 		child.stdout.on("data", (chunk: Buffer) => {
 			const text = chunk.toString("utf8");
 			raw += text;
-			pushThinking(stripAnsi(text));
+			// Routed, not mirrored: the sentinel span is the ANSWER and streams as
+			// text, everything around it is working notes and streams as thinking.
+			// Pushing all of it into thinking printed every answer twice.
+			(live.onStdout ?? pushThinking)(stripAnsi(text));
 			for (const use of liveParser.feed(stripAnsi(text))) liveCalls.surface(displayToolName(use.name, use.server));
 		});
 		// Tool-use lines arrive HERE on kiro-cli 2.21+ (see toolUseTranscript),
@@ -910,8 +919,14 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				let stderrText = "";
 				let exitCode = -1;
 				let turnTimedOut = false;
-				const thinkingWriter = createThinkingWriter(stream, output);
-				const pushThinking = thinkingWriter.push;
+				const writer = createBlockWriter(stream, output);
+				const pushThinking = writer.pushThinking;
+				// Text format only: split stdout into working notes and the answer as
+				// it arrives. stream-json carries the two channels separately already.
+				const answerRouter = createSentinelRouter(FINAL_OPEN, FINAL_CLOSE, {
+					narration: pushThinking,
+					answer: writer.pushText,
+				});
 
 				for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
 					// Engine pinned, never left to kiro's default: kiro-cli 2.26 documents v2 as
@@ -946,6 +961,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						stream,
 						bridge,
 						format,
+						onStdout: format === "text" ? answerRouter.feed : undefined,
 					});
 					raw = attemptResult.raw;
 					stderrText = attemptResult.stderrText;
@@ -968,6 +984,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						!options?.signal?.aborted
 					) {
 						pushThinking("\n[bridge MCP failed to connect -- retrying]\n");
+						writer.resetText();
 						continue;
 					}
 					// Resume fallback: a --resume-id spawn failed (stale/unusable
@@ -982,12 +999,14 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						useResume = false;
 						preSnapshot = await snapshot();
 						pushThinking("\n[kiro resume failed -- retrying with full context]\n");
+						writer.resetText();
 						continue;
 					}
 					break;
 				}
 
-				thinkingWriter.end();
+				answerRouter.flush();
+				writer.endThinking();
 
 				if (options?.signal?.aborted) throw new Error("kiro-cli run aborted");
 				if (turnTimedOut) {
@@ -1011,13 +1030,10 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					final = extractFinal(cleaned.body).final;
 					reconcileToolCalls(output, toolTranscript, pushThinking);
 				}
-				output.content.push({ type: "text", text: "" });
-				const textIndex = output.content.length - 1;
-				stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
-				const textBlock = output.content[textIndex];
-				if (textBlock.type === "text") textBlock.text = final;
-				stream.push({ type: "text_delta", contentIndex: textIndex, delta: final, partial: output });
-				stream.push({ type: "text_end", contentIndex: textIndex, content: final, partial: output });
+				// extractFinal (or the stream-json reader) is the arbiter: the live
+				// route is best-effort, so the block is reconciled against the
+				// authoritative answer instead of being appended to.
+				writer.finishText(final);
 
 				output.usage.cost.total = creditCostUsd(metering.credits);
 				output.diagnostics = [...(output.diagnostics ?? []), meteringDiagnostic(metering)];
