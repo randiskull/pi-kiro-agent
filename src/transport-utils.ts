@@ -178,19 +178,6 @@ export function createBlockWriter(stream: AssistantMessageEventStream, output: A
 }
 
 /**
- * Strip literal tags from a text stream without waiting for the whole stream.
- *
- * The answer is emitted chunk by chunk now, so a tag can no longer be removed
- * from the finished string -- and a tag can arrive SPLIT across two chunks
- * ("<pi_" then "final>"). Any trailing run of bytes that could still become a
- * tag is therefore held back until the next chunk proves it either is one (and
- * it is dropped) or is not (and it is emitted). `flush` releases a held-back
- * tail that never completed.
- *
- * Leading whitespace is swallowed until the first real content, which is the
- * streaming equivalent of the trim the ACP transport used to apply at the end.
- */
-/**
  * Make a toolCall block that was just pushed onto `output.content` visible to
  * the consumer, as a tool row rather than as narration.
  *
@@ -232,6 +219,13 @@ export function announceToolRow(
  * through as narration text rather than silently eaten. A tag split across two
  * chunks is held back until the next chunk resolves it, and `flush` releases a
  * tail that never completed.
+ *
+ * The answer's leading and trailing whitespace is dropped as it streams,
+ * because extractFinal trims the span: a model that writes
+ * `<pi_final>\nanswer\n</pi_final>` would otherwise stream "\nanswer\n", and
+ * reconciling that against "answer" re-sends the whole answer. `reset` returns
+ * the router to its initial state for a retried attempt, whose stream must not
+ * inherit an abandoned attempt's open span.
  */
 export function createSentinelRouter(
 	open: string,
@@ -241,9 +235,27 @@ export function createSentinelRouter(
 	let held = "";
 	let depth = 0;
 	let sawSpan = false;
+	let answerStarted = false;
+	let answerWhitespace = "";
+	/** The answer sink, edge-trimmed: a whitespace run is released only once real content follows it. */
+	const answer = (text: string) => {
+		let out = answerWhitespace + text;
+		answerWhitespace = "";
+		if (!answerStarted) {
+			out = out.replace(/^\s+/, "");
+			if (out.length === 0) return;
+			answerStarted = true;
+		}
+		const trailing = out.match(/\s+$/);
+		if (trailing) {
+			answerWhitespace = trailing[0];
+			out = out.slice(0, out.length - trailing[0].length);
+		}
+		if (out.length > 0) sinks.answer(out);
+	};
 	const emit = (text: string) => {
 		if (text.length === 0) return;
-		if (depth > 0) sinks.answer(text);
+		if (depth > 0) answer(text);
 		else sinks.narration(text);
 	};
 	/** Length of the trailing run that could still grow into either tag. */
@@ -257,7 +269,7 @@ export function createSentinelRouter(
 	};
 	return {
 		feed(text: string): void {
-			let buffer = held + text;
+			const buffer = held + text;
 			held = "";
 			let i = 0;
 			while (i < buffer.length) {
@@ -290,12 +302,20 @@ export function createSentinelRouter(
 					i = next + close.length;
 				}
 			}
-			if (i >= buffer.length) buffer = "";
 		},
 		flush(): void {
 			const tail = held;
 			held = "";
 			emit(tail);
+			// A trailing whitespace run at end of stream is the end of the trim.
+			answerWhitespace = "";
+		},
+		reset(): void {
+			held = "";
+			depth = 0;
+			sawSpan = false;
+			answerStarted = false;
+			answerWhitespace = "";
 		},
 		/** True once a complete open..close span has been routed to the answer. */
 		get sawSpan(): boolean {
@@ -304,6 +324,19 @@ export function createSentinelRouter(
 	};
 }
 
+/**
+ * Strip literal tags from a text stream without waiting for the whole stream.
+ *
+ * The answer is emitted chunk by chunk now, so a tag can no longer be removed
+ * from the finished string -- and a tag can arrive SPLIT across two chunks
+ * ("<pi_" then "final>"). Any trailing run of bytes that could still become a
+ * tag is therefore held back until the next chunk proves it either is one (and
+ * it is dropped) or is not (and it is emitted). `flush` releases a held-back
+ * tail that never completed.
+ *
+ * Leading whitespace is swallowed until the first real content, which is the
+ * streaming equivalent of the trim the ACP transport used to apply at the end.
+ */
 export function createTagStripper(tags: readonly string[], emit: (text: string) => void) {
 	const longest = Math.max(...tags.map((tag) => tag.length));
 	let held = "";

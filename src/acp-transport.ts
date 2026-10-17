@@ -1,7 +1,7 @@
 /**
  * ACP transport: Pi turn -> kiro-cli acp (NDJSON JSON-RPC) -> Pi
- * AssistantMessageEventStream. Enable with PI_KIRO_TRANSPORT=acp; the default
- * chat transport is untouched.
+ * AssistantMessageEventStream. The default transport; PI_KIRO_TRANSPORT=chat
+ * selects the per-turn chat transport (stream-adapter.ts) instead.
  *
  * 1. Persistent child: one `kiro-cli acp` per (cwd, conversationKey), kept
  *    alive across turns, idle-timeout after 10 min. conversationKey is a hash

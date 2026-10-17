@@ -357,14 +357,18 @@ describe("credit status line", () => {
 		ui: { setStatus, notify: vi.fn() },
 		sessionManager: { getSessionId: () => "credit-session" },
 	});
-	/** A finished turn as the host delivers it, with the transport's metering record attached. */
+	/**
+	 * A finished turn as the host delivers it, with the transport's metering
+	 * record attached. Both transports attach one on EVERY turn, so an unpriced
+	 * turn is a record with no credits, not a missing record.
+	 */
 	const turnEnd = (credits: number | undefined, provider = "kiro") => ({
 		type: "message_end",
 		message: {
 			role: "assistant",
 			provider,
 			content: [],
-			diagnostics: credits === undefined ? [] : [meteringDiagnostic({ credits, source: "acp", precision: "exact" })],
+			diagnostics: [meteringDiagnostic({ credits, source: credits === undefined ? "chat-text" : "acp", precision: "exact" })],
 		},
 	});
 
@@ -387,7 +391,7 @@ describe("credit status line", () => {
 		const setStatus = vi.fn();
 		await fake.emit("message_end", turnEnd(1.5), uiCtx(setStatus));
 		setStatus.mockClear();
-		// Another provider's spend is not kiro's, and a turn with no record must not
+		// Another provider's spend is not kiro's, and a turn with no figure must not
 		// even redraw: a redraw would count it as a turn and add a bogus "(last)".
 		await fake.emit("message_end", turnEnd(99, "anthropic"), uiCtx(setStatus));
 		await fake.emit("message_end", turnEnd(undefined), uiCtx(setStatus));
@@ -396,6 +400,16 @@ describe("credit status line", () => {
 		// The earlier total survives untouched.
 		await fake.emit("message_end", turnEnd(0.5), uiCtx(setStatus));
 		expect(setStatus).toHaveBeenLastCalledWith("kiro-credits", "▸ 2.00 credits ~$0.04 (last 0.500)");
+	});
+
+	it("an unpriced turn before the first priced one adds no \"(last)\"", async () => {
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const setStatus = vi.fn();
+		await fake.emit("message_end", turnEnd(undefined), uiCtx(setStatus));
+		await fake.emit("message_end", turnEnd(1.5), uiCtx(setStatus));
+		expect(setStatus).toHaveBeenLastCalledWith("kiro-credits", "▸ 1.50 credits ~$0.03");
 	});
 
 	it("a new session clears the slot and starts the tally over", async () => {

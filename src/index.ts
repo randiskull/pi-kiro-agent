@@ -440,8 +440,12 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 	pi.on("message_end", (event, ctx) => {
 		const message = event.message;
 		if (message.role !== "assistant" || message.provider !== KIRO_PROVIDER) return;
+		// Every kiro turn carries a record, including one that reported no credit
+		// figure (the text fallback on a kiro-cli whose footer no longer parses).
+		// Such a turn is skipped outright: folding it in would count it as a turn
+		// and put a "(last ...)" on the next priced one with nothing before it.
 		const turn = readMeteringDiagnostic(message.diagnostics);
-		if (!turn) return;
+		if (turn?.credits === undefined) return;
 		addTurnToTotals(meteringTotals, turn);
 		if (!ctx?.hasUI) return;
 		ctx.ui.setStatus(CREDITS_STATUS_KEY, formatMeteringStatus(meteringTotals));

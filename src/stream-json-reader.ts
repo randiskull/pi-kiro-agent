@@ -8,9 +8,11 @@
  * and the findings this follows: probes/stream-json-2.32/.
  *
  * The reader maps events onto the in-progress AssistantMessage as they arrive:
- * message and thought chunks stream into the thinking feed, tool calls become
- * display-only rows (LIVE_TOOL_ID_PREFIX, stripped before pi sees the final
- * message). The answer, the terminal event, credits and the session id are
+ * thought chunks stream into the thinking feed, message chunks go to
+ * `onMessageText` (the caller's sentinel router, which sends the `<pi_final>`
+ * span to the answer and the narration around it to thinking), and tool calls
+ * become display-only rows (LIVE_TOOL_ID_PREFIX, stripped before pi sees the
+ * final message). The answer, the terminal event, credits and the session id are
  * collected for the caller, which owns retry policy and the final text.
  *
  * Strict about the envelope, tolerant about events: a missing or unrecognized
@@ -83,8 +85,19 @@ export function createStreamJsonReader(
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
 	pushThinking: (delta: string) => void,
-	options: { engine: string; livePrefix: string },
+	options: {
+		engine: string;
+		livePrefix: string;
+		/**
+		 * Where message-chunk text goes as it arrives; defaults to thinking.
+		 * Message chunks hold the narration AND the sentinel-wrapped answer, so
+		 * pushing them all into thinking and then emitting the answer as text at
+		 * settle printed every answer twice.
+		 */
+		onMessageText?: (text: string) => void;
+	},
 ) {
+	const pushMessage = options.onMessageText ?? pushThinking;
 	const turn: StreamJsonTurn = { messageText: "" };
 	let pending = "";
 	let lineNumber = 0;
@@ -119,7 +132,7 @@ export function createStreamJsonReader(
 			case "agent_message_chunk":
 				if (update.content?.type === "text" && update.content.text) {
 					turn.messageText += update.content.text;
-					pushThinking(update.content.text);
+					pushMessage(update.content.text);
 				}
 				return;
 			case "agent_thought_chunk":

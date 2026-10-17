@@ -460,6 +460,17 @@ describe("makeStreamViaKiro", () => {
 			expect(renderedOf(events).match(/like so/g)).toHaveLength(1);
 		});
 
+		it("streams a newline-padded span exactly once", async () => {
+			// extractFinal trims the span. A streamed "\nANSWER\n" does not prefix
+			// "ANSWER", so reconciling at settle re-sent the whole answer.
+			scriptSpawn(`> ${FINAL_OPEN}\nANSWER\n${FINAL_CLOSE}\n ▸ Credits: 0.01 • Time: 1s`);
+			const events = await collect({ messages: [] });
+			const painted = events.filter((e) => e.type === "text_delta").map((e) => (e as { delta: string }).delta).join("");
+			expect(painted).toBe("ANSWER");
+			const text = doneOf(events).message.content.find((b) => b.type === "text");
+			expect(text && "text" in text ? text.text : "").toBe("ANSWER");
+		});
+
 		it("falls back to the whole body as the answer when the model omits the sentinel", async () => {
 			// The one shape that still shows twice: nothing marks the answer, so it
 			// cannot be told from working notes until the stream has ended, and
@@ -523,6 +534,13 @@ describe("makeStreamViaKiro", () => {
 		const text = done.message.content.find((block) => block.type === "text");
 		expect(text && "text" in text ? text.text : "").toBe("BRIDGED");
 		expect(JSON.stringify(done.message.content)).not.toContain("ABANDONED");
+		// Attempt 1 died INSIDE its span. The retry starts from a fresh router, so
+		// attempt 2's prompt, tags and credits footer are not streamed as answer
+		// text, and its answer arrives as a delta of its own.
+		const deltas = events.filter((e) => e.type === "text_delta").map((e) => (e as { delta: string }).delta);
+		expect(deltas.join("")).not.toContain(FINAL_OPEN);
+		expect(deltas.join("")).not.toContain("Credits");
+		expect(deltas.at(-1)).toBe("BRIDGED");
 		expect(bridge.close).toHaveBeenCalled();
 	});
 

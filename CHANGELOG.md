@@ -68,11 +68,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `agent_message_chunk` into the thinking feed for a live view and *also* accumulated the text,
   re-emitting the whole answer as one `text_delta` at end of turn; the chat transport's text format
   did the same thing with raw stdout, tags included, and then emitted the `<pi_final>` span again as
-  the answer. A line pi has painted can never be unpainted, so neither could be corrected at settle
-  time: each byte now goes to exactly one feed as it arrives. `createBlockWriter` holds one thinking
-  block and one text block, each with its own `contentIndex`; `createTagStripper` removes
-  `<pi_final>` as the text streams; and `createSentinelRouter` splits the chat transport's stdout on
-  the sentinel pair -- narration until the open tag, answer inside the span, narration after.
+  the answer, and its stream-json format did it with message chunks. A line pi has painted can never
+  be unpainted, so none of these could be corrected at settle time: each byte now goes to exactly
+  one feed as it arrives. `createBlockWriter` holds one thinking block and one text block, each with
+  its own `contentIndex`; `createTagStripper` removes `<pi_final>` as the text streams; and
+  `createSentinelRouter` splits the chat transport's message text -- text-format stdout or
+  stream-json message chunks -- on the sentinel pair: narration until the open tag, answer inside
+  the span, narration after. The answer is edge-trimmed as it streams, so a span written as
+  `<pi_final>\nanswer\n</pi_final>` is not re-sent whole when it is reconciled against
+  `extractFinal`'s trimmed span.
   Both are robust to a tag arriving **split across two chunks** (`<pi_` then `final>`), holding back
   any trailing run that could still become a tag. The router is depth-tracked, so an answer that
   quotes the tags keeps them literally, matching `extractFinal`, which strips only the outermost
@@ -97,7 +101,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still recoverable after the fact.
 - **A retried turn no longer concatenates the abandoned attempt's answer onto the next one's.** The
   chat transport retries a whole turn on a bridge-MCP exit 3 and on a resume failure; whatever the
-  first attempt had streamed is now discarded before the second starts.
+  first attempt had streamed is now discarded before the second starts, and the sentinel router
+  starts over too, so an attempt that died inside its answer span does not route the next
+  attempt's narration, tags and credits footer into the answer.
 - **A non-GSD project no longer loses its `gsd_*` tools silently** (#39). GSD's workflow MCP server
   is mounted into a delegated kiro run only when the project is a GSD project; without a `.gsd/`
   directory nothing is mounted, so a model told to call `gsd_capture_thought` gets an unknown-tool

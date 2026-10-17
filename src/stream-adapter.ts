@@ -553,8 +553,12 @@ async function runAttempt(
 		stream: AssistantMessageEventStream;
 		bridge?: HttpBridgeHandle;
 		format: ChatFormat;
-		/** Text-format stdout sink: routes the sentinel span to the answer feed. */
-		onStdout?: (text: string) => void;
+		/**
+		 * The turn's message text as it arrives -- text-format stdout, or
+		 * stream-json's message chunks -- routed so the sentinel span reaches the
+		 * answer feed and only the narration reaches thinking.
+		 */
+		onMessageText?: (text: string) => void;
 	},
 ): Promise<{ exitCode: number; raw: string; stderrText: string; timedOut: boolean; streamJson?: StreamJsonTurn }> {
 	let turnTimedOut = false;
@@ -621,6 +625,7 @@ async function runAttempt(
 		const streamReader = createStreamJsonReader(output, live.stream, pushThinking, {
 			engine: CHAT_ENGINE,
 			livePrefix: LIVE_TOOL_ID_PREFIX,
+			onMessageText: live.onMessageText,
 		});
 		reader = streamReader;
 		let finished = false;
@@ -660,7 +665,7 @@ async function runAttempt(
 			// Routed, not mirrored: the sentinel span is the ANSWER and streams as
 			// text, everything around it is working notes and streams as thinking.
 			// Pushing all of it into thinking printed every answer twice.
-			(live.onStdout ?? pushThinking)(stripAnsi(text));
+			(live.onMessageText ?? pushThinking)(stripAnsi(text));
 			for (const use of liveParser.feed(stripAnsi(text))) liveCalls.surface(displayToolName(use.name, use.server));
 		});
 		// Tool-use lines arrive HERE on kiro-cli 2.21+ (see toolUseTranscript),
@@ -925,8 +930,10 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				let turnTimedOut = false;
 				const writer = createBlockWriter(stream, output);
 				const pushThinking = writer.pushThinking;
-				// Text format only: split stdout into working notes and the answer as
-				// it arrives. stream-json carries the two channels separately already.
+				// Split the message text into working notes and the answer as it
+				// arrives. Both formats need it: stream-json separates thoughts from
+				// message chunks, but the message chunks still carry the narration
+				// around the <pi_final> span (finalText is ALL of the turn's text).
 				const answerRouter = createSentinelRouter(FINAL_OPEN, FINAL_CLOSE, {
 					narration: pushThinking,
 					answer: writer.pushText,
@@ -965,7 +972,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						stream,
 						bridge,
 						format,
-						onStdout: format === "text" ? answerRouter.feed : undefined,
+						onMessageText: answerRouter.feed,
 					});
 					raw = attemptResult.raw;
 					stderrText = attemptResult.stderrText;
@@ -988,6 +995,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						!options?.signal?.aborted
 					) {
 						pushThinking("\n[bridge MCP failed to connect -- retrying]\n");
+						answerRouter.reset();
 						writer.resetText();
 						continue;
 					}
@@ -1003,6 +1011,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						useResume = false;
 						preSnapshot = await snapshot();
 						pushThinking("\n[kiro resume failed -- retrying with full context]\n");
+						answerRouter.reset();
 						writer.resetText();
 						continue;
 					}

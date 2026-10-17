@@ -172,6 +172,20 @@ describe("probe replays", () => {
 		expect(answerOf(await collect())).toBe("PELICAN");
 	});
 
+	it("streams the span as the answer and only the narration as thinking", async () => {
+		// Message chunks carry the narration AND the span. They all went to
+		// thinking, tags included, and the span was emitted again as text at
+		// settle, so the answer was printed twice.
+		scriptAttempts({
+			stdout: STARTED + chunk("Let me read the file:") + chunk(`${FINAL_OPEN}\nPELI`) + chunk(`CAN\n${FINAL_CLOSE}`) + FINISHED("x"),
+		});
+		const events = await collect();
+		expect(thinkingOf(events)).toBe("Let me read the file:");
+		const painted = events.filter((e) => e.type === "text_delta").map((e) => (e as { delta: string }).delta).join("");
+		expect(painted).toBe("PELICAN");
+		expect(answerOf(events)).toBe("PELICAN");
+	});
+
 	it("p3: a row for the update-only failed read with one failed marker; the non-zero shell is not marked", async () => {
 		scriptAttempts({ stdout: probe("p3-toolerr.jsonl"), chunkBytes: 13 });
 		const events = await collect();
