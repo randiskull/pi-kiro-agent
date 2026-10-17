@@ -234,7 +234,6 @@ export function createSentinelRouter(
 ) {
 	let held = "";
 	let depth = 0;
-	let sawSpan = false;
 	let answerStarted = false;
 	let answerWhitespace = "";
 	/** The answer sink, edge-trimmed: a whitespace run is released only once real content follows it. */
@@ -294,7 +293,6 @@ export function createSentinelRouter(
 						emit(close);
 					} else if (depth === 1) {
 						depth = 0;
-						sawSpan = true;
 					} else {
 						depth -= 1;
 						emit(close);
@@ -313,13 +311,8 @@ export function createSentinelRouter(
 		reset(): void {
 			held = "";
 			depth = 0;
-			sawSpan = false;
 			answerStarted = false;
 			answerWhitespace = "";
-		},
-		/** True once a complete open..close span has been routed to the answer. */
-		get sawSpan(): boolean {
-			return sawSpan;
 		},
 	};
 }
