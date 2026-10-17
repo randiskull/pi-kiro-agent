@@ -14,7 +14,7 @@
  * on it, a turn would run with none of pi's tools. v2 stays the target.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { HttpBridgeHandle } from "./bridge.js";
@@ -35,6 +35,70 @@ let profileCounter = 0;
 
 export function agentProfilesDir(): string {
 	return join(homedir(), ".kiro", "agents");
+}
+
+/**
+ * A profile's own file plus the backups kiro writes beside it. A kiro-cli
+ * v3-engine start (from anywhere: pi, the IDE, KAS) converts every top-level
+ * `~/.kiro/agents/*.json` to the format both engines load and saves the
+ * original as `<name>.json.bak`, then `.bak.1`, `.bak.2`, ... on later
+ * conversions. The original holds the tokenized bridge URL, so the backups are
+ * ours to delete along with the profile.
+ */
+const PROFILE_FILE = /^pi-kiro-bridge-(\d+)-(\d+)\.json(?:\.bak(?:\.\d+)?)?$/;
+
+function profileFiles(dir: string): string[] {
+	try {
+		return readdirSync(dir).filter((entry) => PROFILE_FILE.test(entry));
+	} catch {
+		return [];
+	}
+}
+
+/** Remove `<name>.json` and its backups. Exact name: other turns share the dir. */
+function removeProfileFiles(dir: string, name: string): void {
+	for (const entry of profileFiles(dir)) {
+		if (entry !== `${name}.json` && !entry.startsWith(`${name}.json.bak`)) continue;
+		try {
+			rmSync(join(dir, entry), { force: true });
+		} catch {
+			// best effort
+		}
+	}
+}
+
+/**
+ * Delete profiles, and their backups, left by turns that never reached
+ * `remove()`: a pi process that was SIGKILLed or crashed mid-turn. Runs at
+ * activation. A file is stale when its pid is this process (a predecessor
+ * whose pid was reused: nothing is mid-turn yet at activation), when its pid
+ * is dead, or when it is older than any turn can run, since a dead owner's pid
+ * can be recycled by an unrelated process. Files of a live pi mid-turn are left
+ * alone. Age is judged per file, not per pid: a live pid can own an ancient
+ * leftover it inherited and its own current profile at the same time.
+ */
+export function sweepStaleAgentProfiles(dir: string = agentProfilesDir()): number {
+	let removed = 0;
+	for (const entry of profileFiles(dir)) {
+		const pid = Number(PROFILE_FILE.exec(entry)?.[1]);
+		const path = join(dir, entry);
+		let stale = pid === process.pid || !pidAlive(pid);
+		if (!stale) {
+			try {
+				stale = Date.now() - statSync(path).mtimeMs > sentinelMaxAgeMs();
+			} catch {
+				continue;
+			}
+		}
+		if (!stale) continue;
+		try {
+			rmSync(path, { force: true });
+			removed += 1;
+		} catch {
+			// best effort
+		}
+	}
+	return removed;
 }
 
 /**
@@ -84,17 +148,16 @@ export function writeAgentProfile(
 		// comment. `disableInheritedResources()` is what actually saves the ~30k.
 		resources: [] as string[],
 	};
-	writeFileSync(path, `${JSON.stringify(profile, null, "\t")}\n`, "utf8");
+	// Clear anything already under this name first: `mode` only applies when the
+	// file is created, and the profile carries the bridge token, so it must be
+	// owner-only (kiro keeps the mode when it converts the file, so its backups
+	// inherit 0600 too).
+	removeProfileFiles(dir, name);
+	writeFileSync(path, `${JSON.stringify(profile, null, "\t")}\n`, { encoding: "utf8", mode: 0o600 });
 	return {
 		name,
 		path,
-		remove: () => {
-			try {
-				rmSync(path, { force: true });
-			} catch {
-				// best effort
-			}
-		},
+		remove: () => removeProfileFiles(dir, name),
 	};
 }
 
@@ -117,9 +180,9 @@ interface RestoreRecord {
 const activeDirs = new Set<string>();
 
 /**
- * Age past which a sentinel is stale even if its pid is alive, because pids are
- * reused: a dead owner's pid recycled by an unrelated process would otherwise
- * keep the setting stranded indefinitely. Comfortably above the longest turn
+ * Age past which a sentinel (or a leftover agent profile) is stale even if its
+ * pid is alive, because pids are reused: a dead owner's pid recycled by an
+ * unrelated process would otherwise keep the setting stranded indefinitely. Comfortably above the longest turn
  * the chat transport allows (PI_KIRO_CHAT_TIMEOUT_MS, 45 min by default).
  */
 function sentinelMaxAgeMs(): number {
