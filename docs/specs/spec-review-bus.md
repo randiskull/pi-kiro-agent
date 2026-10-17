@@ -1,7 +1,8 @@
 # Implementation Spec: every spec gets an independent, rubric-scored verdict before it is built
 
-- Status: Draft. On this branch already: the rubric, the calibration set and
-  its first run, the linter and its test. Not built yet: the queue, verdict
+- Status: Draft. On this branch already: the rubric, the calibration set, its
+  first run and a held-out run that does not meet the ship bar, an interim
+  scorer, the linter and its test. Not built yet: the queue, verdict
   validation and the CI workflow.
 - Area: contributor workflow / CI
 - Target release: none. No code or behaviour in the published package
@@ -69,8 +70,10 @@ citations are classified (Approach, step 3) instead.
 - `CODEOWNERS` entries for `spec-review/rubric.md` and `spec-review/calibration/`.
 - The first calibration run for Rubric 1, committed under
   `spec-review/calibration/runs/<run-id>/`. **Done on this branch**, scored by
-  a scratch scorer (`spec-review/calibration/runs/SCORE.md`);
-  `spec-review.mjs score` must reproduce that result (criterion 7).
+  `spec-review/calibration/score.mjs` (`spec-review/calibration/runs/SCORE.md`);
+  `spec-review.mjs score` replaces it and must reproduce that result
+  (criterion 7). A held-out run by a harness and model outside passes 1 to 8
+  misses three cases (`SCORE.md`), so criterion 7 is not met.
 - CHANGELOG `### Added` under `## Unreleased`. **Done on this branch.**
 
 ### Out of scope
@@ -126,23 +129,31 @@ spec-review verdict for docs/specs/<slug>.md blob <40-hex git blob sha>
 ### 3. Lint: `scripts/spec-lint.mjs`
 
 Built. Checks `structure`, `type`, `attribution`, `G2` and `G3` (presence only),
-resolving citations at `--ref` (default `HEAD`). Each inline-code token is
-classified, and only the classes a script can judge without being wrong fail:
+resolving citations at `--ref` (default `HEAD`) from the repository root, whatever
+directory it runs in. Fenced blocks (backtick or tilde, any length) and HTML
+comments are not prose. Symbols resolve in `src/`, `test/` and `scripts/`, except
+the linter and its test, which spell typos on purpose. Each inline-code token
+and markdown link target is classified, and only the classes a script can judge
+without being wrong fail:
 
 | Class | Example | Result |
 | --- | --- | --- |
 | repo path, under a top-level entry the repo has | `src/bridge.ts` | must exist at the ref |
 | sibling spec | `docs/specs/<slug>.md` | `--alias`, then the working tree |
-| near miss of a repo path or symbol | a `src/` path typed `scr/`; a symbol in the wrong case, or (8+ characters) one edit off | fail, naming the real one |
-| commit (7 to 40 hex with a letter; digits-only only in backticks) | `6ea0510` | must exist; exit 2 in a shallow clone |
-| another repository's commit, written `<owner>/<repo>@<sha>` | | listed for the reviewer |
-| `§` reference | `§5e.3` | must match a heading in `docs/design/*.md` |
-| `npm run <x>` | `npm run verify` | `package.json` must define it |
+| near miss of a repo path or symbol | a top-level directory in the wrong case (`SRC/`) or one edit off (`scr/`); a symbol (camelCase, PascalCase, snake or screaming case, or a call's callee) in the wrong case with the same initial, or (8+ characters) one edit off | fail, naming the real one |
+| commit (7 to 40 hex, either case, with a digit and a letter; digits-only or letters-only only in backticks; both ends of `a..b`) | `6ea0510` | must be an ancestor of `--ref`; exit 2 in a shallow clone |
+| another repository's commit, written `<owner>/<repo>@<sha>` or as a `.../commit/<sha>` URL | | listed for the reviewer |
+| `§` reference | `§5e.3` | must be a section number naming a heading in `docs/design/*.md` (`§5e` is not `5e.3`) |
+| `npm run <x>`, `npm run-script <x>`, `npm test`/`start`/`stop`/`restart` | `npm run verify` | `package.json` must define it; other `npm` commands are npm's own |
 | path marked `(new)` | | listed as proposed |
 | gitignored local path, path outside the repo, unknown identifier, placeholder | | listed for the reviewer, never failed |
 
 A wholly invented identifier with no near miss passes lint. The rubric's
 reviewer half of G2 covers it, and the script header says so.
+
+Exit 1 means a finding and nothing else. An unreadable or oversized (over
+512 KiB) spec, an unknown option, an unresolvable ref and any internal error
+exit 2, so the queue never reads a crash as `lint-fail`.
 
 ### 4. Queue and verdict validation: `scripts/spec-review.mjs` (new)
 
@@ -242,9 +253,11 @@ lint half runs in CI on every push (`test/spec-lint.test.ts`).
   - Lint: done. The unmutated synthetic spec is asserted to pass first, so a
     harness that never passes cannot read every mutation as caught. Then one
     defect per citation class must fail `G2` with the token named. The checker
-    itself was mutated nine ways (each check disabled in turn, and `(new)`
-    widened to excuse the whole line); every mutation failed
-    `test/spec-lint.test.ts`.
+    itself was mutated 34 ways after review, each rule disabled or loosened in
+    turn (fence and comment handling, heading matching, header values, the
+    ancestor check, every citation form, the exit codes); every mutation fails
+    `test/spec-lint.test.ts`, which also lints at `HEAD` so its own fixtures
+    cannot whitelist a typo.
   - Queue: in `test/spec-review.test.ts`, assert `pending` before `pass`, so a
     queue that always answers `pass` fails. Then mutate the blob comparison to
     always match and confirm criterion 3 fails; record it in the PR.
