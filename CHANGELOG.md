@@ -22,9 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ceiling and a stream-json envelope violation each armed the SIGTERM-to-SIGKILL escalation by
   overwriting the timer handle, and only the latest was cleared at exit, so an earlier one fired a
   `SIGKILL` at a process group that had already exited. One `armKill` helper now clears any prior
-  timer before arming. The stream-json path also stopped keeping a second full copy of the turn's
-  stdout that nothing read. Both were fixed once in #55, which merged into a branch that had already
-  merged to `main`, so the fix never shipped.
+  timer before arming (`test/stream-adapter.test.ts`, "escalates a child that ignores SIGTERM to
+  SIGKILL after the grace window").
+- **The stream-json path kept a second full copy of the turn's stdout (#58).** Nothing read it; the
+  text path's `cleanBody(raw)` is unreachable under stream-json and its failure messages use a
+  static hint plus stderr (no test: a buffer with no reader has no observable behaviour to assert,
+  and a test that reached for the private field would pin the implementation, not the property).
+
+  Both were fixed once in #55, which merged into a branch that had already merged to `main`, so the
+  fix never shipped.
 
 ## 0.4.0 - 2026-10-17
 

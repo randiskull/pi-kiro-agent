@@ -206,6 +206,38 @@ describe("published surface", () => {
  * the tag check in publish.yml as the only thing standing between main and a
  * mislabelled publish.
  */
+/**
+ * The `### Fixed` bullets of the Unreleased section that cite no test.
+ *
+ * A bullet passes by naming a test file (`test/....test.ts`), or by carrying an
+ * explicit waiver, `(no test: why)`, for the fix that genuinely has none.
+ *
+ * The first form of this rule only fired on a bullet that also named a `src/`
+ * file, which made the cheapest way to pass "do not name the file" -- and the
+ * first entry it ever saw, the #58 timer-leak fix, named `armKill` and no path,
+ * so it passed while citing nothing. An escape hatch that has to be written
+ * down and reviewed is the point; a silent one is not.
+ *
+ * Released sections stay exempt: the rule postdates them.
+ */
+function uncitedFixes(text: string): string[] {
+	const unreleased = /^## Unreleased\s*$/m.exec(text);
+	if (!unreleased) return [];
+	const rest = text.slice(unreleased.index + unreleased[0].length);
+	const end = rest.search(/^## /m);
+	const section = end === -1 ? rest : rest.slice(0, end);
+	const fixed = /^### Fixed\s*$/m.exec(section);
+	if (!fixed) return [];
+	const after = section.slice(fixed.index + fixed[0].length);
+	const stop = after.search(/^### /m);
+	const body = stop === -1 ? after : after.slice(0, stop);
+	const bullets = body.split(/\n(?=- )/).map((bullet) => bullet.trim()).filter((bullet) => bullet.startsWith("- "));
+	const citesTest = (bullet: string) => /\btest\/[\w./-]+\.test\.ts\b/.test(bullet);
+	// A waiver needs a reason: `(no test:)` and `(no test:   )` do not count.
+	const waived = (bullet: string) => /\(no test:\s*\S[^)]*\)/.test(bullet);
+	return bullets.filter((bullet) => !citesTest(bullet) && !waived(bullet));
+}
+
 describe("version and changelog agree (docs/releasing.md)", () => {
 	/** `## 1.2.3 - 2026-01-01` headings, in file order. `## Unreleased` is skipped. */
 	const releaseHeadings = [...changelog.matchAll(/^## (\d+)\.(\d+)\.(\d+)\b/gm)].map((m) => ({
@@ -273,6 +305,85 @@ describe("version and changelog agree (docs/releasing.md)", () => {
 			body.split("\n").filter((line) => line.startsWith("- ")).length,
 			`the ${version} section in CHANGELOG.md has no bullet points`,
 		).toBeGreaterThan(0);
+	});
+
+	it("every Unreleased ### Fixed entry cites the test that proves it, or waives it in writing", () => {
+		const uncited = uncitedFixes(changelog);
+		expect(
+			uncited,
+			"these Unreleased `### Fixed` bullets cite no `test/...test.ts`; name the test that fails " +
+				"without the fix, so the claim and its gate are tied together, or write `(no test: why)` " +
+				"to waive it on the record (docs/releasing.md)",
+		).toEqual([]);
+	});
+
+	// Not vacuous: on a changelog with no Unreleased section the check above passes
+	// trivially, so pin the parser on fixtures. This one exercises every verdict,
+	// including the two shapes the first form of this rule let through, and places
+	// ### Fixed between two other subsections so the parser cannot pass by only ever
+	// looking at the first one.
+	it("the citation check accepts a cited fix and a waived one, and catches the rest", () => {
+		const fixture = [
+			"## Unreleased",
+			"",
+			"### Added",
+			"",
+			"- `src/metering.ts` is new, not a fix, so it needs no citation.",
+			"",
+			"### Fixed",
+			"",
+			"- **Cited.** The router in `src/transport-utils.ts` resets on retry",
+			"  (`test/painted-once.test.ts`).",
+			"- **Waived.** A typo in a log line (no test: the string is not asserted anywhere).",
+			// The review of #60 read the waiver pattern as anchored and warned that a
+			// reason containing `)` would be rejected. It is a `.test` for a MATCH, not
+			// an anchored one, so the span simply ends at the first `)` and the waiver
+			// stands. Pinned here so the claim can never quietly become true.
+			"- **Waived, reason contains parens.** (no test: `foo()` is private, so nothing reads it).",
+			"- **Uncited.** `src/stream-json-reader.ts` no longer mirrors message chunks.",
+			"- **Names no file at all.** This is how the #58 entry passed the first form of the rule.",
+			"- **Waiver with no reason.** (no test:)",
+			"- **Waiver never closed.** (no test: no closing paren anywhere in this bullet",
+			"",
+			"### Changed",
+			"",
+			"- `src/index.ts` is not a fix, so it needs no citation.",
+			"",
+			"## 0.4.0 - 2026-10-17",
+			"",
+			"### Fixed",
+			"",
+			"- `src/acp-transport.ts`, released before the rule.",
+		].join("\n");
+		expect(uncitedFixes(fixture)).toEqual([
+			"- **Uncited.** `src/stream-json-reader.ts` no longer mirrors message chunks.",
+			"- **Names no file at all.** This is how the #58 entry passed the first form of the rule.",
+			"- **Waiver with no reason.** (no test:)",
+			"- **Waiver never closed.** (no test: no closing paren anywhere in this bullet",
+		]);
+	});
+
+	// A cycle with nothing to fix has no Unreleased `### Fixed` at all. Unless the
+	// search is confined to the Unreleased SECTION, the next `### Fixed` it finds is a
+	// RELEASED one, and the whole back catalogue -- written before this rule -- is
+	// reported as uncited. The fixture above cannot show that: its Unreleased section
+	// does have a Fixed subsection.
+	it("looks only inside Unreleased, so a cycle with no fixes does not report the back catalogue", () => {
+		const fixture = [
+			"## Unreleased",
+			"",
+			"### Changed",
+			"",
+			"- Nothing was fixed this cycle.",
+			"",
+			"## 0.4.0 - 2026-10-17",
+			"",
+			"### Fixed",
+			"",
+			"- **Released and uncited.** Exempt: the rule postdates it.",
+			"- **Also released and uncited.**",
+		].join("\n");
+		expect(uncitedFixes(fixture)).toEqual([]);
 	});
 
 	// docs/releasing.md explains why the pi SDK devDependency is the only statement

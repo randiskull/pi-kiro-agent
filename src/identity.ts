@@ -22,14 +22,16 @@ import { createRequire } from "node:module";
 export type KiroEngine = "v2" | "v3";
 export type KiroAuth = "login" | "api-key";
 /** Which transport served the turn. ACP is the default; chat is the fallback. */
-export type KiroTransport = "acp" | "chat";
+export const KIRO_TRANSPORTS = ["acp", "chat"] as const;
+export type KiroTransport = (typeof KIRO_TRANSPORTS)[number];
 /**
  * The chat transport's wire format. Declared here rather than imported from
  * stream-adapter.ts, which imports this module: identity.ts depends on nothing
  * in src/, and a reverse import would make that a cycle. stream-adapter's
  * ChatFormat is an alias of this type, so the two cannot drift.
  */
-export type KiroChatFormat = "text" | "stream-json";
+export const KIRO_CHAT_FORMATS = ["text", "stream-json"] as const;
+export type KiroChatFormat = (typeof KIRO_CHAT_FORMATS)[number];
 
 /** stream-adapter.ts spawns `kiro-cli chat --agent-engine v2`. Keep in sync with that argv. */
 export const CHAT_ENGINE: KiroEngine = "v2";
@@ -122,6 +124,15 @@ export function displayTransport(transport: KiroTransport, format?: KiroChatForm
 	if (transport === "acp") return "acp";
 	return format ? `chat/${format}` : "chat";
 }
+
+/**
+ * Every route a turn can take, as displayTransport names it. Derived from the
+ * lists above, so a new transport or format is a new route without anyone
+ * having to remember to add it: route-wide test suites iterate this list.
+ */
+export const KIRO_ROUTES: readonly string[] = KIRO_TRANSPORTS.flatMap((transport) =>
+	transport === "acp" ? [displayTransport(transport)] : KIRO_CHAT_FORMATS.map((format) => displayTransport(transport, format)),
+);
 
 export function identityLine(parts: IdentityParts): string {
 	const route = displayTransport(parts.transport, parts.format);
