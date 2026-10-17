@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetSessions, planTurn, recordKnownSession } from "../src/session-manager.js";
-import { FINAL_CLOSE, FINAL_OPEN, makeStreamViaKiro } from "../src/stream-adapter.js";
+import { _resetChatFormatFallback, FINAL_CLOSE, FINAL_OPEN, makeStreamViaKiro, supportsStreamJson } from "../src/stream-adapter.js";
 import { resetTraceTarget } from "../src/trace.js";
 
 const { spawnMock, execFileMock } = vi.hoisted(() => ({ spawnMock: vi.fn(), execFileMock: vi.fn() }));
@@ -331,6 +331,79 @@ describe("session bookkeeping and traces", () => {
 		} finally {
 			delete process.env.PI_KIRO_TRACE;
 			resetTraceTarget();
+		}
+	});
+});
+
+describe("default format by kiro-cli version", () => {
+	const VERSIONS: Array<[string | undefined, boolean]> = [
+		["2.32.0", true],
+		["2.100.0", true],
+		["2.21.4", true],
+		["2.21.4-beta", true],
+		["2.21.3", false],
+		["2.9.0", false],
+		["not-a-version", false],
+		[undefined, false],
+	];
+
+	it.each(VERSIONS)("supportsStreamJson(%s) is %s (numeric, not lexicographic)", (version, expected) => {
+		expect(supportsStreamJson(version)).toBe(expected);
+	});
+
+	/** Run one turn with PI_KIRO_CHAT_FORMAT set to `format`, restoring it afterwards. */
+	async function flagFor(format: string | undefined, kiroVersion: string | undefined): Promise<boolean> {
+		spawnMock.mockReset();
+		const previous = process.env.PI_KIRO_CHAT_FORMAT;
+		try {
+			if (format === undefined) delete process.env.PI_KIRO_CHAT_FORMAT;
+			else process.env.PI_KIRO_CHAT_FORMAT = format;
+			scriptAttempts({ stdout: STARTED + chunk("ok") + FINISHED("ok") });
+			const stream = makeStreamViaKiro({ binaryPath: "kiro-cli", kiroVersion })(MODEL, { systemPrompt: "", messages: [USER] });
+			for await (const _event of stream) {
+				// drain
+			}
+			return ((spawnMock.mock.calls[0]?.[1] as string[] | undefined) ?? []).includes("--output-format");
+		} finally {
+			if (previous === undefined) delete process.env.PI_KIRO_CHAT_FORMAT;
+			else process.env.PI_KIRO_CHAT_FORMAT = previous;
+		}
+	}
+
+	it("unset or empty: stream-json at or above 2.21.4, text below or when unparseable; explicit values win; unknown never spawns", async () => {
+		for (const [version, supported] of VERSIONS) {
+			for (const unset of [undefined, "", "  "]) expect(await flagFor(unset, version), `${String(unset)} @ ${String(version)}`).toBe(supported);
+			expect(await flagFor("stream-json", version), `stream-json @ ${String(version)}`).toBe(true);
+			expect(await flagFor("text", version), `text @ ${String(version)}`).toBe(false);
+			await flagFor("json", version);
+			expect(spawnMock, `json @ ${String(version)}`).not.toHaveBeenCalled();
+		}
+	});
+
+	it("writes exactly one chat.format.fallback trace per process, with the version (null when unparseable)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-kiro-sj-fallback-"));
+		const tracePath = join(dir, "t.jsonl");
+		process.env.PI_KIRO_TRACE = tracePath;
+		resetTraceTarget();
+		const fallbacks = () =>
+			readFileSync(tracePath, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l))
+				.filter((e) => e.event === "chat.format.fallback");
+		try {
+			_resetChatFormatFallback();
+			await flagFor(undefined, "2.20.0");
+			await flagFor(undefined, "2.20.0");
+			await flagFor(undefined, "2.32.0");
+			expect(fallbacks()).toEqual([expect.objectContaining({ kiroVersion: "2.20.0", floor: "2.21.4" })]);
+			_resetChatFormatFallback();
+			await flagFor(undefined, "garbage");
+			expect(fallbacks().at(-1)).toMatchObject({ kiroVersion: null, floor: "2.21.4" });
+		} finally {
+			delete process.env.PI_KIRO_TRACE;
+			resetTraceTarget();
+			_resetChatFormatFallback();
 		}
 	});
 });

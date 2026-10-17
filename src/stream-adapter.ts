@@ -153,17 +153,58 @@ function chatTimeoutMs(): number {
 
 export type ChatFormat = "text" | "stream-json";
 
+/** Earliest kiro-cli known to emit `--output-format stream-json` (design doc §5b/§5c). */
+export const STREAM_JSON_FLOOR = "2.21.4";
+
 /**
- * PI_KIRO_CHAT_FORMAT (#47): `text` (the default) scrapes kiro's prose;
- * `stream-json` reads `--output-format stream-json` (stream-json-reader.ts).
- * Matched exactly after trimming; anything else fails the turn before kiro is
- * spawned, rather than silently picking a transport the user did not ask for.
+ * `[major, minor, patch]` with any `-…`/`+…` suffix dropped; undefined if not
+ * exactly three integers. Callers pass parseKiroVersion() output (readiness),
+ * which is already `X.Y.Z` with an optional suffix, so any other shape is an
+ * unknown version and safely means text.
  */
-export function chatFormat(): ChatFormat {
+function versionTuple(version: string | undefined): [number, number, number] | undefined {
+	const parts = (version ?? "").trim().replace(/[-+].*$/, "").split(".");
+	if (parts.length !== 3 || !parts.every((part) => /^\d+$/.test(part))) return undefined;
+	return parts.map(Number) as [number, number, number];
+}
+
+/** Whether `version` is at or above STREAM_JSON_FLOOR. Numeric per component: never a string compare. */
+export function supportsStreamJson(version: string | undefined): boolean {
+	const have = versionTuple(version);
+	const floor = versionTuple(STREAM_JSON_FLOOR) as [number, number, number];
+	if (!have) return false;
+	for (let i = 0; i < 3; i++) {
+		if (have[i] !== floor[i]) return have[i] > floor[i];
+	}
+	return true;
+}
+
+let fallbackTraced = false;
+/** Test hook: allow the once-per-process fallback trace to fire again. */
+export function _resetChatFormatFallback(): void {
+	fallbackTraced = false;
+}
+
+/**
+ * PI_KIRO_CHAT_FORMAT: `text` scrapes kiro's prose; `stream-json` reads
+ * `--output-format stream-json` (stream-json-reader.ts). Unset or empty is the
+ * default: stream-json when the kiro-cli found at readiness is at or
+ * above STREAM_JSON_FLOOR, otherwise text, with one `chat.format.fallback`
+ * trace per process. An explicit value is honoured on any version -- the
+ * envelope check is the guard. Matched exactly after trimming; anything else
+ * fails the turn before kiro is spawned.
+ */
+export function chatFormat(kiroVersion?: string): ChatFormat {
 	const raw = (process.env.PI_KIRO_CHAT_FORMAT ?? "").trim();
-	if (raw === "" || raw === "text") return "text";
+	if (raw === "text") return "text";
 	if (raw === "stream-json") return "stream-json";
-	throw new Error(`unknown PI_KIRO_CHAT_FORMAT "${raw}" (expected text or stream-json)`);
+	if (raw !== "") throw new Error(`unknown PI_KIRO_CHAT_FORMAT "${raw}" (expected text or stream-json)`);
+	if (supportsStreamJson(kiroVersion)) return "stream-json";
+	if (!fallbackTraced) {
+		fallbackTraced = true;
+		trace("chat.format.fallback", { kiroVersion: versionTuple(kiroVersion) ? kiroVersion : null, floor: STREAM_JSON_FLOOR });
+	}
+	return "text";
 }
 
 /** Upper bound on waiting for stdout to drain after a stream-json child exits. */
@@ -805,7 +846,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				// Parity with built-in providers: fires before_provider_request so
 				// extensions (including our own ctx capture) see the turn.
 				await options?.onPayload?.({ provider: "kiro", model: model.id }, model);
-				const format = chatFormat();
+				const format = chatFormat(deps.kiroVersion);
 
 				const identity = identityLine({
 					piVersion: await resolvePiVersion(),
