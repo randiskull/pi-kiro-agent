@@ -5,10 +5,26 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.4.0 - 2026-10-17
 
 ### Added
 
+- **Credits are first-class: a running TUI status line, a projected dollar figure and a structured
+  per-turn record (#56).** Kiro bills in credits and reports no token counts, so the credit figure on
+  a turn's final metadata is the only per-turn price that exists. Both transports already parsed it
+  and then multiplied it by `PI_KIRO_CREDIT_USD`, which defaulted to `0` -- so pi's cost footer read
+  `$0.00` forever and the figure was discarded. New `src/metering.ts` is the one place that
+  interprets the payload: it **checks the unit** rather than assuming it (a non-credit entry is
+  reported separately and never folded into the total, and an array with no credit entry yields no
+  figure rather than `0`, so "unknown" stays distinguishable from "free"), sums the per-model-call
+  entries **within** one notification, and keeps the **last** `contextUsagePercentage` of a turn
+  rather than the first, which was wrong by four points on a single measured turn.
+  `PI_KIRO_CREDIT_USD` now defaults to **0.02**, Kiro's published in-plan ratio
+  ([kiro.dev/pricing](https://kiro.dev/pricing/)); an explicit `0` is honoured and hides money
+  entirely, and a malformed or negative value falls back to the default instead of writing `NaN`
+  into the cost. Every dollar figure is marked `~`, because the rate is a plan ratio and not a bill.
+  Probed against kiro-cli 2.32.0 with a hand-rolled ACP client, since the design rested on a guess
+  about the payload shape.
 - **Opt-in stream-json reader for the chat transport (#47): `PI_KIRO_CHAT_FORMAT=stream-json`.** kiro-cli's
   `--output-format stream-json` emits the turn as versioned ACP events, so the reader gets what the text
   scrape cannot: complete arguments for every tool call (gsd_* rows were `{}` since kiro 2.21's compact
@@ -48,6 +64,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every answer was printed twice, on both transports (#56).** The ACP transport pushed each
+  `agent_message_chunk` into the thinking feed for a live view and *also* accumulated the text,
+  re-emitting the whole answer as one `text_delta` at end of turn; the chat transport's text format
+  did the same thing with raw stdout, tags included, and then emitted the `<pi_final>` span again as
+  the answer, and its stream-json format did it with message chunks. A line pi has painted can never
+  be unpainted, so none of these could be corrected at settle time: each byte now goes to exactly
+  one feed as it arrives. `createBlockWriter` holds one thinking block and one text block, each with
+  its own `contentIndex`; `createTagStripper` removes `<pi_final>` as the text streams; and
+  `createSentinelRouter` splits the chat transport's message text -- text-format stdout or
+  stream-json message chunks -- on the sentinel pair: narration until the open tag, answer inside
+  the span, narration after. The answer is edge-trimmed as it streams, so a span written as
+  `<pi_final>\nanswer\n</pi_final>` is not re-sent whole when it is reconciled against
+  `extractFinal`'s trimmed span.
+  Both are robust to a tag arriving **split across two chunks** (`<pi_` then `final>`), holding back
+  any trailing run that could still become a tag. The router is depth-tracked, so an answer that
+  quotes the tags keeps them literally, matching `extractFinal`, which strips only the outermost
+  pair; a stray closing tag with nothing open stays in the notes rather than being silently eaten.
+  `extractFinal` remains the arbiter of the final answer, so a live route that guessed wrong is
+  corrected in the message rather than shipped.
+- **The ACP transport dropped kiro's reasoning channel entirely.** It had no case for
+  `agent_thought_chunk`, so thinking was invisible on the transport that is now the default. The
+  stream-json reader always handled it.
+- **Every tool call was drawn twice.** A `toolCall` block pushed onto the message is invisible until
+  some event carries a `partial`, so each transport announced one by writing a `⚙ <tool>` line into
+  the thinking feed -- and the user then saw that line *and* the row pi renders from the block
+  underneath it. `announceToolRow` emits the block's own `toolcall_start`/`toolcall_end` pair
+  instead, so the row announces itself; measured with a nine-second tool call, the row appears while
+  the call is still running, so the narration bought nothing it was there for. The legacy text path
+  keeps its `⚙` marker, whose markers pair with placeholders in `reconcileToolCalls`.
+- **The missing-bridge-tools advisory stuck above the prompt for the rest of the session.** It was
+  written with `console.error`, and pi paints raw stderr into the chrome above the prompt, where
+  nothing clears it. `src/bridge.ts` gained a notice channel that `src/index.ts` points at
+  `ctx.ui.notify(message, "warning")` when there is a UI, falling back to stderr headless; the
+  oversize-body advisory uses the same channel. Both are also traced, so a transient warning is
+  still recoverable after the fact.
+- **A retried turn no longer concatenates the abandoned attempt's answer onto the next one's.** The
+  chat transport retries a whole turn on a bridge-MCP exit 3 and on a resume failure; whatever the
+  first attempt had streamed is now discarded before the second starts, and the sentinel router
+  starts over too, so an attempt that died inside its answer span does not route the next
+  attempt's narration, tags and credits footer into the answer.
 - **A non-GSD project no longer loses its `gsd_*` tools silently** (#39). GSD's workflow MCP server
   is mounted into a delegated kiro run only when the project is a GSD project; without a `.gsd/`
   directory nothing is mounted, so a model told to call `gsd_capture_thought` gets an unknown-tool
@@ -81,6 +137,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: the ACP transport is now the default. `PI_KIRO_TRANSPORT=chat` selects the per-turn
+  chat transport as a fallback.** ACP holds one kiro-cli child for the session and speaks a
+  protocol, so tool arguments and the credit metadata arrive as structured events and kiro keeps
+  its own prefix cache warm across turns; it is also the only transport that passes MCP servers
+  inline through `session/new`, which is what makes GSD's workflow tools reach a delegated unit at
+  all. The chat transport spawns a child per turn and, below the stream-json floor, recovers the
+  answer by scraping prose. An **unrecognized** value now keeps ACP and writes one
+  `transport.unknown` trace rather than selecting the fallback: a typo silently downgrading a
+  session to the scrape path is the failure this default exists to remove. Whitespace around the
+  value is trimmed. If you relied on the old default, set `PI_KIRO_TRANSPORT=chat` explicitly.
+- **The identity line names the live transport.** It now reads
+  `pi 1.3.0 via Kiro (kiro-cli 2.32.0, engine v2, acp) on auto (selected by kiro)`, and on the
+  chat path the route carries the wire format -- `chat/stream-json` or `chat/text` -- because the
+  format decides what the harness can see at all. Which transport and format were serving a
+  session used to be visible only in a trace file, so a session that had quietly fallen back to
+  the text scrape looked like a broken harness rather than a degraded one. Shown in the status
+  bar, in `/kiro`, in the trace, and in the `<identity>` block sent to the model. A chat turn
+  whose format cannot be resolved reads plain `chat` rather than naming one that will not be
+  used, and a malformed `PI_KIRO_CHAT_FORMAT` no longer takes the whole status line down with it
+  (it still fails the turn, which is where that belongs).
+- **The pi SDK devDependency is raised to `^1.3.0`, and the lockfile with it.** The SDK
+  devDependency is the only statement of which host version CI exercises, and the 0.3.0 lockfile
+  still pinned 1.2.0 while the shipped host had moved to 1.3.0 -- the same drift that let
+  `registerToolRenderer` reach the real host undetected before. Raising it is why this release is a
+  minor rather than a patch.
 - **The chat transport reads stream-json by default on kiro-cli 2.21.4 or newer (#48).** With
   `PI_KIRO_CHAT_FORMAT` unset, the version readiness found decides, compared numerically per component (so
   2.9.0 is below the floor). Older or unparseable versions keep the text scrape and write one

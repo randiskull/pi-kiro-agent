@@ -1,7 +1,7 @@
 /**
  * ACP transport: Pi turn -> kiro-cli acp (NDJSON JSON-RPC) -> Pi
- * AssistantMessageEventStream. Enable with PI_KIRO_TRANSPORT=acp; the default
- * chat transport is untouched.
+ * AssistantMessageEventStream. The default transport; PI_KIRO_TRANSPORT=chat
+ * selects the per-turn chat transport (stream-adapter.ts) instead.
  *
  * 1. Persistent child: one `kiro-cli acp` per (cwd, conversationKey), kept
  *    alive across turns, idle-timeout after 10 min. conversationKey is a hash
@@ -49,7 +49,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ChildScopedHttpBridgeHandle, HttpBridgeHandle } from "./bridge.js";
-import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
+import { announceToolRow, createBlockWriter, createTagStripper, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import { registerChildForCleanup, unregisterChildForCleanup } from "./orphan-reaper.js";
 import {
 	buildDeltaPrompt,
@@ -61,6 +61,7 @@ import {
 import { trace } from "./trace.js";
 import { initialSystemPrompt } from "./system-prompt.js";
 import { ACP_ENGINE, authMethod, identityLine, pluginName, pluginVersion, redactSecrets, resolvePiVersion } from "./identity.js";
+import { creditCostUsd, meteringDiagnostic, sumCredits, type TurnMetering } from "./metering.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import { BRIDGE_MCP_SERVER_KEY, displayToolName } from "./tool-names.js";
 import {
@@ -244,7 +245,7 @@ interface SessionUpdateParams {
 interface MetadataParams {
 	sessionId: string;
 	contextUsagePercentage?: number;
-	meteringUsage?: Array<{ value: number; unit: string }>;
+	meteringUsage?: Array<{ value: number; unit: string; unitPlural?: string }>;
 	turnDurationMs?: number;
 }
 
@@ -1035,6 +1036,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					piVersion: await resolvePiVersion(),
 					kiroVersion: deps.kiroVersion,
 					engine: ACP_ENGINE,
+					transport: "acp",
 					model: model.id,
 				});
 				trace("identity", { transport: "acp", line: identity, auth: authMethod() });
@@ -1082,12 +1084,26 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				const currentSessionId = await resolveSession(deps, acpEntry, useResume, workflowServers);
 				await ensureSessionModel(acpEntry, currentSessionId, model.id);
 
-				// Thinking block management
-				const thinkingWriter = createThinkingWriter(stream, output);
-				const pushThinking = thinkingWriter.push;
-
-				let textAccum = "";
-				let creditsTotal = 0;
+				// Content block management. The answer streams as TEXT, interleaved
+				// with thinking, rather than being mirrored into the thinking feed
+				// and then emitted again at end of turn (which printed every answer
+				// twice -- see createBlockWriter).
+				const writer = createBlockWriter(stream, output);
+				const pushThinking = writer.pushThinking;
+				// Defensive only: ACP never injects the chat transport's sentinel, but
+				// a model carried over from a chat session may still wrap its answer
+				// in <pi_final>. The tags are dropped as the text streams, so they
+				// never reach the answer.
+				const answer = createTagStripper(["<pi_final>", "</pi_final>"], writer.pushText);
+				let creditsTotal: number | undefined;
+				let creditsUnitPlural: string | undefined;
+				let creditsOtherUnits: Record<string, number> | undefined;
+				// Every metadata notification carries contextUsagePercentage; the last
+				// one is the end-of-turn figure, which is the honest one (the figure at
+				// session start understates a turn).
+				let lastContextPercent: number | undefined;
+				let turnDurationMs: number | undefined;
+				let finalMetadataCount = 0;
 
 				// session/update notification handler
 				removeUpdateHandler = onNotification(acpEntry, "session/update", (msg) => {
@@ -1096,10 +1112,18 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					const u = params.update;
 					switch (u.sessionUpdate) {
 						case "agent_message_chunk":
-							if (u.content?.type === "text" && u.content.text) {
-								pushThinking(u.content.text); // stream as thinking (interim view)
-								textAccum += u.content.text;
-							}
+							// kiro's ANSWER channel (agent_thought_chunk is its thinking
+							// channel). Streamed straight to the text block so the user
+							// watches the answer arrive once, as the answer.
+							if (u.content?.type === "text" && u.content.text) answer.push(u.content.text);
+							break;
+						case "agent_thought_chunk":
+							// kiro's REASONING channel. Parity with the stream-json
+							// reader (stream-json-reader.ts), which has always routed
+							// it to thinking; ACP dropped it on the floor, so a turn
+							// that reasoned before answering showed nothing until the
+							// answer landed.
+							if (u.content?.type === "text" && u.content.text) pushThinking(u.content.text);
 							break;
 						case "tool_call": {
 							// DISPLAY ONLY. Under ACP kiro has already EXECUTED this tool by
@@ -1138,12 +1162,10 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 								name: rowName,
 								arguments: (u.rawInput as Record<string, unknown>) ?? {},
 							} as AssistantMessage["content"][number]);
-							// Full parity with the chat transport (stream-adapter.ts:404):
-							// pushing onto output.content alone is invisible to the consumer,
-							// because nothing carries `partial` until the next stream event.
-							// The thinking marker both emits that event and gives the user the
-							// same "⚙ <tool>" progress line the chat transport shows.
-							pushThinking(`\n⚙ ${rowName}\n`);
+							// The row announces itself (see announceToolRow). It used to be
+							// announced by a "⚙ <tool>" thinking line as well, which drew
+							// every call twice.
+							announceToolRow(stream, output, output.content.length - 1);
 							break;
 						}
 						case "tool_call_update":
@@ -1157,9 +1179,27 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				// _kiro.dev/metadata handler — capture credits on final notification
 				removeMetadataHandler = onNotification(acpEntry, "_kiro.dev/metadata", (msg) => {
 					const p = msg.params as MetadataParams | undefined;
+					if (p?.contextUsagePercentage !== undefined) lastContextPercent = p.contextUsagePercentage;
 					if (p?.meteringUsage && p.turnDurationMs !== undefined) {
-						// Final metadata notification has both meteringUsage AND turnDurationMs
-						creditsTotal = p.meteringUsage.reduce((sum, m) => sum + (m.value ?? 0), 0);
+						// Final metadata notification has both meteringUsage AND
+						// turnDurationMs. Probed 2026-10-16: exactly one such
+						// notification per session/prompt, carrying one entry per
+						// internal model call, so the array is summed and the
+						// notification is not. A second one would mean the wire
+						// changed shape -- trace it rather than silently double or
+						// drop the turn's cost.
+						finalMetadataCount += 1;
+						if (finalMetadataCount > 1) {
+							trace("acp.metering.unexpected_final", {
+								count: finalMetadataCount,
+								sessionId: p.sessionId,
+							});
+						}
+						const summed = sumCredits(p.meteringUsage);
+						creditsTotal = summed.credits;
+						creditsUnitPlural = summed.unitPlural;
+						creditsOtherUnits = summed.otherUnits;
+						turnDurationMs = p.turnDurationMs;
 					}
 				});
 
@@ -1207,31 +1247,26 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					throw new Error(`kiro-cli acp session/prompt failed: ${detail}`);
 				}
 
-				// Close thinking block
-				thinkingWriter.end();
-
-				// Push text block
-				// Defensive sentinel strip: a model that previously ran under the chat
-				// transport (which injects a sentinel instruction) may still emit
-				// <pi_final>…</pi_final> wrapper tags. Under ACP these are never parsed —
-				// strip them so they don't leak verbatim into the assistant text.
-				const finalText = textAccum
-					.replace(/<pi_final>/g, "")
-					.replace(/<\/pi_final>/g, "")
-					.trim();
-				output.content.push({ type: "text", text: "" });
-				const textIndex = output.content.length - 1;
-				stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
-				const textBlock = output.content[textIndex];
-				if (textBlock.type === "text") textBlock.text = finalText;
-				stream.push({ type: "text_delta", contentIndex: textIndex, delta: finalText, partial: output });
-				stream.push({ type: "text_end", contentIndex: textIndex, content: finalText, partial: output });
+				// Release any tag fragment held back by the stripper, then close the
+				// open block. `end` also guarantees a text block exists, so a turn
+				// that produced no message chunks still carries an empty answer
+				// rather than no answer at all.
+				answer.flush();
+				writer.end();
 
 				// Credits
-				if (creditsTotal > 0) {
-					const usdPerCredit = Number.parseFloat(process.env.PI_KIRO_CREDIT_USD ?? "0");
-					output.usage.cost.total = Number.isFinite(usdPerCredit) ? creditsTotal * usdPerCredit : 0;
-				}
+				const metering: TurnMetering = {
+					credits: creditsTotal,
+					source: "acp",
+					precision: "exact",
+					...(lastContextPercent !== undefined ? { contextPercent: lastContextPercent } : {}),
+					...(turnDurationMs !== undefined ? { turnDurationMs } : {}),
+					...(creditsUnitPlural ? { unitPlural: creditsUnitPlural } : {}),
+					...(creditsOtherUnits ? { otherUnits: creditsOtherUnits } : {}),
+				};
+				output.usage.cost.total = creditCostUsd(creditsTotal);
+				output.diagnostics = [...(output.diagnostics ?? []), meteringDiagnostic(metering)];
+				trace("acp.metering", { ...metering });
 
 				// stopReason
 				output.stopReason = mapStopReason(

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readMeteringDiagnostic } from "../src/metering.js";
 import { _resetSessions, planTurn, recordKnownSession } from "../src/session-manager.js";
 import { _resetChatFormatFallback, FINAL_CLOSE, FINAL_OPEN, makeStreamViaKiro, supportsStreamJson } from "../src/stream-adapter.js";
 import { resetTraceTarget } from "../src/trace.js";
@@ -155,7 +156,10 @@ describe("probe replays", () => {
 		expect(rows[0]).toMatchObject({ name: "kiro_read", id: "kiro-live-tooluse_hZWyHXuzY0mAGUa4LGYFX5" });
 		expect(rows[0]?.arguments.operations).toEqual([{ mode: "Line", path: "note.txt" }]);
 		expect(answerOf(events)).toBe("STARTING\n\nLet me read the file:PELICAN");
-		expect(thinkingOf(events).match(/⚙ kiro_read/g)).toHaveLength(1);
+		// The row announces itself as a toolCall, once, instead of as a
+		// "⚙ <tool>" line in the thinking feed on top of the row (announceToolRow).
+		expect(events.filter((e) => e.type === "toolcall_end").map((e) => (e as { toolCall: { name: string }}).toolCall.name)).toEqual(["kiro_read"]);
+		expect(thinkingOf(events)).not.toContain("⚙ kiro_read");
 		expect(thinkingOf(events)).not.toContain('{"type"');
 		// Display-only: pi never sees the rows.
 		expect(doneOf(events).content.filter((b) => b.type === "toolCall")).toHaveLength(0);
@@ -166,6 +170,20 @@ describe("probe replays", () => {
 			stdout: STARTED + chunk("Let me read the file:") + chunk(`${FINAL_OPEN}PELI`) + chunk(`CAN${FINAL_CLOSE}`) + FINISHED("x"),
 		});
 		expect(answerOf(await collect())).toBe("PELICAN");
+	});
+
+	it("streams the span as the answer and only the narration as thinking", async () => {
+		// Message chunks carry the narration AND the span. They all went to
+		// thinking, tags included, and the span was emitted again as text at
+		// settle, so the answer was printed twice.
+		scriptAttempts({
+			stdout: STARTED + chunk("Let me read the file:") + chunk(`${FINAL_OPEN}\nPELI`) + chunk(`CAN\n${FINAL_CLOSE}`) + FINISHED("x"),
+		});
+		const events = await collect();
+		expect(thinkingOf(events)).toBe("Let me read the file:");
+		const painted = events.filter((e) => e.type === "text_delta").map((e) => (e as { delta: string }).delta).join("");
+		expect(painted).toBe("PELICAN");
+		expect(answerOf(events)).toBe("PELICAN");
 	});
 
 	it("p3: a row for the update-only failed read with one failed marker; the non-zero shell is not marked", async () => {
@@ -189,6 +207,17 @@ describe("probe replays", () => {
 		const p5Credits = doneOf(p5).usage.cost.total;
 		expect(p5Credits).toBeGreaterThan(0);
 		delete process.env.PI_KIRO_CREDIT_USD;
+	});
+
+	it("records the exact credit sum, the LAST context percent and the turn duration", async () => {
+		scriptAttempts({ stdout: probe("p5-thought.jsonl") });
+		const metering = readMeteringDiagnostic(doneOf(await collect()).diagnostics);
+		expect(metering).toMatchObject({ source: "chat-stream-json", precision: "exact", turnDurationMs: 1746 });
+		// Full wire precision, not the footer's two decimals.
+		expect(metering?.credits).toBeCloseTo(0.016001363051, 10);
+		// p5 carries five metadata events: 1.1368, 5.684, 5.684, 8.7425, 8.7425.
+		// The turn ends at 8.7425, so a first-wins read would be wrong by 7.6 points.
+		expect(metering?.contextPercent).toBeCloseTo(8.7425, 4);
 	});
 
 	it("reassembles a UTF-8 sequence split across stdout chunks", async () => {

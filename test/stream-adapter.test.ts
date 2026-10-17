@@ -19,6 +19,7 @@ import {
 	toolUseTranscript,
 } from "../src/stream-adapter.js";
 import { CHAT_ENGINE } from "../src/identity.js";
+import { readMeteringDiagnostic } from "../src/metering.js";
 import { resetTraceTarget } from "../src/trace.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
@@ -62,6 +63,18 @@ function scriptSpawn(stdout: string, exitCode = 0): FakeChild {
 	spawnMock.mockImplementation(() => {
 		queueMicrotask(() => {
 			child.stdout.emit("data", Buffer.from(stdout));
+			queueMicrotask(() => child.emit("exit", exitCode));
+		});
+		return child;
+	});
+	return child;
+}
+
+function scriptChunks(chunks: string[], exitCode = 0): FakeChild {
+	const child = new FakeChild();
+	spawnMock.mockImplementation(() => {
+		queueMicrotask(() => {
+			for (const chunk of chunks) child.stdout.emit("data", Buffer.from(chunk));
 			queueMicrotask(() => child.emit("exit", exitCode));
 		});
 		return child;
@@ -349,6 +362,19 @@ describe("makeStreamViaKiro", () => {
 		expect(args[i + 1]).toBe(CHAT_ENGINE);
 	});
 
+	it("marks the footer-scraped credits rendered-2dp, with no context percent or duration", async () => {
+		scriptSpawn(RAW_SAMPLE);
+		const events = await collect({ messages: [] });
+		const done = events.find((event) => event.type === "done");
+		if (done?.type !== "done") throw new Error("expected done");
+		const metering = readMeteringDiagnostic(done.message.diagnostics);
+		// The footer prints two decimals, so 0.03 is a quantised figure a consumer must not trust exactly.
+		expect(metering).toMatchObject({ credits: 0.03, source: "chat-text", precision: "rendered-2dp" });
+		// The text transport has no structured channel for either field.
+		expect(metering?.contextPercent).toBeUndefined();
+		expect(metering?.turnDurationMs).toBeUndefined();
+	});
+
 	it("surfaces nonzero exits as errors with the profile remedy", async () => {
 		scriptSpawn("[31mError: profileArn is required for this request[0m", 1);
 		const events = await collect({ messages: [] });
@@ -377,6 +403,86 @@ describe("makeStreamViaKiro", () => {
 		expect(error.error.stopReason).toBe("aborted");
 	});
 
+	describe("sentinel routing: the answer streams as the answer, once", () => {
+		const notesOf = (events: AssistantMessageEvent[]) =>
+			events.filter((e) => e.type === "thinking_delta").map((e) => (e as { delta: string }).delta).join("");
+		const doneOf = (events: AssistantMessageEvent[]) => {
+			const done = events.find((e) => e.type === "done");
+			if (done?.type !== "done") throw new Error("expected done");
+			return done;
+		};
+		const renderedOf = (events: AssistantMessageEvent[]) =>
+			doneOf(events)
+				.message.content.map((b) => (b.type === "text" ? b.text : b.type === "thinking" ? b.thinking : ""))
+				.join("\n");
+
+		it("keeps the answer out of the working notes, and streams it before done", async () => {
+			scriptSpawn(RAW_SAMPLE);
+			const events = await collect({ messages: [] });
+			// The bug: stdout was pushed WHOLE into the thinking feed for a live
+			// view and the extracted span was emitted again as the answer, so the
+			// answer (and its raw tags) appeared twice.
+			expect(notesOf(events)).not.toContain("KIRO-OK");
+			expect(notesOf(events)).not.toContain(FINAL_OPEN);
+			expect(renderedOf(events).match(/KIRO-OK/g)).toHaveLength(1);
+			// ...and it arrives as text WHILE the turn runs, not only at settle.
+			const deltaIndex = events.findIndex((e) => e.type === "text_delta" && (e as { delta: string }).delta.includes("KIRO-OK"));
+			const doneIndex = events.findIndex((e) => e.type === "done");
+			expect(deltaIndex).toBeGreaterThan(-1);
+			expect(deltaIndex).toBeLessThan(doneIndex);
+			// The MESSAGE can be right while the PAINTED stream still duplicates: pi
+			// renders text from the deltas, so the deltas must sum to the answer and
+			// no more (settle must not re-emit what the route already streamed).
+			const painted = events.filter((e) => e.type === "text_delta").map((e) => (e as { delta: string }).delta).join("");
+			expect(painted).toBe("KIRO-OK");
+		});
+
+		it("routes a sentinel tag split across chunk boundaries", async () => {
+			scriptChunks(["> working on it\n", "<pi_", "final>SPLIT-OK</pi_", "final>\n ▸ Credits: 0.01 • Time: 1s"]);
+			const events = await collect({ messages: [] });
+			const text = doneOf(events).message.content.find((b) => b.type === "text");
+			expect(text && "text" in text ? text.text : "").toBe("SPLIT-OK");
+			expect(notesOf(events)).toContain("working on it");
+			expect(notesOf(events)).not.toContain("SPLIT-OK");
+			// The held-back partial tag must not leak into the notes either.
+			expect(notesOf(events)).not.toContain("<pi_");
+		});
+
+		it("keeps an answer that quotes the tags whole, and only once", async () => {
+			// Routine when kiro works on THIS repo. The live router cannot know
+			// which closing tag balances, so extractFinal is the arbiter and the
+			// block is reconciled rather than appended to.
+			const quoted = `wrap it in ${FINAL_OPEN}X${FINAL_CLOSE} like so`;
+			scriptSpawn(`> ${FINAL_OPEN}${quoted}${FINAL_CLOSE}\n ▸ Credits: 0.01 • Time: 1s`);
+			const events = await collect({ messages: [] });
+			const texts = doneOf(events).message.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text);
+			expect(texts).toEqual([quoted]);
+			expect(renderedOf(events).match(/like so/g)).toHaveLength(1);
+		});
+
+		it("streams a newline-padded span exactly once", async () => {
+			// extractFinal trims the span. A streamed "\nANSWER\n" does not prefix
+			// "ANSWER", so reconciling at settle re-sent the whole answer.
+			scriptSpawn(`> ${FINAL_OPEN}\nANSWER\n${FINAL_CLOSE}\n ▸ Credits: 0.01 • Time: 1s`);
+			const events = await collect({ messages: [] });
+			const painted = events.filter((e) => e.type === "text_delta").map((e) => (e as { delta: string }).delta).join("");
+			expect(painted).toBe("ANSWER");
+			const text = doneOf(events).message.content.find((b) => b.type === "text");
+			expect(text && "text" in text ? text.text : "").toBe("ANSWER");
+		});
+
+		it("falls back to the whole body as the answer when the model omits the sentinel", async () => {
+			// The one shape that still shows twice: nothing marks the answer, so it
+			// cannot be told from working notes until the stream has ended, and
+			// what was already painted as notes cannot be unpainted. The MESSAGE is
+			// right -- one text block holding the answer.
+			scriptSpawn("> PLAIN ANSWER\n ▸ Credits: 0.01 • Time: 1s");
+			const events = await collect({ messages: [] });
+			const text = doneOf(events).message.content.find((b) => b.type === "text");
+			expect(text && "text" in text ? text.text : "").toBe("PLAIN ANSWER");
+		});
+	});
+
 	it("wires the bridge: agent profile args, @pi tool context, and exit-3 retry", async () => {
 		const bridge = {
 			url: "http://127.0.0.1:6666/mcp",
@@ -387,7 +493,9 @@ describe("makeStreamViaKiro", () => {
 			close: vi.fn(async () => undefined),
 		};
 		// First spawn exits 3 (MCP startup failure), second succeeds.
-		const outputs = ["", `> ${FINAL_OPEN}BRIDGED${FINAL_CLOSE}\n ▸ Credits: 0.02 • Time: 1s`];
+		// Attempt 1 streams a partial answer before dying: it must be DROPPED, not
+		// concatenated with attempt 2's (writer.resetText).
+		const outputs = [`> ${FINAL_OPEN}ABANDONED`, `> ${FINAL_OPEN}BRIDGED${FINAL_CLOSE}\n ▸ Credits: 0.02 • Time: 1s`];
 		const codes = [3, 0];
 		spawnMock.mockImplementation(() => {
 			const child = new FakeChild();
@@ -425,6 +533,14 @@ describe("makeStreamViaKiro", () => {
 		if (done?.type !== "done") throw new Error("expected done after retry");
 		const text = done.message.content.find((block) => block.type === "text");
 		expect(text && "text" in text ? text.text : "").toBe("BRIDGED");
+		expect(JSON.stringify(done.message.content)).not.toContain("ABANDONED");
+		// Attempt 1 died INSIDE its span. The retry starts from a fresh router, so
+		// attempt 2's prompt, tags and credits footer are not streamed as answer
+		// text, and its answer arrives as a delta of its own.
+		const deltas = events.filter((e) => e.type === "text_delta").map((e) => (e as { delta: string }).delta);
+		expect(deltas.join("")).not.toContain(FINAL_OPEN);
+		expect(deltas.join("")).not.toContain("Credits");
+		expect(deltas.at(-1)).toBe("BRIDGED");
 		expect(bridge.close).toHaveBeenCalled();
 	});
 

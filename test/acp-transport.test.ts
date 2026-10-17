@@ -20,6 +20,7 @@ import { Writable } from "node:stream";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { normalizeContext } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readMeteringDiagnostic } from "../src/metering.js";
 import { _resetAcpSessions, _acpSessionCount } from "../src/acp-session.js";
 import { _getAcpChildRegistry, _resetAcpChildren, _acpRegistryKey, buildInitializeParams, isUnadvertisedClientMethod, makeStreamViaAcp } from "../src/acp-transport.js";
 import { _resetPiVersionForTest, ACP_ENGINE, identityBlock } from "../src/identity.js";
@@ -280,6 +281,26 @@ async function passStartupGate(
 	return sessionReq.params.mcpServers;
 }
 
+/**
+ * Answer initialize + session/new + commands/available, then wait for the
+ * session/prompt request and return its id, so a test can script
+ * session/update notifications before resolving the turn.
+ */
+async function promptHandshake(child: AcpScriptChild, sessionId: string): Promise<number> {
+	const initReq = (await child.awaitLine()) as { id: number };
+	child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: {
+		protocolVersion: 1,
+		agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} },
+		authMethods: [],
+		agentInfo: { name: "Kiro CLI Agent", version: "test" },
+	}});
+	const sessionReq = (await child.awaitLine()) as { id: number };
+	child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
+	child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
+	const promptReq = (await child.awaitLine()) as { id: number };
+	return promptReq.id;
+}
+
 function doneText(events: AssistantMessageEvent[]): string {
 	const done = events.find((e) => e.type === "done");
 	if (done?.type !== "done") throw new Error("expected done event");
@@ -421,9 +442,83 @@ describe("makeStreamViaAcp", () => {
 			expect(doneText(events)).toContain("three");
 		});
 
-		it("streams agent_message_chunk events as thinking_delta events", async () => {
+		it("streams agent_message_chunk as text, and never mirrors it into thinking", async () => {
 			const events = await driveConversation({ messages: [user("hi")] }, { sessionId: "sess-5", text: "word1 word2" });
-			expect(events.some((e) => e.type === "thinking_delta")).toBe(true);
+			// The duplicated-answer bug: the answer was pushed into the thinking
+			// feed for a live view AND re-emitted as text at end of turn, so the
+			// TUI drew every answer twice. agent_message_chunk is kiro's ANSWER
+			// channel, so it streams as text once.
+			expect(events.some((e) => e.type === "text_delta")).toBe(true);
+			const thinking = events.filter((e) => e.type === "thinking_delta").map((e) => (e as { delta: string }).delta).join("");
+			expect(thinking).not.toContain("word1");
+			const done = events.find((e) => e.type === "done");
+			if (done?.type !== "done") throw new Error("expected done");
+			const rendered = done.message.content
+				.map((b) => (b.type === "text" ? b.text : b.type === "thinking" ? b.thinking : ""))
+				.join("\n");
+			expect(rendered.match(/word1/g)).toHaveLength(1);
+			expect(done.message.content.some((b) => b.type === "thinking")).toBe(false);
+		});
+
+		it("routes agent_thought_chunk to thinking, and keeps it out of the answer", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			void (async () => {
+				const promptId = await promptHandshake(child, "sess-thought");
+				child.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-thought", update: {
+					sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "weighing options" },
+				}}});
+				child.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-thought", update: {
+					sessionUpdate: "agent_message_chunk", content: { type: "text", text: "the answer" },
+				}}});
+				child.sendLine({ jsonrpc: "2.0", id: promptId, result: { stopReason: "end_turn" }});
+				child.end();
+			})();
+			const events = await collect({ messages: [user("think")] });
+			const thinking = events.filter((e) => e.type === "thinking_delta").map((e) => (e as { delta: string }).delta).join("");
+			expect(thinking).toContain("weighing options");
+			expect(thinking).not.toContain("the answer");
+			expect(doneText(events)).toBe("the answer");
+			const done = events.find((e) => e.type === "done");
+			if (done?.type !== "done") throw new Error("expected done");
+			const thought = done.message.content.filter((b) => b.type === "thinking");
+			expect(thought).toHaveLength(1);
+			expect((thought[0] as { thinking: string }).thinking.match(/weighing options/g)).toHaveLength(1);
+		});
+
+		it("keeps the answer in ONE text block when a tool call interleaves the message chunks", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			void (async () => {
+				const promptId = await promptHandshake(child, "sess-interleave");
+				const update = (u: unknown) =>
+					child.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-interleave", update: u }});
+				update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "before " }});
+				// Thinking and a tool row both open mid-answer. The answer must keep
+				// growing in its own block instead of being split in two (pi renders
+				// a second text block as a second message).
+				update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "reconsidering" }});
+				update({ sessionUpdate: "tool_call", toolCallId: "tooluse_i1", title: "Reading note.txt:1", kind: "read",
+					rawInput: { operations: [{ mode: "Line", path: "note.txt" }] }, _meta: { kiro: { toolName: "read" }}});
+				update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "after" }});
+				child.sendLine({ jsonrpc: "2.0", id: promptId, result: { stopReason: "end_turn" }});
+				child.end();
+			})();
+			const events = await collect({ messages: [user("read it")] });
+			const done = events.find((e) => e.type === "done");
+			if (done?.type !== "done") throw new Error("expected done");
+			const texts = done.message.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text);
+			expect(texts).toEqual(["before after"]);
+			const thinking = events.filter((e) => e.type === "thinking_delta").map((e) => (e as { delta: string }).delta).join("");
+			expect(thinking).toBe("reconsidering");
+			expect(thinking).not.toContain("before");
+			// Each block keeps its own contentIndex, so the two feeds do not
+			// overwrite each other's deltas.
+			const textIndexes = new Set(events.filter((e) => e.type === "text_delta").map((e) => (e as { contentIndex: number }).contentIndex));
+			const thinkIndexes = new Set(events.filter((e) => e.type === "thinking_delta").map((e) => (e as { contentIndex: number }).contentIndex));
+			expect(textIndexes.size).toBe(1);
+			expect(thinkIndexes.size).toBe(1);
+			expect([...textIndexes][0]).not.toBe([...thinkIndexes][0]);
 		});
 
 		it("does NOT use sentinel, cleanBody, or extractFinal", async () => {
@@ -492,6 +587,83 @@ describe("makeStreamViaAcp", () => {
 			const done = events.find((e) => e.type === "done");
 			expect(done?.type === "done" && done.message.usage.cost.total).toBeCloseTo(0.06);
 		});
+
+		const scriptMeteringTurn = (child: AcpScriptChild, sessionId: string, finalParams: Record<string, unknown>) => {
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
+				const sessionReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
+				const promptReq = (await child.awaitLine()) as { id: number };
+				// Session-start context figure, superseded by the final one below.
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId, contextUsagePercentage: 6.0567 }});
+				child.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" }}}});
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId, ...finalParams }});
+				child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+				child.end();
+			})();
+		};
+
+		const meteringOf = async (finalParams: Record<string, unknown>, sessionId: string) => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			scriptMeteringTurn(child, sessionId, finalParams);
+			const events = await collect({ messages: [user("hi")] });
+			const done = events.find((e) => e.type === "done");
+			if (done?.type !== "done") throw new Error("no done event");
+			return {
+				cost: done.message.usage.cost.total,
+				metering: readMeteringDiagnostic(done.message.diagnostics),
+			};
+		};
+
+		// The default rate exists so the cost is not permanently $0.00. It is
+		// Kiro's published plan ratio, pinned here against the arithmetic rather
+		// than against a copy of the constant.
+		it("projects USD at the published plan rate when PI_KIRO_CREDIT_USD is unset", async () => {
+			delete process.env.PI_KIRO_CREDIT_USD;
+			const { cost, metering } = await meteringOf({
+				contextUsagePercentage: 10.2,
+				meteringUsage: [{ value: 1.5, unit: "credit", unitPlural: "credits" }],
+				turnDurationMs: 9593,
+			}, "sess-m1");
+			expect(metering?.credits).toBe(1.5);
+			expect(cost).toBeCloseTo(1.5 * (20 / 1000), 10);
+		});
+
+		// contextUsagePercentage and turnDurationMs arrive on every metadata
+		// notification; both were parsed and dropped on the floor before this.
+		it("records the END-of-turn context percentage and kiro's own turn duration", async () => {
+			const { metering } = await meteringOf({
+				contextUsagePercentage: 10.2,
+				meteringUsage: [{ value: 0.5, unit: "credit" }],
+				turnDurationMs: 9593,
+			}, "sess-m2");
+			expect(metering?.contextPercent).toBe(10.2);
+			expect(metering?.turnDurationMs).toBe(9593);
+			expect(metering?.precision).toBe("exact");
+			expect(metering?.source).toBe("acp");
+		});
+
+		it("keeps a non-credit unit out of the credit total and out of the cost", async () => {
+			delete process.env.PI_KIRO_CREDIT_USD;
+			const { cost, metering } = await meteringOf({
+				contextUsagePercentage: 10.2,
+				meteringUsage: [{ value: 0.5, unit: "credit" }, { value: 900, unit: "token" }],
+				turnDurationMs: 1000,
+			}, "sess-m3");
+			expect(metering?.credits).toBe(0.5);
+			expect(cost).toBeCloseTo(0.5 * (20 / 1000), 10);
+		});
+
+		it("leaves credits absent, and the cost 0, when the turn reported no figure", async () => {
+			delete process.env.PI_KIRO_CREDIT_USD;
+			const { cost, metering } = await meteringOf({ contextUsagePercentage: 10.2 }, "sess-m4");
+			expect(metering).toBeDefined();
+			expect(metering?.credits).toBeUndefined();
+			expect(cost).toBe(0);
+		});
 	});
 
 	describe("tool-call events (parity: chat transport synthesized from log lines)", () => {
@@ -525,9 +697,15 @@ describe("makeStreamViaAcp", () => {
 					.map((b) => (b as { name: string }).name),
 			);
 			expect([...names]).toEqual(["kiro_read", "rpiv_todo"]);
+			// Each row announces ITSELF, as a toolCall at its own contentIndex. It
+			// used to be announced by a "⚙ <tool>" line in the THINKING feed as
+			// well, which drew every call twice (announceToolRow).
+			const announced = events.filter((e) => e.type === "toolcall_end").map((e) => (e as { toolCall: { name: string }}).toolCall.name);
+			expect(announced).toEqual(["kiro_read", "rpiv_todo"]);
+			const starts = events.filter((e) => e.type === "toolcall_start").map((e) => (e as { contentIndex: number }).contentIndex);
+			expect(new Set(starts).size).toBe(2);
 			const thinking = events.filter((e) => e.type === "thinking_delta").map((e) => (e as { delta: string }).delta).join("");
-			expect(thinking).toContain("⚙ kiro_read");
-			expect(thinking).toContain("⚙ rpiv_todo");
+			expect(thinking).not.toContain("⚙");
 		});
 
 		it("surfaces tool_call events for display but strips them from the final message", async () => {
@@ -626,20 +804,21 @@ describe("makeStreamViaAcp", () => {
 				events.push(event);
 				if (event.type === "done") {
 					doneReached = true;
-				} else if (!doneReached && event.type === "thinking_delta") {
-					// tool_call blocks are pushed to output.content synchronously in the session/update
-					// handler; the next thinking_delta (from the following agent_message_chunk) carries
-					// the updated partial — assert that partial contains a toolCall block
+				} else if (!doneReached && "partial" in event) {
+					// tool_call blocks are pushed to output.content synchronously in the
+					// session/update handler, and announceToolRow emits the toolcall_start
+					// / toolcall_end pair that carries the updated partial — assert that
+					// partial contains a toolCall block
 					if (event.partial.content.some((b) => b.type === "toolCall")) {
 						toolCallAppearedBeforeDone = true;
 					}
 				}
 			}
 
-			// Guard: at least one thinking_delta must have fired — if none fired,
+			// Guard: the row's own events must have fired — if none did,
 			// toolCallAppearedBeforeDone would be vacuously false and the next
 			// assertion gives a misleading failure site
-			expect(events.some((e) => e.type === "thinking_delta")).toBe(true);
+			expect(events.some((e) => e.type === "toolcall_start")).toBe(true);
 			// toolCall block must be visible in a partial BEFORE the done event
 			expect(toolCallAppearedBeforeDone).toBe(true);
 			// ...and must be GONE from the final done event. kiro already executed the
@@ -2155,7 +2334,7 @@ describe("identity in the ACP session/prompt", () => {
 				text = (req.params as { prompt: Array<{ text: string }> }).prompt[0]?.text ?? "";
 			},
 		});
-		const expected = `pi ${HOST_PI_VERSION} via Kiro (kiro-cli 2.26.1, engine ${ACP_ENGINE}) on auto (selected by kiro)`;
+		const expected = `pi ${HOST_PI_VERSION} via Kiro (kiro-cli 2.26.1, engine ${ACP_ENGINE}, acp) on auto (selected by kiro)`;
 		expect(text.startsWith(identityBlock(expected))).toBe(true);
 	});
 

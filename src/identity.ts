@@ -1,7 +1,11 @@
 /**
  * Harness identity: every pi-kiro turn identifies as
  *
- *   pi <pi version> via Kiro (kiro-cli <x.y.z>, engine <v2|v3>) on <model>
+ *   pi <pi version> via Kiro (kiro-cli <x.y.z>, engine <v2|v3>, <route>) on <model>
+ *
+ * where <route> is `acp` or `chat/<format>`: which transport served the turn,
+ * and on the chat path which wire format, because the format decides what the
+ * harness can see at all (see displayTransport).
  *
  * Layer 1 (deterministic): pi-kiro renders this line itself (status bar, /kiro,
  * trace). Layer 2 (measured): the same line goes to the model at the top of
@@ -17,6 +21,15 @@ import { createRequire } from "node:module";
 
 export type KiroEngine = "v2" | "v3";
 export type KiroAuth = "login" | "api-key";
+/** Which transport served the turn. ACP is the default; chat is the fallback. */
+export type KiroTransport = "acp" | "chat";
+/**
+ * The chat transport's wire format. Declared here rather than imported from
+ * stream-adapter.ts, which imports this module: identity.ts depends on nothing
+ * in src/, and a reverse import would make that a cycle. stream-adapter's
+ * ChatFormat is an alias of this type, so the two cannot drift.
+ */
+export type KiroChatFormat = "text" | "stream-json";
 
 /** stream-adapter.ts spawns `kiro-cli chat --agent-engine v2`. Keep in sync with that argv. */
 export const CHAT_ENGINE: KiroEngine = "v2";
@@ -29,6 +42,11 @@ export interface IdentityParts {
 	/** Bare semver of the kiro-cli binary, e.g. "2.26.1". */
 	kiroVersion?: string;
 	engine: KiroEngine;
+	/** Which transport served the turn. Required: a caller that forgets it
+	 * would otherwise silently claim the default route. */
+	transport: KiroTransport;
+	/** Chat wire format. Omitted on ACP, which has no format to choose. */
+	format?: KiroChatFormat;
 	/** pi model id for the turn (the kiro model id, or "auto"). */
 	model: string;
 }
@@ -86,8 +104,28 @@ export function displayModel(modelId: string): string {
 	return modelId === "auto" ? "auto (selected by kiro)" : modelId;
 }
 
+/**
+ * The route as shown in the identity line: `acp`, or `chat/<format>`.
+ *
+ * Worth a slot of its own because the two transports are not
+ * interchangeable, and which one is live was previously only visible in a
+ * trace file. On ACP, tool arguments and the credit metadata arrive as
+ * structured protocol events; on chat/stream-json the same, read from
+ * kiro's NDJSON; on chat/text they are scraped out of prose, which is why a
+ * session that quietly fell back to text looked like a broken harness rather
+ * than a degraded one.
+ *
+ * A chat turn with no format resolved reads `chat` rather than naming a
+ * format that will not be used.
+ */
+export function displayTransport(transport: KiroTransport, format?: KiroChatFormat): string {
+	if (transport === "acp") return "acp";
+	return format ? `chat/${format}` : "chat";
+}
+
 export function identityLine(parts: IdentityParts): string {
-	return `pi ${parts.piVersion ?? UNKNOWN} via Kiro (kiro-cli ${parts.kiroVersion ?? UNKNOWN}, engine ${parts.engine}) on ${displayModel(parts.model)}`;
+	const route = displayTransport(parts.transport, parts.format);
+	return `pi ${parts.piVersion ?? UNKNOWN} via Kiro (kiro-cli ${parts.kiroVersion ?? UNKNOWN}, engine ${parts.engine}, ${route}) on ${displayModel(parts.model)}`;
 }
 
 /** Layer 2: the block placed at the top of every prompt sent to kiro. */

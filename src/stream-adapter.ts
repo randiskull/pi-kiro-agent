@@ -13,9 +13,14 @@
  * - stderr is scanned for tool activity, NOT folded into the answer. As of
  *   kiro-cli 2.21 that is where tool-use lines are printed, so a turn's tool
  *   calls are invisible on stdout alone (see toolUseTranscript).
- * - The dim footer line ` ▸ Credits: N.NN • Time: Ns` is parsed for cost:
- *   credits land in usage.cost.total scaled by PI_KIRO_CREDIT_USD (default 0,
- *   seat-billed). The CLI reports no token counts.
+ * - Credits: under stream-json they come structured off the final `metadata`
+ *   event, together with contextUsagePercentage and turnDurationMs. Under the
+ *   text fallback the only source is the rendered footer line
+ *   ` ▸ Credits: N.NN • Time: Ns`, which is quantised to two decimals, so that
+ *   path is marked `rendered-2dp` (see metering.ts). Either way credits land in
+ *   usage.cost.total scaled by PI_KIRO_CREDIT_USD and in a `kiro.metering`
+ *   diagnostic. The CLI reports no token counts, so credits are the only
+ *   per-turn price available.
  *
  * Compliance: all model traffic runs inside the official kiro-cli under the
  * user's own login; this module never touches credentials.
@@ -35,7 +40,8 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
-import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
+import { creditCostUsd, meteringDiagnostic, type TurnMetering } from "./metering.js";
+import { createBlockWriter, createSentinelRouter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import {
 	disableInheritedResources,
 	type KiroAgentProfile,
@@ -50,7 +56,7 @@ import { createStreamJsonReader, type StreamJsonTurn } from "./stream-json-reade
 import { trace } from "./trace.js";
 import { currentSystemPrompt } from "./system-prompt.js";
 import { KIRO_PROVIDER } from "./models.js";
-import { CHAT_ENGINE, authMethod, identityBlock, identityLine, redactSecrets, resolvePiVersion } from "./identity.js";
+import { CHAT_ENGINE, authMethod, identityBlock, identityLine, type KiroChatFormat, redactSecrets, resolvePiVersion } from "./identity.js";
 import {
 	advanceSession,
 	dropSession,
@@ -151,7 +157,9 @@ function chatTimeoutMs(): number {
 	return envMs("PI_KIRO_CHAT_TIMEOUT_MS", 45 * 60 * 1000);
 }
 
-export type ChatFormat = "text" | "stream-json";
+/** Alias of identity.ts's KiroChatFormat, so the identity line and the
+ * transport cannot disagree about what a format is called. */
+export type ChatFormat = KiroChatFormat;
 
 /** Earliest kiro-cli known to emit `--output-format stream-json` (design doc §5b/§5c). */
 export const STREAM_JSON_FLOOR = "2.21.4";
@@ -541,7 +549,17 @@ async function runAttempt(
 	output: AssistantMessage,
 	pushThinking: (delta: string) => void,
 	abortSignal: AbortSignal | undefined,
-	live: { stream: AssistantMessageEventStream; bridge?: HttpBridgeHandle; format: ChatFormat },
+	live: {
+		stream: AssistantMessageEventStream;
+		bridge?: HttpBridgeHandle;
+		format: ChatFormat;
+		/**
+		 * The turn's message text as it arrives -- text-format stdout, or
+		 * stream-json's message chunks -- routed so the sentinel span reaches the
+		 * answer feed and only the narration reaches thinking.
+		 */
+		onMessageText?: (text: string) => void;
+	},
 ): Promise<{ exitCode: number; raw: string; stderrText: string; timedOut: boolean; streamJson?: StreamJsonTurn }> {
 	let turnTimedOut = false;
 	// detached: own process group, so aborts can kill kiro's helper
@@ -607,6 +625,7 @@ async function runAttempt(
 		const streamReader = createStreamJsonReader(output, live.stream, pushThinking, {
 			engine: CHAT_ENGINE,
 			livePrefix: LIVE_TOOL_ID_PREFIX,
+			onMessageText: live.onMessageText,
 		});
 		reader = streamReader;
 		let finished = false;
@@ -643,7 +662,10 @@ async function runAttempt(
 		child.stdout.on("data", (chunk: Buffer) => {
 			const text = chunk.toString("utf8");
 			raw += text;
-			pushThinking(stripAnsi(text));
+			// Routed, not mirrored: the sentinel span is the ANSWER and streams as
+			// text, everything around it is working notes and streams as thinking.
+			// Pushing all of it into thinking printed every answer twice.
+			(live.onMessageText ?? pushThinking)(stripAnsi(text));
 			for (const use of liveParser.feed(stripAnsi(text))) liveCalls.surface(displayToolName(use.name, use.server));
 		});
 		// Tool-use lines arrive HERE on kiro-cli 2.21+ (see toolUseTranscript),
@@ -687,7 +709,10 @@ async function runAttempt(
  * reassembled message chunks (the sentinel still applies -- finalText is ALL of
  * the turn's message text, narration included).
  */
-function settleStreamJsonTurn(turn: StreamJsonTurn | undefined, exitCode: number): { final: string; credits: number | undefined } {
+function settleStreamJsonTurn(
+	turn: StreamJsonTurn | undefined,
+	exitCode: number,
+): { final: string; metering: TurnMetering } {
 	const textHint = "set PI_KIRO_CHAT_FORMAT=text to use the text transport.";
 	if (turn?.violation) throw new Error(`${turn.violation}; ${textHint}`);
 	const terminal = turn?.terminal;
@@ -703,7 +728,18 @@ function settleStreamJsonTurn(turn: StreamJsonTurn | undefined, exitCode: number
 			finalTextTruncated: terminal.finalTextTruncated,
 		});
 	}
-	return { final: extractFinal(turn.messageText).final, credits: turn.credits };
+	return {
+		final: extractFinal(turn.messageText).final,
+		metering: {
+			credits: turn.credits,
+			source: "chat-stream-json",
+			precision: "exact",
+			...(turn.contextPercent !== undefined ? { contextPercent: turn.contextPercent } : {}),
+			...(turn.turnDurationMs !== undefined ? { turnDurationMs: turn.turnDurationMs } : {}),
+			...(turn.creditsUnitPlural ? { unitPlural: turn.creditsUnitPlural } : {}),
+			...(turn.creditsOtherUnits ? { otherUnits: turn.creditsOtherUnits } : {}),
+		},
+	};
 }
 
 /**
@@ -852,6 +888,8 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					piVersion: await resolvePiVersion(),
 					kiroVersion: deps.kiroVersion,
 					engine: CHAT_ENGINE,
+					transport: "chat",
+					format,
 					model: model.id,
 				});
 				trace("identity", { transport: "chat", format, line: identity, auth: authMethod() });
@@ -890,8 +928,16 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				let stderrText = "";
 				let exitCode = -1;
 				let turnTimedOut = false;
-				const thinkingWriter = createThinkingWriter(stream, output);
-				const pushThinking = thinkingWriter.push;
+				const writer = createBlockWriter(stream, output);
+				const pushThinking = writer.pushThinking;
+				// Split the message text into working notes and the answer as it
+				// arrives. Both formats need it: stream-json separates thoughts from
+				// message chunks, but the message chunks still carry the narration
+				// around the <pi_final> span (finalText is ALL of the turn's text).
+				const answerRouter = createSentinelRouter(FINAL_OPEN, FINAL_CLOSE, {
+					narration: pushThinking,
+					answer: writer.pushText,
+				});
 
 				for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
 					// Engine pinned, never left to kiro's default: kiro-cli 2.26 documents v2 as
@@ -926,6 +972,7 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						stream,
 						bridge,
 						format,
+						onMessageText: answerRouter.feed,
 					});
 					raw = attemptResult.raw;
 					stderrText = attemptResult.stderrText;
@@ -948,6 +995,8 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						!options?.signal?.aborted
 					) {
 						pushThinking("\n[bridge MCP failed to connect -- retrying]\n");
+						answerRouter.reset();
+						writer.resetText();
 						continue;
 					}
 					// Resume fallback: a --resume-id spawn failed (stale/unusable
@@ -962,12 +1011,15 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 						useResume = false;
 						preSnapshot = await snapshot();
 						pushThinking("\n[kiro resume failed -- retrying with full context]\n");
+						answerRouter.reset();
+						writer.resetText();
 						continue;
 					}
 					break;
 				}
 
-				thinkingWriter.end();
+				answerRouter.flush();
+				writer.endThinking();
 
 				if (options?.signal?.aborted) throw new Error("kiro-cli run aborted");
 				if (turnTimedOut) {
@@ -977,29 +1029,28 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				}
 
 				let final: string;
-				let credits: number | undefined;
+				let metering: TurnMetering;
 				if (format === "stream-json") {
-					({ final, credits } = settleStreamJsonTurn(streamJson, exitCode));
+					({ final, metering } = settleStreamJsonTurn(streamJson, exitCode));
 				} else {
 					const cleaned = cleanBody(raw);
-					credits = cleaned.credits;
+					// The footer is a render, not the canon: two decimals, so any
+					// turn under half a cent of credit reads 0.00. Marked so a
+					// consumer can tell a rounded zero from a real one.
+					metering = { credits: cleaned.credits, source: "chat-text", precision: "rendered-2dp" };
 					const toolTranscript = toolUseTranscript(cleaned.body, stderrText);
 					salvageOrThrow(exitCode, cleaned.body, stderrText, toolTranscript, pushThinking);
 					final = extractFinal(cleaned.body).final;
 					reconcileToolCalls(output, toolTranscript, pushThinking);
 				}
-				output.content.push({ type: "text", text: "" });
-				const textIndex = output.content.length - 1;
-				stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
-				const textBlock = output.content[textIndex];
-				if (textBlock.type === "text") textBlock.text = final;
-				stream.push({ type: "text_delta", contentIndex: textIndex, delta: final, partial: output });
-				stream.push({ type: "text_end", contentIndex: textIndex, content: final, partial: output });
+				// extractFinal (or the stream-json reader) is the arbiter: the live
+				// route is best-effort, so the block is reconciled against the
+				// authoritative answer instead of being appended to.
+				writer.finishText(final);
 
-				if (credits !== undefined) {
-					const usdPerCredit = Number.parseFloat(process.env.PI_KIRO_CREDIT_USD ?? "0");
-					output.usage.cost.total = Number.isFinite(usdPerCredit) ? credits * usdPerCredit : 0;
-				}
+				output.usage.cost.total = creditCostUsd(metering.credits);
+				output.diagnostics = [...(output.diagnostics ?? []), meteringDiagnostic(metering)];
+				trace("chat.metering", { ...metering });
 
 				if (format === "stream-json") {
 					recordStreamJsonSession(streamJson?.sessionId, useResume ? plan.resumeId : undefined, cwd, context.messages);

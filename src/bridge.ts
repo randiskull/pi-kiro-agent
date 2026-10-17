@@ -306,6 +306,27 @@ export async function captureBridgeTools(realPi: ExtensionAPI, envOverride?: str
 	return bridged;
 }
 
+/**
+ * How a bridge advisory reaches the user.
+ *
+ * console.error is the fallback, and is right for print/RPC mode. Under the
+ * interactive TUI it is NOT: pi paints a raw stderr write into the chrome just
+ * above the prompt, where it STAYS for the rest of the session (measured
+ * 2026-10-17, pi 1.3.0) -- a one-off mount-time advisory became a permanent
+ * banner. The host installs a transient notifier instead (index.ts).
+ */
+export type BridgeNotice = (message: string) => void;
+
+const consoleNotice: BridgeNotice = (message) => {
+	console.error(message);
+};
+let bridgeNotice: BridgeNotice = consoleNotice;
+
+/** Install the host's advisory channel; `undefined` restores stderr. */
+export function setBridgeNotice(notice: BridgeNotice | undefined): void {
+	bridgeNotice = notice ?? consoleNotice;
+}
+
 /** Names already reported missing, so the warning fires once per process. */
 const warnedMissingTools = new Set<string>();
 
@@ -323,7 +344,7 @@ export function warnOnMissingBridgeTools(allowed: Set<string>, bridged: Array<{ 
 	const missing = [...allowed].filter((name) => !present.has(name) && !warnedMissingTools.has(name));
 	if (missing.length === 0) return;
 	for (const name of missing) warnedMissingTools.add(name);
-	console.error(
+	bridgeNotice(
 		`[pi-kiro] bridge: ${missing.length === 1 ? "tool" : "tools"} ${missing.map((n) => `\`${n}\``).join(", ")} ` +
 		`${missing.length === 1 ? "was" : "were"} requested but no loaded extension provides ${missing.length === 1 ? "it" : "them"}; ` +
 		`${missing.length === 1 ? "it" : "they"} will be absent from the bridge. ` +
@@ -340,6 +361,7 @@ export function clearBridgeCache(): void {
 	singleFlightCeilingMs = DEFAULT_SINGLE_FLIGHT_CEILING_MS;
 	warnedMissingTools.clear();
 	warnedOversizeBody = false;
+	bridgeNotice = consoleNotice;
 }
 
 /** Strip TypeBox symbol keys; guarantee an object-typed JSON schema. */
@@ -692,7 +714,7 @@ function noteOversizeBody(port: number, limit: number, contentLength: string | u
 	trace("bridge.reject.too-large", { port, limit, contentLength: contentLength ?? null });
 	if (warnedOversizeBody) return;
 	warnedOversizeBody = true;
-	console.error(
+	bridgeNotice(
 		`[pi-kiro] bridge: refused a request larger than ${limit} bytes ` +
 		`(Content-Length: ${contentLength ?? "not declared"}); the bridged tool was not called. ` +
 		`Raise PI_KIRO_BRIDGE_MAX_BODY_BYTES if a bridged tool legitimately takes payloads this large.`,
