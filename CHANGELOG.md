@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **A stream-json turn that is priced more than once now traces it.** Credits come from the last
+  `metadata` event carrying a `meteringUsage` array, which rests on kiro emitting the priced
+  metadata last (the 2.32 probes show exactly one priced metadata per turn). Nothing in a single
+  event distinguishes a late summary from a late per-tool-call partial, so a turn that prices twice
+  emits a `chat.stream.metering_repriced` trace with both figures instead of being resolved
+  silently: keeping the larger value would hide the protocol change rather than report it.
+
 ### Fixed
 
 - **A chat turn that reached more than one kill path leaked a SIGKILL timer (#58).** Abort, the turn

@@ -30,6 +30,8 @@ const line = (event: unknown) => `${JSON.stringify(event)}\n`;
 const STARTED = line({ type: "runStarted", data: { payloadSchema: "acp", acpProtocolVersion: 1, engine: "v2" } });
 const chunk = (text: string) =>
 	line({ type: "sessionUpdate", data: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
+const priced = (credits: number) =>
+	line({ type: "metadata", data: { sessionId: "s1", meteringUsage: [{ value: credits, unit: "credit", unitPlural: "credits" }] } });
 const FINISHED = (finalText: string) =>
 	line({ type: "runFinished", data: { sessionId: "s1", status: "success", stopReason: "end_turn", finalText, finalTextTruncated: false } });
 
@@ -218,6 +220,37 @@ describe("probe replays", () => {
 		// p5 carries five metadata events: 1.1368, 5.684, 5.684, 8.7425, 8.7425.
 		// The turn ends at 8.7425, so a first-wins read would be wrong by 7.6 points.
 		expect(metering?.contextPercent).toBeCloseTo(8.7425, 4);
+	});
+
+	it("prices from the LAST meteringUsage, and traces a turn priced more than once", async () => {
+		// "Last wins" rests on kiro emitting the priced metadata last. Nothing in
+		// a single event can tell a late summary from a late per-tool-call
+		// partial, so the anomaly is made observable rather than resolved: keeping
+		// the larger value would hide the protocol change instead of reporting it.
+		const dir = mkdtempSync(join(tmpdir(), "pi-kiro-sj-reprice-"));
+		const tracePath = join(dir, "t.jsonl");
+		process.env.PI_KIRO_TRACE = tracePath;
+		resetTraceTarget();
+		const repriced = () =>
+			readFileSync(tracePath, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l))
+				.filter((e) => e.event === "chat.stream.metering_repriced");
+		try {
+			scriptAttempts({ stdout: STARTED + priced(0.5) + chunk("ok") + priced(0.125) + FINISHED("ok") });
+			const metering = readMeteringDiagnostic(doneOf(await collect()).diagnostics);
+			expect(metering?.credits).toBeCloseTo(0.125, 9);
+			expect(repriced()).toMatchObject([{ priorCredits: 0.5, credits: 0.125, pricedMetadataEvents: 2 }]);
+			// Control at a second input: ONE priced metadata must not trace, so the
+			// assertion above cannot pass just because the trace always fires.
+			scriptAttempts({ stdout: STARTED + priced(0.25) + chunk("ok") + FINISHED("ok") });
+			expect(readMeteringDiagnostic(doneOf(await collect()).diagnostics)?.credits).toBeCloseTo(0.25, 9);
+			expect(repriced()).toHaveLength(1);
+		} finally {
+			delete process.env.PI_KIRO_TRACE;
+			resetTraceTarget();
+		}
 	});
 
 	it("reassembles a UTF-8 sequence split across stdout chunks", async () => {

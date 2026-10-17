@@ -658,6 +658,39 @@ describe("chat-turn hard ceiling (PI_KIRO_CHAT_TIMEOUT_MS)", () => {
 		}
 	});
 
+	it("escalates a child that ignores SIGTERM to SIGKILL after the grace window", async () => {
+		// The assertion above is a NEGATIVE one, and it passes just as well when
+		// the escalation is never armed at all: an armKill that does nothing kept
+		// the whole suite green while deleting the SIGKILL safety net. Arming
+		// therefore needs its own gate.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			process.env.PI_KIRO_CHAT_TIMEOUT_MS = "30";
+			const child = new FakeChild();
+			const signals: string[] = [];
+			// This child ignores SIGTERM and dies only once SIGKILL arrives.
+			const killSpy = vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
+				signals.push(String(signal));
+				if (signal === "SIGKILL") child.emit("exit", 137);
+				return true;
+			});
+			spawnMock.mockImplementation(() => child);
+			const pending = collect({ messages: [] });
+			while (spawnMock.mock.calls.length === 0) await new Promise((resolve) => setImmediate(resolve));
+			await vi.advanceTimersByTimeAsync(30);
+			// The ceiling has fired and the escalation is armed but not due yet.
+			expect(signals).toEqual(["SIGTERM"]);
+			await vi.advanceTimersByTimeAsync(1_500);
+			expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+			expect(killSpy).toHaveBeenCalledWith(-4242, "SIGKILL");
+			await pending;
+			delete process.env.PI_KIRO_CHAT_TIMEOUT_MS;
+			killSpy.mockRestore();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not fire when the turn completes first", async () => {
 		process.env.PI_KIRO_CHAT_TIMEOUT_MS = "60000";
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
