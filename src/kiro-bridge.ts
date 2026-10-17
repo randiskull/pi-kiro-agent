@@ -7,10 +7,11 @@
  *
  * v3 note: kiro v3 agent configs support header auth + ${VAR} expansion,
  * which would allow one stable profile. v3 DOES run headless (measured: see
- * docs/design/v3-engine.md), so the blocker is no longer the mode -- it is that
- * a missing profile fails SOFT on v3 ("agent X not found, using default"),
- * which is the one failure this bridge cannot tolerate: the turn would run with
- * none of pi's tools. v2 stays the target until that is settled (spike S1).
+ * docs/design/v3-engine.md), so the blocker is no longer the mode. It is
+ * whether v3 reads this profile format at all, and how it names a bridged
+ * tool (spike S1). A missing profile still exits 4 on v3, but its wording
+ * ("agent X not found, using default") reads like a fallback: if v3 ever acts
+ * on it, a turn would run with none of pi's tools. v2 stays the target.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
