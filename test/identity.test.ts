@@ -283,7 +283,7 @@ describe("chat transport identity", () => {
 });
 
 describe("identity eval scorer (pinned to real probe answers)", () => {
-	// Answers captured verbatim by the probes (~/.aki/tmp/probe/{matrix,reinforce}.txt),
+	// Answers captured verbatim by the local probe runs (matrix and reinforce),
 	// including GPT's curly apostrophe.
 	const PASS = [
 		"I am pi, an expert coding assistant built by Mario Zechner.",
