@@ -23,9 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (then `.bak.1`, ...), and that original holds the tokenized loopback URL. `remove()` deleted only
   `<name>.json`, profiles from turns that crashed before `remove()` were never cleaned up, and
   profiles were created `0644`. `remove()` now deletes the profile's own backups, activation sweeps
-  profiles whose pi process is dead (or whose file is older than any turn), and profiles are written
-  `0600`, which kiro keeps on the backup (`test/kiro-bridge.test.ts`, "removes the backups kiro
-  writes beside the profile, and only this profile's"; `src/kiro-bridge.ts`).
+  profiles whose pi process is dead (or whose file is older than any turn) and ages each file on its
+  own rather than the newest in the directory, so a live pid's current profile is not swept because
+  an ancient namesake sits beside it, and profiles are written `0600`, which kiro keeps on the
+  backup (`test/kiro-bridge.test.ts`, "removes the backups kiro writes beside the profile, and only
+  this profile's" and "ages each file on its own, so a live pid's current profile survives its
+  ancient namesake"; `src/kiro-bridge.ts`).
 - **A chat turn that reached more than one kill path leaked a SIGKILL timer (#58).** Abort, the turn
   ceiling and a stream-json envelope violation each armed the SIGTERM-to-SIGKILL escalation by
   overwriting the timer handle, and only the latest was cleared at exit, so an earlier one fired a
