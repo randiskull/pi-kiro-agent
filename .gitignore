@@ -14,7 +14,13 @@ probes/*.json
 .gsd
 .gsd-id
 .rpiv
+# kiro-cli rewrites tracked `.kiro/agents/*.json` in place on start (a schema
+# migration stamped `kiroUpgrade.revision`) and drops a backup beside the file.
+# The first is `<name>.json.bak`, but a second start writes `.bak.1`, then
+# `.bak.2`, which `*.bak` does NOT match -- so the numbered forms need their own
+# pattern or they show up as untracked noise after every session.
 *.bak
+*.bak.*
 
 # Trace output. PI_KIRO_TRACE records full prompt text and the raw arguments of
 # every bridged tool call, so a stray trace in the worktree is a secret leak that
