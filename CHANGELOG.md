@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **Implementation specs get a rubric and a linter before anyone builds them.**
+  `spec-review/rubric.md` (Rubric 1) defines five pass/fail gates and six separately scored
+  dimensions for a spec in `docs/specs/`, and `scripts/spec-lint.mjs` checks the part a script can:
+  structure, defect or feature typing, attribution, and that cited paths, commits, `§` sections and
+  npm scripts exist, with near-miss detection for misspelled symbols. A six-case calibration set
+  (`spec-review/calibration/`) holds the rubric to known answers, and `test/spec-lint.test.ts` pins
+  the linter against it. Contributor tooling only: nothing under `spec-review/` or `scripts/` is in
+  the published package. Design: `docs/specs/spec-review-bus.md`.
+
 ### Changed
 
 - **A stream-json turn that is priced more than once now traces it.** Credits come from the last

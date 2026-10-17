@@ -1,0 +1,191 @@
+{
+	"rubric": 1,
+	"ref": "61bb96f",
+	"aliases": {
+		"docs/specs/dual-host-pi-gsd.md": "spec-review/calibration/cases/c2.md"
+	},
+	"labelledBy": "Claude Opus 5.5 (harness: other), 2026-10-17. c2 G2 and G3 relabelled to fail after the first pass, and G5 after the seventh (both reviewers failed G3 with the same argument; the G2 meaning was settled by a rubric wording fix, not by either run). Ratification by the maintainer pending: the c2 labels are judgement, not construction.",
+	"cases": {
+		"c1": {
+			"source": "mutant of c4",
+			"sha256": "397c4068c9661e2cda1f08aebb7009d045cd158048703f297611be63a17cbb2a",
+			"mutation": "Step 1 also closes the bridge when each turn's prompt settles, clears the cached bridge promise, and removes the resume branch of resolveSession(), so every turn takes the divergence branch and advertises a fresh bridge in a new session/new. The in-scope list, the approach, criterion 3 and a new verification step were written to agree, so the spec reads as deliberate and its contract is closed. Goal 3 ('the per-child bridge URL invariant (§5e.3) is preserved'), the root cause ('kiro learns the bridge URL only once, at session/new'), criterion 4 (the §5e.3 tests pass unchanged) and the out-of-scope 'bridge URL lifetime model' line were left alone. §5e.3 records that kiro keeps its client for the server named pi pointed at the first port even across session/new, so every bridged call after the first turn hits a closed port; and dropping resume breaks Goal 3's 'resume behaves as before'.",
+			"lint": {
+				"fail": []
+			},
+			"review": {
+				"outcome": "reject",
+				"gates": {
+					"G1": "fail",
+					"G2": "pass",
+					"G3": "pass",
+					"G4": "pass",
+					"G5": "pass"
+				},
+				"dimensions": {
+					"D2": "<=2",
+					"D3": "1"
+				},
+				"mustQuoteOneOf": [
+					"Close the bridge when each turn settles, and mount a fresh one for the next turn.",
+					"Also close the bridge when a turn settles",
+					"advertises the new URL to kiro in that turn's",
+					"bridge is closed, and the next turn mounts a new one.",
+					"mounted its own bridge and that the first was closed",
+					"The per-child bridge URL invariant (§5e.3) is preserved.",
+					"Changing the idle-timeout default or the bridge URL lifetime model.",
+					"The §5e.3 tests (one URL per child across a session reset) pass unchanged."
+				],
+				"why": {
+					"mustQuoteOneOf": "The defect is a contradiction, so a finding may quote either side: the per-turn bridge text, or Goal 3, criterion 4 and the out-of-scope line, which the mutation left promising one bridge URL per child.",
+					"outcome": "reject by construction, not by vote: the mutation overturns the documented §5e.3 decision without proposing to supersede it, which is the rubric's reject row and D3's anchor 1. Pass 5 (both runs reject, D3 1) prompted the relabel; the rubric text decides it.",
+					"G1": "A per-turn bridge has no closed contract at this ref: kiro learns a URL only at session/new, so delivering a new one means a new session every turn, and useResume is computed before resolveSession() and still selects the delta prompt and advances the old ledger entry (src/acp-transport.ts, the turn body). Passes 5 to 7 tried three ways to close it; each left a different hole, and in pass 8 both runs named the same one. The label follows the code, checked at 61bb96f."
+				}
+			}
+		},
+		"c2": {
+			"source": "real: dual-host-pi-gsd.md, frozen from the maintainer's untracked working copy on 2026-10-17",
+			"sha256": "7733ab1733f499e660576201b6d393cf0966691edac8f665201951992488ce5c",
+			"lint": {
+				"fail": []
+			},
+			"review": {
+				"outcome": "revise",
+				"gates": {
+					"G1": "fail",
+					"G2": "fail",
+					"G3": "fail",
+					"G4": "fail",
+					"G5": "fail"
+				},
+				"dimensions": {
+					"D1": ">=3",
+					"D5": "<=2"
+				},
+				"why": {
+					"G1": "'Mechanics (pick the lightest that satisfies Step 0)' leaves the wiring shape (a package.json pointing at the entry, or a re-exporting index.ts) to the implementer, and that shape is what the documented enable step tells users to create. Option C's 'skip a bare-pi-only convenience' does not name what is skipped.",
+					"G4": "Criterion 4 ('does not alter or break GSD's own extension set') names no evidence, and no Verification plan step produces any.",
+					"D5": "No target version, no CHANGELOG line, and no workaround for current users (launch under bare pi).",
+					"D1": "Step 0 verifies the loader contract against a named, versioned build (@opengsd/gsd-pi v1.22.0), so the diagnosis is strong even though its evidence is external.",
+					"G2": "'Negative control first (per repo engineering rule)' credits a rule that no file in the checkout states, and 'referenced in older steering notes' credits notes it does not name. Both are claims credited to a source the reader cannot open.",
+					"G3": "'confirm it fails (provider not registered / load error)' gives two outcomes and no mechanism, and the GSD-home test it names builds the wiring itself, so nothing says why it would fail before the change.",
+					"G5": "Two out-of-scope items give a reason and no disposition: credential handling ('unchanged: all traffic stays on kiro-cli') never says whether anything follows, and the transport internals ('unaffected by host scoping') give a reason only. Pass 1 corrected c4 for the same defect, so the same reading applies here; the rubric now states it."
+				}
+			}
+		},
+		"c3": {
+			"source": "mutant of c4",
+			"sha256": "1b5cc384b6330252d0804e5ba6c20a0359f4cd7081be2e21a1c2744966dded1d",
+			"mutation": "The fail-first step is gone: the unit test is still described, but nothing says to run it against the unfixed bridge.ts, and the manual reproduction runs only after the change.",
+			"lint": {
+				"fail": [
+					"G3"
+				]
+			},
+			"review": {
+				"outcome": "revise",
+				"gates": {
+					"G1": "pass",
+					"G2": "pass",
+					"G3": "fail",
+					"G4": "pass",
+					"G5": "pass"
+				},
+				"dimensions": {}
+			}
+		},
+		"c4": {
+			"source": "real: acp-print-mode-exit.md, frozen from the maintainer's untracked working copy on 2026-10-17, then corrected over eight calibration passes (README, 'How the set was corrected'). Each correction was a finding both runs, or one run with a citation, made against the frozen copy, checked against the code at 61bb96f before anything changed. The same base edits were applied to c1, c3, c5 and c6, and each mutation was kept, except c1's: pass 4 removed the step it mutated, so it was rebuilt on the same contradiction. The exemplar and the false-fail control.",
+			"sha256": "d983a398c7b990a202ab8ecb89adad19dac240b7aa31185e171a0f16ab28dd2f",
+			"lint": {
+				"fail": []
+			},
+			"review": {
+				"outcome": "pass",
+				"gates": {
+					"G1": "pass",
+					"G2": "pass",
+					"G3": "pass",
+					"G4": "pass",
+					"G5": "pass"
+				},
+				"dimensions": {
+					"D1": "4",
+					"D2": ">=3",
+					"D3": ">=3",
+					"D4": ">=3",
+					"D5": ">=3",
+					"D6": ">=3"
+				},
+				"why": {
+					"D5": "Criterion 6 now names the release section, the workaround and the test citation docs/releasing.md requires of a ### Fixed bullet, so 3 is the floor, not the expected score."
+				}
+			}
+		},
+		"c5": {
+			"source": "mutant of c4",
+			"sha256": "6ebb97cb8f72355850835aa267c51dfa0df85a2f4f11b22132f8718efe48b7a6",
+			"mutation": "The provenance commit 6ea0510 becomes 6ea0517, which does not exist, and serveBridgeHttp is spelled serveBridgeHTTP at all four mentions.",
+			"lint": {
+				"fail": [
+					"G2"
+				],
+				"mustName": [
+					"6ea0517",
+					"serveBridgeHTTP"
+				]
+			},
+			"review": {
+				"outcome": "revise",
+				"gates": {
+					"G1": "pass",
+					"G2": "fail",
+					"G3": "pass",
+					"G4": "pass",
+					"G5": "pass"
+				},
+				"dimensions": {},
+				"mustQuoteOneOf": [
+					"6ea0517",
+					"serveBridgeHTTP"
+				],
+				"why": {
+					"G2": "Lint catches both with no model (see lint.mustName). The blind reviewer must also catch at least one, which is the check that it opens what a spec cites rather than trusting it."
+				}
+			}
+		},
+		"c6": {
+			"source": "mutant of c4",
+			"sha256": "0b7fc67b948e18a2609aeb33e2180f4ca1bde9281f0e20a5b63ff855f8dc90f4",
+			"note": "D1 is exactly 2, not 1: the hedge names the right file and the evidence is in the spec, which is anchor 2. A 1 would make the outcome reject, which is wrong for a spec one paragraph from passing.",
+			"mutation": "The causal bullet (the bridge has been meant to outlive the turn since 2303d19 first mounted it; pi never aborts the turn signal it rode until d47b48e bound it to the session and 6ea0510 to the child; serveBridgeHttp never unrefs the listener) and the bullet reconciling the 0.2.0 live check become 'the bridge probably holds the loop open'. The Observed failure evidence, which settles it, is untouched.",
+			"lint": {
+				"fail": []
+			},
+			"review": {
+				"outcome": "revise",
+				"gates": {
+					"G1": "pass",
+					"G2": "pass",
+					"G3": "pass",
+					"G4": "pass",
+					"G5": "pass"
+				},
+				"dimensions": {
+					"D1": "2"
+				},
+				"mustQuoteOneOf": [
+					"The bridge probably holds the loop open."
+				]
+			}
+		}
+	},
+	"shipBar": {
+		"runs": 2,
+		"independence": "Each run is a fresh session per case. The two runs must differ in session; at least one must also differ in harness or model from the other.",
+		"blind": "Calibration reviewers do not see lint output, and review every case, including the ones lint fails. In production lint runs first and a lint failure is never reviewed; calibration measures the reviewer half on its own.",
+		"mustCatch": "Every case meets its outcome, every gate label, every dimension threshold, and its mustQuoteOneOf, in both runs. A revise on c4 is a false fail and counts as a miss.",
+		"agreement": "The two runs agree on every gate decision for every case (6 cases x 5 gates = 30 decisions). Any disagreement means the rubric wording is ambiguous: fix the wording and re-run both, do not pick a winner.",
+		"deterministic": "test/spec-lint.test.ts holds the lint expectations above in CI."
+	}
+}
