@@ -209,6 +209,9 @@ export function createStreamJsonReader(
 				if (typeof data.sessionId === "string") metadataSessionId = data.sessionId;
 				if (typeof data.contextUsagePercentage === "number") turn.contextPercent = data.contextUsagePercentage;
 				if (typeof data.turnDurationMs === "number") turn.turnDurationMs = data.turnDurationMs;
+				// Credits: the last metadata carrying a meteringUsage array wins
+				// (earlier events carry it null). That depends on kiro emitting the
+				// priced metadata last, which the 2.32 probes confirm.
 				if (Array.isArray(data.meteringUsage)) {
 					const summed = sumCredits(data.meteringUsage);
 					turn.credits = summed.credits;

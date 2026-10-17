@@ -626,6 +626,38 @@ describe("chat-turn hard ceiling (PI_KIRO_CHAT_TIMEOUT_MS)", () => {
 		expect(spawnMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("a second SIGTERM path re-arms the SIGKILL escalation instead of leaking the first", async () => {
+		// The ceiling and an abort both reach the escalation. Only the latest
+		// timer is cleared at exit, so a first one left armed fired a SIGKILL at
+		// a process group that had already exited.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			process.env.PI_KIRO_CHAT_TIMEOUT_MS = "30";
+			const child = new FakeChild();
+			const controller = new AbortController();
+			let sigterms = 0;
+			// The child ignores the first SIGTERM and exits on the second.
+			const killSpy = vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
+				if (signal === "SIGTERM" && ++sigterms === 2) child.emit("exit", 143);
+				return true;
+			});
+			spawnMock.mockImplementation(() => child);
+			const pending = collect({ messages: [] }, { signal: controller.signal });
+			// The spawn sits behind the transport's own awaits; let it happen first.
+			while (spawnMock.mock.calls.length === 0) await new Promise((resolve) => setImmediate(resolve));
+			await vi.advanceTimersByTimeAsync(30); // ceiling: SIGTERM + escalation armed
+			controller.abort(); // abort: SIGTERM again, child exits
+			await pending;
+			await vi.advanceTimersByTimeAsync(2_000);
+			delete process.env.PI_KIRO_CHAT_TIMEOUT_MS;
+			expect(sigterms).toBe(2);
+			expect(killSpy).not.toHaveBeenCalledWith(-4242, "SIGKILL");
+			killSpy.mockRestore();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not fire when the turn completes first", async () => {
 		process.env.PI_KIRO_CHAT_TIMEOUT_MS = "60000";
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);

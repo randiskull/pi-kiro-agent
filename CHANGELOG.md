@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **A chat turn that reached more than one kill path leaked a SIGKILL timer (#58).** Abort, the turn
+  ceiling and a stream-json envelope violation each armed the SIGTERM-to-SIGKILL escalation by
+  overwriting the timer handle, and only the latest was cleared at exit, so an earlier one fired a
+  `SIGKILL` at a process group that had already exited. One `armKill` helper now clears any prior
+  timer before arming. The stream-json path also stopped keeping a second full copy of the turn's
+  stdout that nothing read. Both were fixed once in #55, which merged into a branch that had already
+  merged to `main`, so the fix never shipped.
+
 ## 0.4.0 - 2026-10-17
 
 ### Added
