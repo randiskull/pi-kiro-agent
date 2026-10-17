@@ -351,16 +351,23 @@ describe("default format by kiro-cli version", () => {
 		expect(supportsStreamJson(version)).toBe(expected);
 	});
 
+	/** Run one turn with PI_KIRO_CHAT_FORMAT set to `format`, restoring it afterwards. */
 	async function flagFor(format: string | undefined, kiroVersion: string | undefined): Promise<boolean> {
 		spawnMock.mockReset();
-		if (format === undefined) delete process.env.PI_KIRO_CHAT_FORMAT;
-		else process.env.PI_KIRO_CHAT_FORMAT = format;
-		scriptAttempts({ stdout: STARTED + chunk("ok") + FINISHED("ok") });
-		const stream = makeStreamViaKiro({ binaryPath: "kiro-cli", kiroVersion })(MODEL, { systemPrompt: "", messages: [USER] });
-		for await (const _event of stream) {
-			// drain
+		const previous = process.env.PI_KIRO_CHAT_FORMAT;
+		try {
+			if (format === undefined) delete process.env.PI_KIRO_CHAT_FORMAT;
+			else process.env.PI_KIRO_CHAT_FORMAT = format;
+			scriptAttempts({ stdout: STARTED + chunk("ok") + FINISHED("ok") });
+			const stream = makeStreamViaKiro({ binaryPath: "kiro-cli", kiroVersion })(MODEL, { systemPrompt: "", messages: [USER] });
+			for await (const _event of stream) {
+				// drain
+			}
+			return ((spawnMock.mock.calls[0]?.[1] as string[] | undefined) ?? []).includes("--output-format");
+		} finally {
+			if (previous === undefined) delete process.env.PI_KIRO_CHAT_FORMAT;
+			else process.env.PI_KIRO_CHAT_FORMAT = previous;
 		}
-		return ((spawnMock.mock.calls[0]?.[1] as string[] | undefined) ?? []).includes("--output-format");
 	}
 
 	it("unset or empty: stream-json at or above 2.21.4, text below or when unparseable; explicit values win; unknown never spawns", async () => {

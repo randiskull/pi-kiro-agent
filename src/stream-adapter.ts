@@ -156,7 +156,12 @@ export type ChatFormat = "text" | "stream-json";
 /** Earliest kiro-cli known to emit `--output-format stream-json` (design doc §5b/§5c). */
 export const STREAM_JSON_FLOOR = "2.21.4";
 
-/** `[major, minor, patch]` with any `-…`/`+…` suffix dropped; undefined if not exactly three integers. */
+/**
+ * `[major, minor, patch]` with any `-…`/`+…` suffix dropped; undefined if not
+ * exactly three integers. Callers pass parseKiroVersion() output (readiness),
+ * which is already `X.Y.Z` with an optional suffix, so any other shape is an
+ * unknown version and safely means text.
+ */
 function versionTuple(version: string | undefined): [number, number, number] | undefined {
 	const parts = (version ?? "").trim().replace(/[-+].*$/, "").split(".");
 	if (parts.length !== 3 || !parts.every((part) => /^\d+$/.test(part))) return undefined;
