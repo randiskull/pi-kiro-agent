@@ -67,17 +67,81 @@ Enforced, so a mistake fails CI or the publish:
 - `prepublishOnly` runs the full verify suite, so no publish skips typecheck, tests
   or the secret scan.
 - EVERY `### Fixed` bullet under `## Unreleased` names the test that proves the fix
-  (`test/...test.ts`), so a claim cannot ship without its gate. Cite a test that fails
-  with the fix reverted. A fix that genuinely has no test is waived in writing, with
-  the reason: `(no test: why)`. The first form of this rule only fired on a bullet that
-  also named a `src/` file, which made "do not name the file" the cheapest way to pass.
-  (`test/package-constraints.test.ts`)
+  (`test/...test.ts`), or waives it in writing as `(no test: why)`. See "Citing a test"
+  below for what counts. (`test/package-constraints.test.ts`)
 
 Judgement, so it needs a human:
 
 - **Which** component to bump. Nothing can tell that a behaviour change is
   user-visible.
 - Whether a breaking change is described as breaking in the CHANGELOG.
+- Whether a `(no test: why)` waiver is honest. The machine checks that a reason was
+  written, never that it is a good one.
+
+## Citing a test, and when a fix may waive one
+
+Every `### Fixed` bullet under `## Unreleased` carries one of two things: the test
+that proves it, or a written waiver. One claim per bullet -- a waiver covers the
+WHOLE bullet, so a bullet that cites a test for half the fix and waives the other
+half can lose its citation and still pass. Split it.
+
+### Citing
+
+Name the file, and the test if the file is large:
+
+```
+- **A retried turn inherited the abandoned attempt's open span.** The router now
+  resets alongside the writer (`test/painted-once.test.ts`, "a retry abandoned
+  inside its span").
+```
+
+A citation is a claim that the test FAILS with the fix reverted. Verify it, do not
+assume it:
+
+1. Revert the fix in the working tree (edit, do not commit).
+2. Run the cited test. It must fail.
+3. Restore the fix. It must pass.
+
+Two traps worth knowing before you trust a run of step 2:
+
+- **A harness that never reports a survivor is broken.** Assert that the UNMUTATED
+  suite passes before you mutate anything. `vitest run --reporter=basic` exits 1 on a
+  fully passing suite, which once made every mutation in this repo read as caught.
+- **A fixture tidier than real traffic passes with the defect live.** The retry
+  fixture that missed `writer.resetText` streamed its abandoned attempt OUTSIDE the
+  sentinel span, so there was nothing to reset. Build the fixture from the ugly shape
+  the bug actually arrives in.
+
+### Waiving
+
+A waiver is for a fix with **no observable behaviour to assert**, not for a fix that
+is awkward to test. Three shapes qualify:
+
+- **Removing something with no reader.** The stream-json path kept a second full copy
+  of the turn's stdout; nothing read it, so its absence changes no output. A test
+  would have to reach for a private field, pinning the implementation rather than the
+  property.
+- **The assertion needs a state real traffic cannot reach.** The sentinel router
+  leaves `answerWhitespace` set at `flush`, which only matters if a caller feeds it
+  again afterwards, and none does. A test for it would freeze an unreachable path.
+- **The observable is the environment, not the code.** Runner configuration, a
+  dependency floor another gate already pins, a corrected comment or doc.
+
+These do not qualify:
+
+- *"It is hard to test."* That is the case the rule exists to resist.
+- *"It needs a live kiro-cli."* There are live suites behind `PI_KIRO_LIVE`; cite one.
+- *"The fix is obvious."* An obvious fix to ungated code is how #55's work was lost
+  twice: it merged into an already-merged base, and nothing failed.
+- *"The existing suite covers it."* Then cite that test -- after step 2 above. A
+  citation that passes with the fix reverted is worse than no citation, because it
+  reads as a gate.
+
+### Reviewing a citation
+
+The reviewer's job is step 2, not reading the bullet. A fix whose cited test still
+passes when the fix is reverted has not been gated, however carefully the bullet is
+worded.
 
 ## Cutting a release
 

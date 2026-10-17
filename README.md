@@ -166,6 +166,11 @@ application the user installs. Nothing in npm's resolver therefore enforces host
 compatibility: the dev dependency plus the drift tests are the whole mechanism,
 which is why raising the dev dependency is a minor rather than a patch.
 
+Every `### Fixed` entry in the changelog names the test that proves it, or waives it
+in writing as `(no test: why)`, and CI fails on an entry that does neither. What
+counts as a citation, what counts as a waiver, and how to check one:
+[docs/releasing.md](docs/releasing.md#citing-a-test-and-when-a-fix-may-waive-one).
+
 Full policy, and the list of what CI enforces versus what needs judgement:
 [docs/releasing.md](docs/releasing.md).
 
