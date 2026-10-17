@@ -7,7 +7,7 @@
  * module-local state, and a session_start event must re-register.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { meteringDiagnostic } from "../src/metering.js";
 
 vi.mock("../src/readiness.js", () => ({
@@ -28,6 +28,14 @@ vi.mock("../src/models.js", () => ({
 }));
 vi.mock("../src/stream-adapter.js", () => ({
 	makeStreamViaKiro: vi.fn(() => vi.fn()),
+	// index.ts imports this for the identity line's route slot. "0.0.0-test"
+	// is below the stream-json floor, so text is what the real one returns here.
+	chatFormat: vi.fn(() => "text"),
+}));
+// Mocked so transport selection is observable: which factory index.ts calls IS
+// the assertion, and the real ACP transport must not spawn anything.
+vi.mock("../src/acp-transport.js", () => ({
+	makeStreamViaAcp: vi.fn(() => vi.fn()),
 }));
 vi.mock("../src/bridge.js", () => ({
 	captureBridgeTools: vi.fn(async () => []),
@@ -87,6 +95,12 @@ async function loadExtension() {
 describe("provider registration lifecycle", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		// These tests read the deps makeStreamViaKiro was called with, so they
+		// need the chat transport NAMED. Unset means ACP now.
+		process.env.PI_KIRO_TRANSPORT = "chat";
+	});
+	afterEach(() => {
+		delete process.env.PI_KIRO_TRANSPORT;
 	});
 
 	it("registers the provider at activation", async () => {
@@ -255,12 +269,11 @@ describe("provider registration lifecycle", () => {
 describe("session ctx map is bounded [L0-04 leak]", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		// Force the chat transport deterministically: on this branch (segment 1)
-		// test-setup.ts does not yet scrub PI_KIRO_TRANSPORT (that lands with
-		// c6c9a42 in a later segment), and index.ts selects makeStreamViaAcp when
-		// it is "acp" — leaving makeStreamViaKiro (the mock the touch test reads
-		// getBridge from) uncalled. Keep this suite hermetic to the launching shell.
-		delete process.env.PI_KIRO_TRANSPORT;
+		// Name the chat transport: the touch test reads getBridge off the deps
+		// makeStreamViaKiro was called with, and ACP is the default, so an unset
+		// variable leaves that mock uncalled. Also keeps the suite hermetic to
+		// the launching shell.
+		process.env.PI_KIRO_TRANSPORT = "chat";
 	});
 
 	const ctxFor = (id: string) => ({ sessionManager: { getSessionId: () => id } });
@@ -464,6 +477,9 @@ describe("identity Layer 1: status bar, /kiro, deps.kiroVersion", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
+	afterEach(() => {
+		delete process.env.PI_KIRO_TRANSPORT;
+	});
 
 	const kiroCtx = (setStatus: ReturnType<typeof vi.fn>, model: { provider: string; id: string } | undefined) => ({
 		hasUI: true,
@@ -475,6 +491,7 @@ describe("identity Layer 1: status bar, /kiro, deps.kiroVersion", () => {
 	it("hands the transport the parsed kiro-cli version from readiness", async () => {
 		const piKiro = await loadExtension();
 		const { makeStreamViaKiro } = await import("../src/stream-adapter.js");
+		process.env.PI_KIRO_TRANSPORT = "chat";
 		await piKiro(makeFakePi().pi);
 		const deps = vi.mocked(makeStreamViaKiro).mock.calls[0]?.[0] as { kiroVersion?: string };
 		expect(deps.kiroVersion).toBe("0.0.0-test");
@@ -489,7 +506,7 @@ describe("identity Layer 1: status bar, /kiro, deps.kiroVersion", () => {
 		await vi.waitFor(() => expect(setStatus).toHaveBeenCalled());
 		const [key, text] = setStatus.mock.calls.at(-1) as [string, string];
 		expect(key).toBe("kiro");
-		expect(text).toMatch(/^pi \S+ via Kiro \(kiro-cli 0\.0\.0-test, engine v2\) on claude-sonnet-4\.5$/);
+		expect(text).toMatch(/^pi \S+ via Kiro \(kiro-cli 0\.0\.0-test, engine v2, acp\) on claude-sonnet-4\.5$/);
 
 		setStatus.mockClear();
 		await fake.emit("before_provider_request", {}, kiroCtx(setStatus, { provider: "anthropic", id: "claude" }));
@@ -535,7 +552,7 @@ describe("identity Layer 1: status bar, /kiro, deps.kiroVersion", () => {
 		await fake.runCommandWith("kiro", ctx);
 		const message = notify.mock.calls[0]?.[0] as string;
 		expect(message).toContain(`${pluginName()} ${pluginVersion()}, auth: login`);
-		expect(message).toMatch(/identity: pi \S+ via Kiro \(kiro-cli 0\.0\.0-test, engine v2\) on auto \(selected by kiro\)/);
+		expect(message).toMatch(/identity: pi \S+ via Kiro \(kiro-cli 0\.0\.0-test, engine v2, acp\) on auto \(selected by kiro\)/);
 	});
 });
 
@@ -649,5 +666,71 @@ describe("kiro/router registration (opt-in virtual model)", () => {
 		const { registerVirtualModel, pi } = withVirtual();
 		await piKiro(pi);
 		expect(registerVirtualModel).not.toHaveBeenCalled();
+	});
+});
+
+
+describe("transport selection: ACP is the default, chat is the fallback", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		delete process.env.PI_KIRO_TRANSPORT;
+	});
+	afterEach(() => {
+		delete process.env.PI_KIRO_TRANSPORT;
+	});
+
+	/** Which factory index.ts handed registerProvider, by call count. */
+	async function selectedTransport(): Promise<"acp" | "chat" | "none"> {
+		const piKiro = await loadExtension();
+		await piKiro(makeFakePi().pi);
+		const { makeStreamViaAcp } = await import("../src/acp-transport.js");
+		const { makeStreamViaKiro } = await import("../src/stream-adapter.js");
+		const acp = vi.mocked(makeStreamViaAcp).mock.calls.length;
+		const chat = vi.mocked(makeStreamViaKiro).mock.calls.length;
+		if (acp > 0 && chat === 0) return "acp";
+		if (chat > 0 && acp === 0) return "chat";
+		return "none";
+	}
+
+	it("uses ACP when PI_KIRO_TRANSPORT is unset", async () => {
+		expect(await selectedTransport()).toBe("acp");
+	});
+
+	it("uses ACP when it is named explicitly", async () => {
+		process.env.PI_KIRO_TRANSPORT = "acp";
+		expect(await selectedTransport()).toBe("acp");
+	});
+
+	it("falls back to the chat transport only when chat is named", async () => {
+		process.env.PI_KIRO_TRANSPORT = "chat";
+		expect(await selectedTransport()).toBe("chat");
+	});
+
+	it("tolerates surrounding whitespace rather than reading it as a typo", async () => {
+		process.env.PI_KIRO_TRANSPORT = "  chat  ";
+		expect(await selectedTransport()).toBe("chat");
+	});
+
+	// A typo must not silently downgrade the session to the scrape path, which
+	// is the whole reason the default moved. Two values, because one would not
+	// distinguish "unknown keeps the default" from "anything but chat is ACP":
+	// the second is a near-miss of the fallback's own name.
+	for (const value of ["sse", "Chat"]) {
+		it(`keeps ACP for an unrecognized value (${value})`, async () => {
+			process.env.PI_KIRO_TRANSPORT = value;
+			expect(await selectedTransport()).toBe("acp");
+		});
+	}
+
+	it("says so in the identity line: the route slot names the live transport", async () => {
+		const { currentIdentityLine } = await import("../src/index.js");
+		const piKiro = await loadExtension();
+		await piKiro(makeFakePi().pi);
+		expect(await currentIdentityLine("claude-sonnet-4.5")).toContain(", acp) on claude-sonnet-4.5");
+
+		process.env.PI_KIRO_TRANSPORT = "chat";
+		// The format is part of the route: on the chat path the answer is scraped
+		// out of prose below the stream-json floor, and the line has to say which.
+		expect(await currentIdentityLine("claude-sonnet-4.5")).toContain(", chat/text) on claude-sonnet-4.5");
 	});
 });

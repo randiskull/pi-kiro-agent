@@ -1,8 +1,11 @@
 # pi-kiro-agent v2 transport: ACP (Agent Client Protocol)
 
-**Status:** implemented behind `PI_KIRO_TRANSPORT=acp`; not the default. Sections 5b onward
-are field evidence from running it, and section 5c demoted ACP to a contingency in favour of
-`chat --output-format stream-json`.
+**Status:** implemented and **the default**; `PI_KIRO_TRANSPORT=chat` selects the chat
+transport as a fallback. Sections 5b onward are field evidence from running it. Section 5c
+demoted ACP to a contingency in favour of `chat --output-format stream-json`; that call was
+reversed once ACP had carried structured tool arguments and the credit metadata in the field,
+and the sentinel scrape remained the only way the chat transport could recover an answer below
+the stream-json floor.
 **Refs:** https://kiro.dev/docs/cli/acp/ · https://agentclientprotocol.com · `kiro-cli acp --help` (2.15.2)
 
 ---

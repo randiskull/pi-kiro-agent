@@ -131,6 +131,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: the ACP transport is now the default. `PI_KIRO_TRANSPORT=chat` selects the per-turn
+  chat transport as a fallback.** ACP holds one kiro-cli child for the session and speaks a
+  protocol, so tool arguments and the credit metadata arrive as structured events and kiro keeps
+  its own prefix cache warm across turns; it is also the only transport that passes MCP servers
+  inline through `session/new`, which is what makes GSD's workflow tools reach a delegated unit at
+  all. The chat transport spawns a child per turn and, below the stream-json floor, recovers the
+  answer by scraping prose. An **unrecognized** value now keeps ACP and writes one
+  `transport.unknown` trace rather than selecting the fallback: a typo silently downgrading a
+  session to the scrape path is the failure this default exists to remove. Whitespace around the
+  value is trimmed. If you relied on the old default, set `PI_KIRO_TRANSPORT=chat` explicitly.
+- **The identity line names the live transport.** It now reads
+  `pi 1.3.0 via Kiro (kiro-cli 2.32.0, engine v2, acp) on auto (selected by kiro)`, and on the
+  chat path the route carries the wire format -- `chat/stream-json` or `chat/text` -- because the
+  format decides what the harness can see at all. Which transport and format were serving a
+  session used to be visible only in a trace file, so a session that had quietly fallen back to
+  the text scrape looked like a broken harness rather than a degraded one. Shown in the status
+  bar, in `/kiro`, in the trace, and in the `<identity>` block sent to the model. A chat turn
+  whose format cannot be resolved reads plain `chat` rather than naming one that will not be
+  used, and a malformed `PI_KIRO_CHAT_FORMAT` no longer takes the whole status line down with it
+  (it still fails the turn, which is where that belongs).
 - **The pi SDK devDependency is raised to `^1.3.0`, and the lockfile with it.** The SDK
   devDependency is the only statement of which host version CI exercises, and the 0.3.0 lockfile
   still pinned 1.2.0 while the shipped host had moved to 1.3.0 -- the same drift that let

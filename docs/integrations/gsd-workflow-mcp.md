@@ -12,9 +12,8 @@ Run GSD on kiro with the ACP transport. The `chat` default does not round-trip
 tool-call arguments well enough (see [Transport](#transport-matters) below):
 
 ```bash
-export PI_KIRO_TRANSPORT=acp
 cd my-gsd-project          # a directory with .gsd/ at or above it
-pi
+pi                         # ACP is the default; nothing to export
 ```
 
 ```
@@ -52,8 +51,9 @@ Set `PI_KIRO_WORKFLOW_MCP=off` to disable the mount entirely.
 
 ## Transport matters
 
-Only `PI_KIRO_TRANSPORT=acp` passes MCP servers inline through `session/new` and
-returns real, fully-parsed tool-call arguments.
+Only the ACP transport passes MCP servers inline through `session/new` and
+returns real, fully-parsed tool-call arguments. It is the default, so this
+section matters when something has set `PI_KIRO_TRANSPORT=chat`.
 
 The default `chat` transport has to text-parse kiro's console output, which
 fabricates tool-call ids (`kiro-mcp-<n>-<name>`) and best-effort parses arguments

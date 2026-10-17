@@ -2334,7 +2334,7 @@ describe("identity in the ACP session/prompt", () => {
 				text = (req.params as { prompt: Array<{ text: string }> }).prompt[0]?.text ?? "";
 			},
 		});
-		const expected = `pi ${HOST_PI_VERSION} via Kiro (kiro-cli 2.26.1, engine ${ACP_ENGINE}) on auto (selected by kiro)`;
+		const expected = `pi ${HOST_PI_VERSION} via Kiro (kiro-cli 2.26.1, engine ${ACP_ENGINE}, acp) on auto (selected by kiro)`;
 		expect(text.startsWith(identityBlock(expected))).toBe(true);
 	});
 

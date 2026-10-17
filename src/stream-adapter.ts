@@ -56,7 +56,7 @@ import { createStreamJsonReader, type StreamJsonTurn } from "./stream-json-reade
 import { trace } from "./trace.js";
 import { currentSystemPrompt } from "./system-prompt.js";
 import { KIRO_PROVIDER } from "./models.js";
-import { CHAT_ENGINE, authMethod, identityBlock, identityLine, redactSecrets, resolvePiVersion } from "./identity.js";
+import { CHAT_ENGINE, authMethod, identityBlock, identityLine, type KiroChatFormat, redactSecrets, resolvePiVersion } from "./identity.js";
 import {
 	advanceSession,
 	dropSession,
@@ -157,7 +157,9 @@ function chatTimeoutMs(): number {
 	return envMs("PI_KIRO_CHAT_TIMEOUT_MS", 45 * 60 * 1000);
 }
 
-export type ChatFormat = "text" | "stream-json";
+/** Alias of identity.ts's KiroChatFormat, so the identity line and the
+ * transport cannot disagree about what a format is called. */
+export type ChatFormat = KiroChatFormat;
 
 /** Earliest kiro-cli known to emit `--output-format stream-json` (design doc §5b/§5c). */
 export const STREAM_JSON_FLOOR = "2.21.4";
@@ -881,6 +883,8 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					piVersion: await resolvePiVersion(),
 					kiroVersion: deps.kiroVersion,
 					engine: CHAT_ENGINE,
+					transport: "chat",
+					format,
 					model: model.id,
 				});
 				trace("identity", { transport: "chat", format, line: identity, auth: authMethod() });

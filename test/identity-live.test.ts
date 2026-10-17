@@ -34,7 +34,7 @@ import { _resetAcpChildren, makeStreamViaAcp } from "../src/acp-transport.js";
 import { ACP_ENGINE, CHAT_ENGINE, identityBlock, identityLine, parseKiroVersion, resolvePiVersion, type KiroEngine } from "../src/identity.js";
 import { checkKiroReadiness } from "../src/readiness.js";
 import { _resetSessions } from "../src/session-manager.js";
-import { makeStreamViaKiro } from "../src/stream-adapter.js";
+import { chatFormat, makeStreamViaKiro } from "../src/stream-adapter.js";
 import { IDENTITY_QUESTIONS, scoreIdentityAnswer, type IdentityScore } from "./identity-score.js";
 import { ctx, drainTurn, LIVE, LIVE_MODEL, user, withRealHome } from "./live-support.js";
 
@@ -158,7 +158,16 @@ describe.skipIf(!LIVE)(`live identity eval (engine ${ENGINE})`, () => {
 			`${modelId}: answers as pi (${expectation === "pass" ? "asserted" : "recorded only"})`,
 			async () => {
 				const key = cacheKey(modelId, kiroVersion);
-				const line = identityLine({ piVersion, kiroVersion, engine: ENGINE, model: modelId });
+				// The route must match what the transport under measurement actually
+				// sent, or every model is scored against a line nobody was given.
+				const line = identityLine({
+					piVersion,
+					kiroVersion,
+					engine: ENGINE,
+					transport: USE_ACP ? "acp" : "chat",
+					format: USE_ACP ? undefined : chatFormat(kiroVersion),
+					model: modelId,
+				});
 				let record = FRESH ? undefined : readResults()[key];
 
 				if (record) {

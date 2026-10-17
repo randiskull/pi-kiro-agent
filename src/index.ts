@@ -37,7 +37,7 @@ import { DEFAULT_SUBAGENT_MODEL, FALLBACK_MODELS, fetchKiroModels, KIRO_PROVIDER
 import { checkKiroReadiness, clearKiroReadinessCache } from "./readiness.js";
 import { reapOrphanedKiroChildren } from "./orphan-reaper.js";
 import { makeStreamViaAcp } from "./acp-transport.js";
-import { makeStreamViaKiro } from "./stream-adapter.js";
+import { chatFormat, makeStreamViaKiro } from "./stream-adapter.js";
 import { wireSubagents } from "./subagent-wiring.js";
 import {
 	cooldownMsFromEnv,
@@ -47,7 +47,17 @@ import {
 	type RouterState,
 	routeRequest,
 } from "./router.js";
-import { ACP_ENGINE, CHAT_ENGINE, authMethod, identityLine, parseKiroVersion, pluginName, pluginVersion, resolvePiVersion } from "./identity.js";
+import {
+	ACP_ENGINE,
+	CHAT_ENGINE,
+	authMethod,
+	identityLine,
+	type KiroChatFormat,
+	parseKiroVersion,
+	pluginName,
+	pluginVersion,
+	resolvePiVersion,
+} from "./identity.js";
 
 /** Comma-separated name list → trimmed, non-empty names. Shared by both /kiro-subagents branches. */
 export function parseNameList(csv: string): string[] {
@@ -159,9 +169,50 @@ const deps: {
 	kiroVersion?: string;
 } = { binaryPath: undefined };
 
-/** Which transport ensureRegistered wires up (PI_KIRO_TRANSPORT=acp selects ACP). */
+let transportFallbackTraced = false;
+/** Test hook: allow the once-per-process unknown-transport trace to fire again. */
+export function _resetTransportFallback(): void {
+	transportFallbackTraced = false;
+}
+
+/**
+ * Which transport ensureRegistered wires up. ACP is the default.
+ *
+ * ACP holds one kiro-cli child for the session and speaks a protocol:
+ * tool arguments and the credit metadata arrive as structured events, and
+ * kiro keeps its own prefix cache warm across turns. The chat transport
+ * spawns a child per turn and, below the stream-json floor, recovers the
+ * answer by scraping prose. `PI_KIRO_TRANSPORT=chat` selects it as a
+ * fallback, for a kiro-cli whose `acp` subcommand is missing or broken.
+ *
+ * An unrecognized value keeps the default and traces once. It must not
+ * select the fallback: a typo silently downgrading a session to the scrape
+ * path is the failure mode this default exists to remove.
+ */
 function useAcpTransport(): boolean {
-	return process.env.PI_KIRO_TRANSPORT === "acp";
+	const raw = (process.env.PI_KIRO_TRANSPORT ?? "").trim();
+	if (raw === "chat") return false;
+	if (raw === "" || raw === "acp") return true;
+	if (!transportFallbackTraced) {
+		transportFallbackTraced = true;
+		trace("transport.unknown", { value: raw, using: "acp" });
+	}
+	return true;
+}
+
+/**
+ * The chat format for DISPLAY. chatFormat throws on a malformed
+ * PI_KIRO_CHAT_FORMAT, which is right for a turn (fail before kiro is
+ * spawned) and wrong for the status bar, where the throw would take the
+ * whole identity line with it and leave the user with no line at all. The
+ * line then says "chat" rather than naming a format the turn will refuse.
+ */
+function displayChatFormat(kiroVersion?: string): KiroChatFormat | undefined {
+	try {
+		return chatFormat(kiroVersion);
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -169,10 +220,13 @@ function useAcpTransport(): boolean {
  * model says. Same parts the transports put in the prompt.
  */
 export async function currentIdentityLine(modelId: string): Promise<string> {
+	const acp = useAcpTransport();
 	return identityLine({
 		piVersion: await resolvePiVersion(),
 		kiroVersion: deps.kiroVersion,
-		engine: useAcpTransport() ? ACP_ENGINE : CHAT_ENGINE,
+		engine: acp ? ACP_ENGINE : CHAT_ENGINE,
+		transport: acp ? "acp" : "chat",
+		format: acp ? undefined : displayChatFormat(deps.kiroVersion),
 		model: modelId,
 	});
 }
@@ -273,8 +327,8 @@ async function ensureRegistered(pi: ExtensionAPI, force = false): Promise<Regist
 		// a metered API. Upstream pi's ProviderConfig type predates the field, so
 		// widen it here; hosts that don't read authMode ignore it.
 		//
-		// PI_KIRO_TRANSPORT=acp selects the persistent ACP transport instead of
-		// the per-turn chat transport (docs/design/acp-transport.md).
+		// The persistent ACP transport is the default; PI_KIRO_TRANSPORT=chat
+		// selects the per-turn chat transport (docs/design/acp-transport.md).
 		const useAcp = useAcpTransport();
 		const config: ProviderConfig & { authMode: "externalCli" } = {
 			name: "Kiro CLI (local runtime)",

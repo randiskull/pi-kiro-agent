@@ -11,19 +11,7 @@ import { join } from "node:path";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { VERSION as HOST_PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	_resetPiVersionForTest,
-	authMethod,
-	CHAT_ENGINE,
-	displayModel,
-	identityBlock,
-	identityLine,
-	parseKiroVersion,
-	pluginName,
-	pluginVersion,
-	redactSecrets,
-	resolvePiVersion,
-} from "../src/identity.js";
+import { _resetPiVersionForTest, authMethod, CHAT_ENGINE, displayModel, displayTransport, identityBlock, identityLine, parseKiroVersion, pluginName, pluginVersion, redactSecrets, resolvePiVersion } from "../src/identity.js";
 import { buildDeltaPrompt, buildPromptFromContext, FINAL_CLOSE, FINAL_OPEN, makeStreamViaKiro } from "../src/stream-adapter.js";
 import { resetTraceTarget } from "../src/trace.js";
 import { IDENTITY_QUESTIONS, scoreIdentityAnswer } from "./identity-score.js";
@@ -35,21 +23,48 @@ const PKG = createRequire(import.meta.url)("../package.json") as { name: string;
 
 const user = (text: string): Message => ({ role: "user", content: text, timestamp: 0 }) as unknown as Message;
 
-const LINE = "pi 9.9.9 via Kiro (kiro-cli 2.26.1, engine v2) on claude-sonnet-4.5";
+const LINE = "pi 9.9.9 via Kiro (kiro-cli 2.26.1, engine v2, acp) on claude-sonnet-4.5";
 
 describe("identityLine", () => {
 	it("renders every part in the contract order", () => {
-		expect(identityLine({ piVersion: "9.9.9", kiroVersion: "2.26.1", engine: "v2", model: "claude-sonnet-4.5" })).toBe(LINE);
+		expect(identityLine({ piVersion: "9.9.9", kiroVersion: "2.26.1", engine: "v2", transport: "acp", model: "claude-sonnet-4.5" })).toBe(LINE);
 	});
 
 	it("says unknown for a missing version instead of inventing one", () => {
-		expect(identityLine({ engine: "v3", model: "m" })).toBe("pi unknown via Kiro (kiro-cli unknown, engine v3) on m");
+		expect(identityLine({ engine: "v3", transport: "chat", model: "m" })).toBe(
+			"pi unknown via Kiro (kiro-cli unknown, engine v3, chat) on m",
+		);
+	});
+
+	it("names the route: acp, or chat with the format that decides what is visible", () => {
+		expect(displayTransport("acp")).toBe("acp");
+		expect(displayTransport("chat", "stream-json")).toBe("chat/stream-json");
+		expect(displayTransport("chat", "text")).toBe("chat/text");
+	});
+
+	it("says plain chat when no format resolved, rather than naming one that will not be used", () => {
+		expect(displayTransport("chat")).toBe("chat");
+		expect(identityLine({ engine: "v2", transport: "chat", model: "m" })).toContain(", engine v2, chat) on m");
+	});
+
+	// ACP has no format to choose, so a format passed alongside it is a caller
+	// bug and must not reach the line -- otherwise the slot would claim a wire
+	// format the ACP transport never uses.
+	it("ignores a format on the acp route", () => {
+		expect(displayTransport("acp", "text")).toBe("acp");
+		expect(identityLine({ engine: "v2", transport: "acp", format: "stream-json", model: "m" })).toContain(", engine v2, acp) on m");
+	});
+
+	it("puts the route after the engine, inside the same parenthesis", () => {
+		expect(identityLine({ piVersion: "1.0.0", kiroVersion: "2.26.1", engine: "v2", transport: "chat", format: "text", model: "m" })).toBe(
+			"pi 1.0.0 via Kiro (kiro-cli 2.26.1, engine v2, chat/text) on m",
+		);
 	});
 
 	it("marks auto as kiro-selected (kiro never reports the serving model)", () => {
 		expect(displayModel("auto")).toBe("auto (selected by kiro)");
 		expect(displayModel("claude-opus-4.5")).toBe("claude-opus-4.5");
-		expect(identityLine({ piVersion: "1.0.0", kiroVersion: "2.0.0", engine: "v2", model: "auto" })).toMatch(
+		expect(identityLine({ piVersion: "1.0.0", kiroVersion: "2.0.0", engine: "v2", transport: "acp", model: "auto" })).toMatch(
 			/ on auto \(selected by kiro\)$/,
 		);
 	});
@@ -219,7 +234,9 @@ describe("chat transport identity", () => {
 		await collect({ messages: [user("who are you?")] }, "2.26.1");
 		const args = spawnMock.mock.calls[0]?.[1] as string[];
 		const prompt = args.at(-1) ?? "";
-		const expected = `pi ${HOST_PI_VERSION} via Kiro (kiro-cli 2.26.1, engine ${CHAT_ENGINE}) on auto (selected by kiro)`;
+		// 2.26.1 is above the stream-json floor, so the route names the format the
+		// turn actually resolved -- not a hardcoded one.
+		const expected = `pi ${HOST_PI_VERSION} via Kiro (kiro-cli 2.26.1, engine ${CHAT_ENGINE}, chat/stream-json) on auto (selected by kiro)`;
 		expect(prompt.startsWith(identityBlock(expected))).toBe(true);
 	});
 

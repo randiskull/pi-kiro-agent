@@ -1036,6 +1036,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 					piVersion: await resolvePiVersion(),
 					kiroVersion: deps.kiroVersion,
 					engine: ACP_ENGINE,
+					transport: "acp",
 					model: model.id,
 				});
 				trace("identity", { transport: "acp", line: identity, auth: authMethod() });
