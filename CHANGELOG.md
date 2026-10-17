@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bridge profiles left the bridge token on disk (#63).** A kiro-cli v3-engine start, from pi, the
+  IDE or KAS, converts every `~/.kiro/agents/*.json` and saves the original as `<name>.json.bak`
+  (then `.bak.1`, ...), and that original holds the tokenized loopback URL. `remove()` deleted only
+  `<name>.json`, profiles from turns that crashed before `remove()` were never cleaned up, and
+  profiles were created `0644`. `remove()` now deletes the profile's own backups, activation sweeps
+  profiles whose pi process is dead (or whose file is older than any turn), and profiles are written
+  `0600`, which kiro keeps on the backup (`test/kiro-bridge.test.ts`, "removes the backups kiro
+  writes beside the profile, and only this profile's"; `src/kiro-bridge.ts`).
 - **A chat turn that reached more than one kill path leaked a SIGKILL timer (#58).** Abort, the turn
   ceiling and a stream-json envelope violation each armed the SIGTERM-to-SIGKILL escalation by
   overwriting the timer handle, and only the latest was cleared at exit, so an earlier one fired a

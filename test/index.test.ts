@@ -42,7 +42,10 @@ vi.mock("../src/bridge.js", () => ({
 	serveBridgeHttp: vi.fn(),
 	setBridgeNotice: vi.fn(),
 }));
-vi.mock("../src/kiro-bridge.js", () => ({ bridgeEnabled: vi.fn(() => false) }));
+vi.mock("../src/kiro-bridge.js", () => ({
+	bridgeEnabled: vi.fn(() => false),
+	sweepStaleAgentProfiles: vi.fn(() => 0),
+}));
 vi.mock("../src/subagent-wiring.js", () => ({
 	wireSubagents: vi.fn(() => ({ changed: [], skipped: [] })),
 }));
@@ -123,6 +126,19 @@ describe("provider registration lifecycle", () => {
 		const fake = makeFakePi();
 		await piKiro(fake.pi);
 		expect(reapMock).toHaveBeenCalledTimes(1);
+		expect(fake.registerProvider).toHaveBeenCalledTimes(1);
+	});
+
+	it("sweeps stale agent profiles at activation, and a sweep failure never breaks activation", async () => {
+		const piKiro = await loadExtension();
+		const { sweepStaleAgentProfiles } = await import("../src/kiro-bridge.js");
+		const sweepMock = vi.mocked(sweepStaleAgentProfiles);
+		sweepMock.mockImplementationOnce(() => {
+			throw new Error("readdir exploded");
+		});
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		expect(sweepMock).toHaveBeenCalledTimes(1);
 		expect(fake.registerProvider).toHaveBeenCalledTimes(1);
 	});
 
