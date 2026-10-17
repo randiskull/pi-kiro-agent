@@ -61,6 +61,7 @@ import {
 import { trace } from "./trace.js";
 import { initialSystemPrompt } from "./system-prompt.js";
 import { ACP_ENGINE, authMethod, identityLine, pluginName, pluginVersion, redactSecrets, resolvePiVersion } from "./identity.js";
+import { creditCostUsd, meteringDiagnostic, sumCredits, type TurnMetering } from "./metering.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
 import { BRIDGE_MCP_SERVER_KEY, displayToolName } from "./tool-names.js";
 import {
@@ -244,7 +245,7 @@ interface SessionUpdateParams {
 interface MetadataParams {
 	sessionId: string;
 	contextUsagePercentage?: number;
-	meteringUsage?: Array<{ value: number; unit: string }>;
+	meteringUsage?: Array<{ value: number; unit: string; unitPlural?: string }>;
 	turnDurationMs?: number;
 }
 
@@ -1087,7 +1088,15 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				const pushThinking = thinkingWriter.push;
 
 				let textAccum = "";
-				let creditsTotal = 0;
+				let creditsTotal: number | undefined;
+				let creditsUnitPlural: string | undefined;
+				let creditsOtherUnits: Record<string, number> | undefined;
+				// Every metadata notification carries contextUsagePercentage; the last
+				// one is the end-of-turn figure, which is the honest one (the figure at
+				// session start understates a turn).
+				let lastContextPercent: number | undefined;
+				let turnDurationMs: number | undefined;
+				let finalMetadataCount = 0;
 
 				// session/update notification handler
 				removeUpdateHandler = onNotification(acpEntry, "session/update", (msg) => {
@@ -1157,9 +1166,27 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				// _kiro.dev/metadata handler — capture credits on final notification
 				removeMetadataHandler = onNotification(acpEntry, "_kiro.dev/metadata", (msg) => {
 					const p = msg.params as MetadataParams | undefined;
+					if (p?.contextUsagePercentage !== undefined) lastContextPercent = p.contextUsagePercentage;
 					if (p?.meteringUsage && p.turnDurationMs !== undefined) {
-						// Final metadata notification has both meteringUsage AND turnDurationMs
-						creditsTotal = p.meteringUsage.reduce((sum, m) => sum + (m.value ?? 0), 0);
+						// Final metadata notification has both meteringUsage AND
+						// turnDurationMs. Probed 2026-10-16: exactly one such
+						// notification per session/prompt, carrying one entry per
+						// internal model call, so the array is summed and the
+						// notification is not. A second one would mean the wire
+						// changed shape -- trace it rather than silently double or
+						// drop the turn's cost.
+						finalMetadataCount += 1;
+						if (finalMetadataCount > 1) {
+							trace("acp.metering.unexpected_final", {
+								count: finalMetadataCount,
+								sessionId: p.sessionId,
+							});
+						}
+						const summed = sumCredits(p.meteringUsage);
+						creditsTotal = summed.credits;
+						creditsUnitPlural = summed.unitPlural;
+						creditsOtherUnits = summed.otherUnits;
+						turnDurationMs = p.turnDurationMs;
 					}
 				});
 
@@ -1228,10 +1255,18 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				stream.push({ type: "text_end", contentIndex: textIndex, content: finalText, partial: output });
 
 				// Credits
-				if (creditsTotal > 0) {
-					const usdPerCredit = Number.parseFloat(process.env.PI_KIRO_CREDIT_USD ?? "0");
-					output.usage.cost.total = Number.isFinite(usdPerCredit) ? creditsTotal * usdPerCredit : 0;
-				}
+				const metering: TurnMetering = {
+					credits: creditsTotal,
+					source: "acp",
+					precision: "exact",
+					...(lastContextPercent !== undefined ? { contextPercent: lastContextPercent } : {}),
+					...(turnDurationMs !== undefined ? { turnDurationMs } : {}),
+					...(creditsUnitPlural ? { unitPlural: creditsUnitPlural } : {}),
+					...(creditsOtherUnits ? { otherUnits: creditsOtherUnits } : {}),
+				};
+				output.usage.cost.total = creditCostUsd(creditsTotal);
+				output.diagnostics = [...(output.diagnostics ?? []), meteringDiagnostic(metering)];
+				trace("acp.metering", { ...metering });
 
 				// stopReason
 				output.stopReason = mapStopReason(

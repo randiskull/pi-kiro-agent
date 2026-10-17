@@ -35,9 +35,38 @@ Bridged when installed: pi-subagents' `Agent` / `get_subagent_result` / `steer_s
 
 ## How output is parsed
 
-On kiro-cli **2.21.4 or newer** the **chat transport** reads `--output-format stream-json`: kiro's turn as versioned ACP events (complete tool arguments, built-in tools as `kiro_*` rows, the session id, credits), with a strict envelope check that fails loudly if the format changes. On older kiro-cli, or with `PI_KIRO_CHAT_FORMAT=text`, it scrapes kiro's text output instead. Both paths use a sentinel protocol — the model wraps its final answer in `<pi_final>…</pi_final>`, everything else (ANSI-stripped) streams as a live thinking block, and the `Credits:` footer parses into Pi's cost tracking (`PI_KIRO_CREDIT_USD` scaling, default 0 for seat billing). Token counts are not reported by the CLI. The **ACP transport** (`PI_KIRO_TRANSPORT=acp`) already uses structured NDJSON protocol events (`session/update` and `_kiro.dev/metadata`) instead of sentinel parsing — no wrapping is required. When #5423 ships in the chat transport, the sentinel path swaps for structured parsing there too.
+On kiro-cli **2.21.4 or newer** the **chat transport** reads `--output-format stream-json`: kiro's turn as versioned ACP events (complete tool arguments, built-in tools as `kiro_*` rows, the session id, credits), with a strict envelope check that fails loudly if the format changes. On older kiro-cli, or with `PI_KIRO_CHAT_FORMAT=text`, it scrapes kiro's text output instead. Both paths use a sentinel protocol — the model wraps its final answer in `<pi_final>…</pi_final>`, everything else (ANSI-stripped) streams as a live thinking block, and the `Credits:` footer parses into Pi's cost tracking (see [Credits](#credits)). Token counts are not reported by the CLI. The **ACP transport** (`PI_KIRO_TRANSPORT=acp`) already uses structured NDJSON protocol events (`session/update` and `_kiro.dev/metadata`) instead of sentinel parsing — no wrapping is required. When #5423 ships in the chat transport, the sentinel path swaps for structured parsing there too.
 
 Kiro v3 note (chat transport): v3's agent config (env-expanded URLs, header auth) would allow one stable profile, but v3 currently has no working headless mode — the extension targets v2 agent profiles until that changes.
+
+## Credits
+
+Kiro bills in credits, and the figure the CLI reports is the only per-turn price available: no
+transport reports token counts, so Pi cannot derive a cost from a price list the way it does for
+token-billed providers. pi-kiro surfaces that figure three ways.
+
+- **A running status line** in Pi's footer. After a three-tool turn billed at 1.6338 credits it
+  reads `▸ 1.63 credits ~$0.03`; after a second turn of 0.4102 credits,
+  `▸ 2.04 credits ~$0.04 (last 0.410)`. It resets at session start, and the dollar part is dropped
+  entirely when `PI_KIRO_CREDIT_USD` is `0`.
+- **`usage.cost.total`** on each assistant message, so credits roll into Pi's own cost totals
+  after conversion at `PI_KIRO_CREDIT_USD`.
+- **A `kiro.metering` diagnostic** on each assistant message, carrying `credits`, `unit`, `source`
+  (`acp`, `chat-stream-json` or `chat-text`), `precision`, and — on the structured transports —
+  `contextPercent` and kiro's own `turnDurationMs`.
+
+Precision depends on the transport. ACP (`_kiro.dev/metadata`) and chat stream-json (`metadata`)
+both deliver `meteringUsage` exactly once per turn, holding **one entry per internal model call**,
+which pi-kiro sums: a turn that called three tools reports three entries. Those are marked
+`precision: "exact"`. The chat text fallback has no structured channel and can only read the
+rendered footer ` ▸ Credits: N.NN`, which is quantised to two decimals and prints `0.00` for any
+turn under half a cent of credit, so it is marked `precision: "rendered-2dp"` — a consumer can tell
+a real zero from a rounded one. A unit other than `credit` is never folded into the credit total; it
+is reported separately under `otherUnits`.
+
+Dollars are always a projection, never a bill: they are marked `~` and computed from one
+configurable rate, which does not know your plan, your overage state, or whether the subscription
+is already sunk.
 
 ## The GSD workflow-MCP server
 
@@ -79,7 +108,7 @@ fails quietly — see the transport section of the
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PI_KIRO_CREDIT_USD` | `0` | USD per Kiro credit, for cost tracking in Pi |
+| `PI_KIRO_CREDIT_USD` | `0.02` | USD per Kiro credit, used to project a dollar cost for Pi's usage tracking. `0.02` is Kiro's published in-plan ratio (Pro $20/1,000 credits, Pro+ $40/2,000, Power $200/10,000 — [kiro.dev/pricing](https://kiro.dev/pricing/)); on-demand and overage rates differ. Set `0` to show credits only and no dollars. A malformed or negative value falls back to the default instead of poisoning the total |
 | `PI_KIRO_BRIDGE` | `on` | Set `off` to disable the MCP tool bridge |
 | `PI_KIRO_BRIDGE_TOOLS` | built-in allowlist | Comma-separated override of bridged tools, by their origin-prefixed names (`rpiv_todo`, `subagents_Agent`); a bare name matches nothing |
 | `PI_KIRO_BRIDGE_MAX_BODY_BYTES` | `33554432` (32 MiB) | Largest single request kiro may send a bridged tool (its arguments, as JSON). MCP carries binary as base64, so the usable payload is about three quarters of this. A larger request is refused before the tool runs, with a one-time warning on stderr. Read when a bridge mounts. Does not limit tool results. |

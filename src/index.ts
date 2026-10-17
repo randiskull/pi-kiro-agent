@@ -25,6 +25,12 @@ import {
 	serveBridgeHttp,
 } from "./bridge.js";
 import { bridgeEnabled } from "./kiro-bridge.js";
+import {
+	addTurnToTotals,
+	createMeteringTotals,
+	formatMeteringStatus,
+	readMeteringDiagnostic,
+} from "./metering.js";
 import { DEFAULT_SUBAGENT_MODEL, FALLBACK_MODELS, fetchKiroModels, KIRO_PROVIDER } from "./models.js";
 import { checkKiroReadiness, clearKiroReadinessCache } from "./readiness.js";
 import { reapOrphanedKiroChildren } from "./orphan-reaper.js";
@@ -170,6 +176,18 @@ export async function currentIdentityLine(modelId: string): Promise<string> {
 }
 
 const STATUS_KEY = "kiro";
+/**
+ * Second status slot, for the running credit cost.
+ *
+ * Kiro bills in credits and reports no token counts, so the credit figure on
+ * each turn's final metadata is the only per-turn price that exists. Showing it
+ * is the difference between a provider whose spend is legible and one whose
+ * footer reads $0.00 forever. Tokens stay blank because the CLI never sends
+ * them; the dollar figure next to the credits is a projection at the configured
+ * rate and is marked approximate (see metering.ts).
+ */
+const CREDITS_STATUS_KEY = "kiro-credits";
+let meteringTotals = createMeteringTotals();
 
 // Bumped on every status update so a slow identity-line resolution for an
 // earlier model never overwrites the status set for a later one.
@@ -338,9 +356,27 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 	// registered providers in the host while this module survives — re-register
 	// in the background so kiro models stay selectable without a relaunch.
 	// registerProvider is an upsert, so the extra call on "startup" is harmless.
-	pi.on("session_start", () => {
+	pi.on("session_start", (_event, ctx) => {
 		registered = false;
+		// Credits are a per-session running total: /new, /resume and fork all
+		// start a fresh tally rather than inheriting the last session's spend.
+		meteringTotals = createMeteringTotals();
+		if (ctx?.hasUI) ctx.ui.setStatus(CREDITS_STATUS_KEY, undefined);
 		void ensureRegistered(pi).catch(() => undefined);
+	});
+	// A kiro turn attaches its credit figure as a `kiro.metering` diagnostic
+	// (both transports). Fold it into the session total and publish it to the
+	// footer. Messages from any other provider are ignored, so a session that
+	// switches models mid-way does not attribute another provider's turn to
+	// kiro's credit pool.
+	pi.on("message_end", (event, ctx) => {
+		const message = event.message;
+		if (message.role !== "assistant" || message.provider !== KIRO_PROVIDER) return;
+		const turn = readMeteringDiagnostic(message.diagnostics);
+		if (!turn) return;
+		addTurnToTotals(meteringTotals, turn);
+		if (!ctx?.hasUI) return;
+		ctx.ui.setStatus(CREDITS_STATUS_KEY, formatMeteringStatus(meteringTotals));
 	});
 
 	deps.getBridge = async (signal, getCallSignal) => {

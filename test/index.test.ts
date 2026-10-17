@@ -8,6 +8,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { meteringDiagnostic } from "../src/metering.js";
 
 vi.mock("../src/readiness.js", () => ({
 	checkKiroReadiness: vi.fn(async () => ({
@@ -327,6 +328,95 @@ describe("session ctx map is bounded [L0-04 leak]", () => {
 		// longer A, because the read above touched it.
 		await fake.emit("before_provider_request", {}, ctxFor("overflow"));
 		expect(getterA()).toBe(ctxA);
+	});
+});
+
+describe("credit status line", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		delete process.env.PI_KIRO_CREDIT_USD;
+	});
+
+	const uiCtx = (setStatus: ReturnType<typeof vi.fn>) => ({
+		hasUI: true,
+		model: { provider: "kiro", id: "auto" },
+		ui: { setStatus, notify: vi.fn() },
+		sessionManager: { getSessionId: () => "credit-session" },
+	});
+	/** A finished turn as the host delivers it, with the transport's metering record attached. */
+	const turnEnd = (credits: number | undefined, provider = "kiro") => ({
+		type: "message_end",
+		message: {
+			role: "assistant",
+			provider,
+			content: [],
+			diagnostics: credits === undefined ? [] : [meteringDiagnostic({ credits, source: "acp", precision: "exact" })],
+		},
+	});
+
+	it("accumulates each turn's credits into its own status slot, with the projected dollars", async () => {
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const setStatus = vi.fn();
+		await fake.emit("message_end", turnEnd(1.5), uiCtx(setStatus));
+		// The identity line owns the "kiro" key; credits must not overwrite it.
+		expect(setStatus).toHaveBeenLastCalledWith("kiro-credits", "▸ 1.50 credits ~$0.03");
+		await fake.emit("message_end", turnEnd(0.5), uiCtx(setStatus));
+		expect(setStatus).toHaveBeenLastCalledWith("kiro-credits", "▸ 2.00 credits ~$0.04 (last 0.500)");
+	});
+
+	it("ignores a non-kiro turn and a kiro turn that reported no figure", async () => {
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const setStatus = vi.fn();
+		await fake.emit("message_end", turnEnd(1.5), uiCtx(setStatus));
+		setStatus.mockClear();
+		// Another provider's spend is not kiro's, and a turn with no record must not
+		// even redraw: a redraw would count it as a turn and add a bogus "(last)".
+		await fake.emit("message_end", turnEnd(99, "anthropic"), uiCtx(setStatus));
+		await fake.emit("message_end", turnEnd(undefined), uiCtx(setStatus));
+		await fake.emit("message_end", { type: "message_end", message: { role: "user", content: "hi" } }, uiCtx(setStatus));
+		expect(setStatus).not.toHaveBeenCalled();
+		// The earlier total survives untouched.
+		await fake.emit("message_end", turnEnd(0.5), uiCtx(setStatus));
+		expect(setStatus).toHaveBeenLastCalledWith("kiro-credits", "▸ 2.00 credits ~$0.04 (last 0.500)");
+	});
+
+	it("a new session clears the slot and starts the tally over", async () => {
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const setStatus = vi.fn();
+		await fake.emit("message_end", turnEnd(1.5), uiCtx(setStatus));
+		setStatus.mockClear();
+		await fake.emit("session_start", { type: "session_start", reason: "new" }, uiCtx(setStatus));
+		expect(setStatus).toHaveBeenCalledWith("kiro-credits", undefined);
+		setStatus.mockClear();
+		await fake.emit("message_end", turnEnd(0.5), uiCtx(setStatus));
+		// 0.500, not 2.00: the previous session's 1.5 credits did not carry over.
+		expect(setStatus).toHaveBeenLastCalledWith("kiro-credits", "▸ 0.500 credits ~$0.01");
+	});
+
+	it("an explicit PI_KIRO_CREDIT_USD=0 shows credits with no dollar figure", async () => {
+		process.env.PI_KIRO_CREDIT_USD = "0";
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const setStatus = vi.fn();
+		await fake.emit("message_end", turnEnd(1.5), uiCtx(setStatus));
+		expect(setStatus).toHaveBeenLastCalledWith("kiro-credits", "▸ 1.50 credits");
+		delete process.env.PI_KIRO_CREDIT_USD;
+	});
+
+	it("a headless host never has setStatus called at all", async () => {
+		const piKiro = await loadExtension();
+		const fake = makeFakePi();
+		await piKiro(fake.pi);
+		const setStatus = vi.fn();
+		await fake.emit("message_end", turnEnd(1.5), { hasUI: false, ui: { setStatus, notify: vi.fn() } });
+		expect(setStatus).not.toHaveBeenCalled();
 	});
 });
 

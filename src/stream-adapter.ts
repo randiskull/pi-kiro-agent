@@ -13,9 +13,14 @@
  * - stderr is scanned for tool activity, NOT folded into the answer. As of
  *   kiro-cli 2.21 that is where tool-use lines are printed, so a turn's tool
  *   calls are invisible on stdout alone (see toolUseTranscript).
- * - The dim footer line ` ▸ Credits: N.NN • Time: Ns` is parsed for cost:
- *   credits land in usage.cost.total scaled by PI_KIRO_CREDIT_USD (default 0,
- *   seat-billed). The CLI reports no token counts.
+ * - Credits: under stream-json they come structured off the final `metadata`
+ *   event, together with contextUsagePercentage and turnDurationMs. Under the
+ *   text fallback the only source is the rendered footer line
+ *   ` ▸ Credits: N.NN • Time: Ns`, which is quantised to two decimals, so that
+ *   path is marked `rendered-2dp` (see metering.ts). Either way credits land in
+ *   usage.cost.total scaled by PI_KIRO_CREDIT_USD and in a `kiro.metering`
+ *   diagnostic. The CLI reports no token counts, so credits are the only
+ *   per-turn price available.
  *
  * Compliance: all model traffic runs inside the official kiro-cli under the
  * user's own login; this module never touches credentials.
@@ -35,6 +40,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { HttpBridgeHandle } from "./bridge.js";
+import { creditCostUsd, meteringDiagnostic, type TurnMetering } from "./metering.js";
 import { createThinkingWriter, emptyAssistantMessage, envMs } from "./transport-utils.js";
 import {
 	disableInheritedResources,
@@ -687,7 +693,10 @@ async function runAttempt(
  * reassembled message chunks (the sentinel still applies -- finalText is ALL of
  * the turn's message text, narration included).
  */
-function settleStreamJsonTurn(turn: StreamJsonTurn | undefined, exitCode: number): { final: string; credits: number | undefined } {
+function settleStreamJsonTurn(
+	turn: StreamJsonTurn | undefined,
+	exitCode: number,
+): { final: string; metering: TurnMetering } {
 	const textHint = "set PI_KIRO_CHAT_FORMAT=text to use the text transport.";
 	if (turn?.violation) throw new Error(`${turn.violation}; ${textHint}`);
 	const terminal = turn?.terminal;
@@ -703,7 +712,18 @@ function settleStreamJsonTurn(turn: StreamJsonTurn | undefined, exitCode: number
 			finalTextTruncated: terminal.finalTextTruncated,
 		});
 	}
-	return { final: extractFinal(turn.messageText).final, credits: turn.credits };
+	return {
+		final: extractFinal(turn.messageText).final,
+		metering: {
+			credits: turn.credits,
+			source: "chat-stream-json",
+			precision: "exact",
+			...(turn.contextPercent !== undefined ? { contextPercent: turn.contextPercent } : {}),
+			...(turn.turnDurationMs !== undefined ? { turnDurationMs: turn.turnDurationMs } : {}),
+			...(turn.creditsUnitPlural ? { unitPlural: turn.creditsUnitPlural } : {}),
+			...(turn.creditsOtherUnits ? { otherUnits: turn.creditsOtherUnits } : {}),
+		},
+	};
 }
 
 /**
@@ -977,12 +997,15 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				}
 
 				let final: string;
-				let credits: number | undefined;
+				let metering: TurnMetering;
 				if (format === "stream-json") {
-					({ final, credits } = settleStreamJsonTurn(streamJson, exitCode));
+					({ final, metering } = settleStreamJsonTurn(streamJson, exitCode));
 				} else {
 					const cleaned = cleanBody(raw);
-					credits = cleaned.credits;
+					// The footer is a render, not the canon: two decimals, so any
+					// turn under half a cent of credit reads 0.00. Marked so a
+					// consumer can tell a rounded zero from a real one.
+					metering = { credits: cleaned.credits, source: "chat-text", precision: "rendered-2dp" };
 					const toolTranscript = toolUseTranscript(cleaned.body, stderrText);
 					salvageOrThrow(exitCode, cleaned.body, stderrText, toolTranscript, pushThinking);
 					final = extractFinal(cleaned.body).final;
@@ -996,10 +1019,9 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 				stream.push({ type: "text_delta", contentIndex: textIndex, delta: final, partial: output });
 				stream.push({ type: "text_end", contentIndex: textIndex, content: final, partial: output });
 
-				if (credits !== undefined) {
-					const usdPerCredit = Number.parseFloat(process.env.PI_KIRO_CREDIT_USD ?? "0");
-					output.usage.cost.total = Number.isFinite(usdPerCredit) ? credits * usdPerCredit : 0;
-				}
+				output.usage.cost.total = creditCostUsd(metering.credits);
+				output.diagnostics = [...(output.diagnostics ?? []), meteringDiagnostic(metering)];
+				trace("chat.metering", { ...metering });
 
 				if (format === "stream-json") {
 					recordStreamJsonSession(streamJson?.sessionId, useResume ? plan.resumeId : undefined, cwd, context.messages);

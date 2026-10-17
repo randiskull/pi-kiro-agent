@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readMeteringDiagnostic } from "../src/metering.js";
 import { _resetSessions, planTurn, recordKnownSession } from "../src/session-manager.js";
 import { _resetChatFormatFallback, FINAL_CLOSE, FINAL_OPEN, makeStreamViaKiro, supportsStreamJson } from "../src/stream-adapter.js";
 import { resetTraceTarget } from "../src/trace.js";
@@ -189,6 +190,17 @@ describe("probe replays", () => {
 		const p5Credits = doneOf(p5).usage.cost.total;
 		expect(p5Credits).toBeGreaterThan(0);
 		delete process.env.PI_KIRO_CREDIT_USD;
+	});
+
+	it("records the exact credit sum, the LAST context percent and the turn duration", async () => {
+		scriptAttempts({ stdout: probe("p5-thought.jsonl") });
+		const metering = readMeteringDiagnostic(doneOf(await collect()).diagnostics);
+		expect(metering).toMatchObject({ source: "chat-stream-json", precision: "exact", turnDurationMs: 1746 });
+		// Full wire precision, not the footer's two decimals.
+		expect(metering?.credits).toBeCloseTo(0.016001363051, 10);
+		// p5 carries five metadata events: 1.1368, 5.684, 5.684, 8.7425, 8.7425.
+		// The turn ends at 8.7425, so a first-wins read would be wrong by 7.6 points.
+		expect(metering?.contextPercent).toBeCloseTo(8.7425, 4);
 	});
 
 	it("reassembles a UTF-8 sequence split across stdout chunks", async () => {

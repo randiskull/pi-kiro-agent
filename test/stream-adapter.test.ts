@@ -19,6 +19,7 @@ import {
 	toolUseTranscript,
 } from "../src/stream-adapter.js";
 import { CHAT_ENGINE } from "../src/identity.js";
+import { readMeteringDiagnostic } from "../src/metering.js";
 import { resetTraceTarget } from "../src/trace.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
@@ -347,6 +348,19 @@ describe("makeStreamViaKiro", () => {
 		const i = args.indexOf("--agent-engine");
 		expect(i).toBeGreaterThan(-1);
 		expect(args[i + 1]).toBe(CHAT_ENGINE);
+	});
+
+	it("marks the footer-scraped credits rendered-2dp, with no context percent or duration", async () => {
+		scriptSpawn(RAW_SAMPLE);
+		const events = await collect({ messages: [] });
+		const done = events.find((event) => event.type === "done");
+		if (done?.type !== "done") throw new Error("expected done");
+		const metering = readMeteringDiagnostic(done.message.diagnostics);
+		// The footer prints two decimals, so 0.03 is a quantised figure a consumer must not trust exactly.
+		expect(metering).toMatchObject({ credits: 0.03, source: "chat-text", precision: "rendered-2dp" });
+		// The text transport has no structured channel for either field.
+		expect(metering?.contextPercent).toBeUndefined();
+		expect(metering?.turnDurationMs).toBeUndefined();
 	});
 
 	it("surfaces nonzero exits as errors with the profile remedy", async () => {

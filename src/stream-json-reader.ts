@@ -21,6 +21,7 @@
  */
 
 import type { AssistantMessage, AssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { sumCredits } from "./metering.js";
 import { displayToolName } from "./tool-names.js";
 
 /** The `runStarted.data` this reader understands. `engine` is the pinned chat engine. */
@@ -40,8 +41,24 @@ export interface StreamJsonTurn {
 	terminal?: StreamJsonTerminal;
 	/** Every agent_message_chunk text, concatenated: the answer source. */
 	messageText: string;
-	/** Sum of the last non-null `meteringUsage`, if any metadata carried one. */
+	/**
+	 * Summed `credit`-unit entries of the last metadata that carried a
+	 * `meteringUsage`. Probed 2026-10-16: exactly one metadata per turn carries
+	 * it, holding one entry per internal model call.
+	 */
 	credits?: number;
+	/** Server-provided plural for the credit unit, for display. */
+	creditsUnitPlural?: string;
+	/** Non-credit units seen, summed per unit. Never folded into `credits`. */
+	creditsOtherUnits?: Record<string, number>;
+	/**
+	 * Last `contextUsagePercentage` seen. Every metadata carries one, and the
+	 * last is the end-of-turn figure (the session-start figure understates a
+	 * turn).
+	 */
+	contextPercent?: number;
+	/** `turnDurationMs` from the final metadata: kiro's own server-side timing. */
+	turnDurationMs?: number;
 	/** runFinished.sessionId, else the latest metadata.sessionId. */
 	sessionId?: string;
 }
@@ -174,11 +191,13 @@ export function createStreamJsonReader(
 				return;
 			case "metadata":
 				if (typeof data.sessionId === "string") metadataSessionId = data.sessionId;
+				if (typeof data.contextUsagePercentage === "number") turn.contextPercent = data.contextUsagePercentage;
+				if (typeof data.turnDurationMs === "number") turn.turnDurationMs = data.turnDurationMs;
 				if (Array.isArray(data.meteringUsage)) {
-					turn.credits = data.meteringUsage.reduce(
-						(sum: number, entry: unknown) => sum + (isRecord(entry) && typeof entry.value === "number" ? entry.value : 0),
-						0,
-					);
+					const summed = sumCredits(data.meteringUsage);
+					turn.credits = summed.credits;
+					turn.creditsUnitPlural = summed.unitPlural;
+					turn.creditsOtherUnits = summed.otherUnits;
 				}
 				return;
 			case "runFinished":

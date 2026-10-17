@@ -20,6 +20,7 @@ import { Writable } from "node:stream";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { normalizeContext } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readMeteringDiagnostic } from "../src/metering.js";
 import { _resetAcpSessions, _acpSessionCount } from "../src/acp-session.js";
 import { _getAcpChildRegistry, _resetAcpChildren, _acpRegistryKey, buildInitializeParams, isUnadvertisedClientMethod, makeStreamViaAcp } from "../src/acp-transport.js";
 import { _resetPiVersionForTest, ACP_ENGINE, identityBlock } from "../src/identity.js";
@@ -491,6 +492,83 @@ describe("makeStreamViaAcp", () => {
 			delete process.env.PI_KIRO_CREDIT_USD;
 			const done = events.find((e) => e.type === "done");
 			expect(done?.type === "done" && done.message.usage.cost.total).toBeCloseTo(0.06);
+		});
+
+		const scriptMeteringTurn = (child: AcpScriptChild, sessionId: string, finalParams: Record<string, unknown>) => {
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
+				const sessionReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
+				const promptReq = (await child.awaitLine()) as { id: number };
+				// Session-start context figure, superseded by the final one below.
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId, contextUsagePercentage: 6.0567 }});
+				child.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" }}}});
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/metadata", params: { sessionId, ...finalParams }});
+				child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+				child.end();
+			})();
+		};
+
+		const meteringOf = async (finalParams: Record<string, unknown>, sessionId: string) => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			scriptMeteringTurn(child, sessionId, finalParams);
+			const events = await collect({ messages: [user("hi")] });
+			const done = events.find((e) => e.type === "done");
+			if (done?.type !== "done") throw new Error("no done event");
+			return {
+				cost: done.message.usage.cost.total,
+				metering: readMeteringDiagnostic(done.message.diagnostics),
+			};
+		};
+
+		// The default rate exists so the cost is not permanently $0.00. It is
+		// Kiro's published plan ratio, pinned here against the arithmetic rather
+		// than against a copy of the constant.
+		it("projects USD at the published plan rate when PI_KIRO_CREDIT_USD is unset", async () => {
+			delete process.env.PI_KIRO_CREDIT_USD;
+			const { cost, metering } = await meteringOf({
+				contextUsagePercentage: 10.2,
+				meteringUsage: [{ value: 1.5, unit: "credit", unitPlural: "credits" }],
+				turnDurationMs: 9593,
+			}, "sess-m1");
+			expect(metering?.credits).toBe(1.5);
+			expect(cost).toBeCloseTo(1.5 * (20 / 1000), 10);
+		});
+
+		// contextUsagePercentage and turnDurationMs arrive on every metadata
+		// notification; both were parsed and dropped on the floor before this.
+		it("records the END-of-turn context percentage and kiro's own turn duration", async () => {
+			const { metering } = await meteringOf({
+				contextUsagePercentage: 10.2,
+				meteringUsage: [{ value: 0.5, unit: "credit" }],
+				turnDurationMs: 9593,
+			}, "sess-m2");
+			expect(metering?.contextPercent).toBe(10.2);
+			expect(metering?.turnDurationMs).toBe(9593);
+			expect(metering?.precision).toBe("exact");
+			expect(metering?.source).toBe("acp");
+		});
+
+		it("keeps a non-credit unit out of the credit total and out of the cost", async () => {
+			delete process.env.PI_KIRO_CREDIT_USD;
+			const { cost, metering } = await meteringOf({
+				contextUsagePercentage: 10.2,
+				meteringUsage: [{ value: 0.5, unit: "credit" }, { value: 900, unit: "token" }],
+				turnDurationMs: 1000,
+			}, "sess-m3");
+			expect(metering?.credits).toBe(0.5);
+			expect(cost).toBeCloseTo(0.5 * (20 / 1000), 10);
+		});
+
+		it("leaves credits absent, and the cost 0, when the turn reported no figure", async () => {
+			delete process.env.PI_KIRO_CREDIT_USD;
+			const { cost, metering } = await meteringOf({ contextUsagePercentage: 10.2 }, "sess-m4");
+			expect(metering).toBeDefined();
+			expect(metering?.credits).toBeUndefined();
+			expect(cost).toBe(0);
 		});
 	});
 
