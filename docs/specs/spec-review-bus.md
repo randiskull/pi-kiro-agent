@@ -1,8 +1,8 @@
 # Implementation Spec: every spec gets an independent, rubric-scored verdict before it is built
 
-- Status: Draft. On this branch already: the rubric, the calibration set, the
-  linter and its test. Not built yet: the queue, verdict validation, the CI
-  workflow and the first calibration run.
+- Status: Draft. On this branch already: the rubric, the calibration set and
+  its first run, the linter and its test. Not built yet: the queue, verdict
+  validation and the CI workflow.
 - Area: contributor workflow / CI
 - Target release: none. No code or behaviour in the published package
   changes (see Approach, step 1); the only new file in the tarball is this
@@ -69,8 +69,8 @@ citations are classified (Approach, step 3) instead.
 - `CODEOWNERS` entries for `spec-review/rubric.md` and `spec-review/calibration/`.
 - The first calibration run for Rubric 1, committed under
   `spec-review/calibration/runs/<run-id>/`. **Done on this branch**, scored by
-  a scratch scorer (`runs/SCORE.md`); `spec-review.mjs score` must reproduce
-  that result (criterion 7).
+  a scratch scorer (`spec-review/calibration/runs/SCORE.md`);
+  `spec-review.mjs score` must reproduce that result (criterion 7).
 - CHANGELOG `### Added` under `## Unreleased`. **Done on this branch.**
 
 ### Out of scope
@@ -266,8 +266,8 @@ lint half runs in CI on every push (`test/spec-lint.test.ts`).
 - **Six cases from two real specs, five of them from one, all defect-typed.** The feature column of D1
   is uncalibrated, and the set can over-fit one exemplar's shape. This spec is
   the first feature spec. Rubric 2 should add a feature case and a mutant of it.
-- **The c2 labels are judgement.** The maintainer ratifies them before the
-  first calibration run counts.
+- **The c2 labels are judgement.** The maintainer ratifies them before
+  criterion 7 counts as met.
 - **Prompt injection.** A spec in a PR is untrusted input to `draft-review`. It
   gets the same rails as `kiro-code-review.yml`: no write-scoped token in
   `.git/config`, read-only contents, output only through the extracted block.
