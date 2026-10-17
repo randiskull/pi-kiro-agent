@@ -174,6 +174,9 @@ export function createStreamJsonReader(
 				return;
 			case "metadata":
 				if (typeof data.sessionId === "string") metadataSessionId = data.sessionId;
+				// Credits: the last metadata carrying a non-null meteringUsage wins
+				// (earlier events have it null). Depends on kiro emitting the priced
+				// metadata last, which the 2.32 probes confirm.
 				if (Array.isArray(data.meteringUsage)) {
 					turn.credits = data.meteringUsage.reduce(
 						(sum: number, entry: unknown) => sum + (isRecord(entry) && typeof entry.value === "number" ? entry.value : 0),
