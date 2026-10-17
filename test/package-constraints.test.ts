@@ -335,9 +335,15 @@ describe("version and changelog agree (docs/releasing.md)", () => {
 			"- **Cited.** The router in `src/transport-utils.ts` resets on retry",
 			"  (`test/painted-once.test.ts`).",
 			"- **Waived.** A typo in a log line (no test: the string is not asserted anywhere).",
+			// The review of #60 read the waiver pattern as anchored and warned that a
+			// reason containing `)` would be rejected. It is a `.test` for a MATCH, not
+			// an anchored one, so the span simply ends at the first `)` and the waiver
+			// stands. Pinned here so the claim can never quietly become true.
+			"- **Waived, reason contains parens.** (no test: `foo()` is private, so nothing reads it).",
 			"- **Uncited.** `src/stream-json-reader.ts` no longer mirrors message chunks.",
 			"- **Names no file at all.** This is how the #58 entry passed the first form of the rule.",
 			"- **Waiver with no reason.** (no test:)",
+			"- **Waiver never closed.** (no test: no closing paren anywhere in this bullet",
 			"",
 			"### Changed",
 			"",
@@ -353,6 +359,7 @@ describe("version and changelog agree (docs/releasing.md)", () => {
 			"- **Uncited.** `src/stream-json-reader.ts` no longer mirrors message chunks.",
 			"- **Names no file at all.** This is how the #58 entry passed the first form of the rule.",
 			"- **Waiver with no reason.** (no test:)",
+			"- **Waiver never closed.** (no test: no closing paren anywhere in this bullet",
 		]);
 	});
 
