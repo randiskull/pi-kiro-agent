@@ -11,7 +11,7 @@ import { join } from "node:path";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { VERSION as HOST_PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { _resetPiVersionForTest, authMethod, CHAT_ENGINE, displayModel, displayTransport, identityBlock, identityLine, parseKiroVersion, pluginName, pluginVersion, redactSecrets, resolvePiVersion } from "../src/identity.js";
+import { _resetPiVersionForTest, authMethod, CHAT_ENGINE, displayModel, displayTransport, identityBlock, KIRO_ROUTES, identityLine, parseKiroVersion, pluginName, pluginVersion, redactSecrets, resolvePiVersion } from "../src/identity.js";
 import { buildDeltaPrompt, buildPromptFromContext, FINAL_CLOSE, FINAL_OPEN, makeStreamViaKiro } from "../src/stream-adapter.js";
 import { resetTraceTarget } from "../src/trace.js";
 import { IDENTITY_QUESTIONS, scoreIdentityAnswer } from "./identity-score.js";
@@ -40,6 +40,10 @@ describe("identityLine", () => {
 		expect(displayTransport("acp")).toBe("acp");
 		expect(displayTransport("chat", "stream-json")).toBe("chat/stream-json");
 		expect(displayTransport("chat", "text")).toBe("chat/text");
+	});
+
+	it("lists every route a turn can take, for the route-wide conformance suite", () => {
+		expect([...KIRO_ROUTES]).toEqual(["acp", "chat/text", "chat/stream-json"]);
 	});
 
 	it("says plain chat when no format resolved, rather than naming one that will not be used", () => {

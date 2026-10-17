@@ -206,6 +206,26 @@ describe("published surface", () => {
  * the tag check in publish.yml as the only thing standing between main and a
  * mislabelled publish.
  */
+/**
+ * The `### Fixed` bullets of the Unreleased section that name a source file
+ * (`src/....ts`) without naming a test file (`test/....test.ts`). Released
+ * sections are exempt: the rule postdates them.
+ */
+function uncitedFixes(text: string): string[] {
+	const unreleased = /^## Unreleased\s*$/m.exec(text);
+	if (!unreleased) return [];
+	const rest = text.slice(unreleased.index + unreleased[0].length);
+	const end = rest.search(/^## /m);
+	const section = end === -1 ? rest : rest.slice(0, end);
+	const fixed = /^### Fixed\s*$/m.exec(section);
+	if (!fixed) return [];
+	const after = section.slice(fixed.index + fixed[0].length);
+	const stop = after.search(/^### /m);
+	const body = stop === -1 ? after : after.slice(0, stop);
+	const bullets = body.split(/\n(?=- )/).map((bullet) => bullet.trim()).filter((bullet) => bullet.startsWith("- "));
+	return bullets.filter((bullet) => /\bsrc\/[\w./-]+\.ts\b/.test(bullet) && !/\btest\/[\w./-]+\.test\.ts\b/.test(bullet));
+}
+
 describe("version and changelog agree (docs/releasing.md)", () => {
 	/** `## 1.2.3 - 2026-01-01` headings, in file order. `## Unreleased` is skipped. */
 	const releaseHeadings = [...changelog.matchAll(/^## (\d+)\.(\d+)\.(\d+)\b/gm)].map((m) => ({
@@ -273,6 +293,41 @@ describe("version and changelog agree (docs/releasing.md)", () => {
 			body.split("\n").filter((line) => line.startsWith("- ")).length,
 			`the ${version} section in CHANGELOG.md has no bullet points`,
 		).toBeGreaterThan(0);
+	});
+
+	it("an Unreleased ### Fixed entry that names a source file cites the test that proves it", () => {
+		const uncited = uncitedFixes(changelog);
+		expect(
+			uncited,
+			"these Unreleased `### Fixed` bullets name a `src/` file but no `test/` file; cite the test " +
+				"that fails without the fix, so the claim and its gate are tied together (docs/releasing.md)",
+		).toEqual([]);
+	});
+
+	// Not vacuous: on a changelog with no Unreleased section the check above passes
+	// trivially, so pin the parser on a fixture with one cited and one uncited entry.
+	it("the citation check finds an uncited fix and accepts a cited one", () => {
+		const fixture = [
+			"## Unreleased",
+			"",
+			"### Fixed",
+			"",
+			"- **Cited.** The router in `src/transport-utils.ts` resets on retry",
+			"  (`test/painted-once.test.ts`).",
+			"- **Uncited.** `src/stream-json-reader.ts` no longer mirrors message chunks.",
+			"- **No source file named.** Nothing to cite.",
+			"",
+			"### Changed",
+			"",
+			"- `src/index.ts` is not a fix, so it needs no citation.",
+			"",
+			"## 0.4.0 - 2026-10-17",
+			"",
+			"### Fixed",
+			"",
+			"- `src/acp-transport.ts`, released before the rule.",
+		].join("\n");
+		expect(uncitedFixes(fixture)).toEqual(["- **Uncited.** `src/stream-json-reader.ts` no longer mirrors message chunks."]);
 	});
 
 	// docs/releasing.md explains why the pi SDK devDependency is the only statement

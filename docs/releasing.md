@@ -66,6 +66,10 @@ Enforced, so a mistake fails CI or the publish:
   cannot publish.
 - `prepublishOnly` runs the full verify suite, so no publish skips typecheck, tests
   or the secret scan.
+- A `### Fixed` bullet under `## Unreleased` that names a source file (`src/...ts`)
+  also names the test that proves the fix (`test/...test.ts`), so a claim cannot ship
+  without its gate. Cite a test that fails with the fix reverted.
+  (`test/package-constraints.test.ts`)
 
 Judgement, so it needs a human:
 

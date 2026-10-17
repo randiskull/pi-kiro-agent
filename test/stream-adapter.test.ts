@@ -430,9 +430,10 @@ describe("makeStreamViaKiro", () => {
 			const doneIndex = events.findIndex((e) => e.type === "done");
 			expect(deltaIndex).toBeGreaterThan(-1);
 			expect(deltaIndex).toBeLessThan(doneIndex);
-			// The MESSAGE can be right while the PAINTED stream still duplicates: pi
-			// renders text from the deltas, so the deltas must sum to the answer and
-			// no more (settle must not re-emit what the route already streamed).
+			// The MESSAGE can be right while the DELTA stream still duplicates. The TUI
+			// draws the message snapshot, but json/RPC consumers concatenate the
+			// deltas, so they must sum to the answer and no more (settle must not
+			// re-emit what the route already streamed).
 			const painted = events.filter((e) => e.type === "text_delta").map((e) => (e as { delta: string }).delta).join("");
 			expect(painted).toBe("KIRO-OK");
 		});
