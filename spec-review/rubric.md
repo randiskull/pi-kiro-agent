@@ -17,7 +17,11 @@ A review has two halves, run in this order:
    below, then writes a verdict file.
 
 The anchors below are written without quoting any calibration case, so a case
-cannot be graded by recognising its text. Keep it that way when editing.
+cannot be graded by recognising its text. `test/rubric-anchors.test.ts` holds
+that: every quoted example of three or more words in this file is grepped
+against `spec-review/calibration/cases/*.md`, and a match fails. Section
+headings and the negative-control bullet are exempt, because this rubric
+requires them of every spec and lint checks for them.
 
 ## Spec types
 
@@ -41,7 +45,9 @@ public: name only a publicly available harness, and write any other harness as
 ## Gates
 
 Pass or fail. **Any failed gate makes the outcome `revise`**, whatever the
-dimensions say. Each failed gate needs at least one finding tagged with it.
+dimensions say, unless a `reject` condition in the Outcome table also holds:
+`reject` outranks `revise`. Each failed gate needs at least one finding tagged
+with it.
 
 ### G1 Contract closed
 
@@ -51,9 +57,11 @@ or signature other code or users will depend on.
 
 - **Allowed open:** test technique, private helper names, and refactors with no
   behaviour. A spec may offer two ways to write a test.
-- **Fails:** a behaviour left as a choice ("pick the lightest", "X or Y",
-  "as appropriate", "TBD"); an option list with no selection; a degrade or
-  fallback path that does not say what is skipped.
+- **Fails:** a behaviour left as a choice rather than decided: the spec names
+  two or more ways to do it and does not say which is built, or hands the
+  decision to whoever implements it, or marks it to be settled later. Also an
+  option list with no selection, and a degrade or fallback path that does not
+  say what is skipped.
 
 Check: reviewer.
 
@@ -88,9 +96,9 @@ states that it fails there and why (the mechanism, not just "it fails"), and
 states that the same check passes after. For a feature spec, it is the check
 that shows the capability is absent today.
 
-- **Fails:** tests that are only described as passing; a "before and after" run
-  with no stated expectation for "before"; a negative control whose stated
-  reason for failing is not the defect.
+- **Fails:** tests that are only described as passing; a run of the check on
+  both sides of the change with no stated expectation for the unchanged side; a
+  negative control whose stated reason for failing is not the defect.
 
 Check: lint (a `- **Negative control` bullet exists in `## Verification plan`),
 then reviewer (it is a real one).
@@ -110,9 +118,15 @@ Check: reviewer.
 ### G5 Scope fenced
 
 `### In scope` and `### Out of scope` are both present, and each out-of-scope
-item says where it goes: a named spec, issue or owner, or "unchanged, no
-follow-up" with the reason. A reason alone ("unaffected by X", "not needed")
-is not a disposition: the item must also say whether anything follows.
+item says where it goes: a named spec, issue or owner, or that it is dropped
+or unchanged with no follow-up, with the reason. A reason alone is not a
+disposition: saying why the item is out of scope does not say whether anything
+follows it, and an item that gives only a reason fails.
+
+G5 judges the sentence, not the citation. An item that names a spec, issue or
+owner has a disposition whether or not that target resolves from this
+checkout; a named target that does not exist is a G2 finding, not a G5 one.
+Failing both gates on one citation is one claim counted twice.
 
 Check: reviewer.
 
@@ -128,7 +142,7 @@ needs at least one finding tagged with it.
 | --- | --- | --- |
 | **4** | The cause is a mechanism traced to code (file and symbol), with provenance (the change that introduced it, by commit), consistent with every observation in Observed failure, and it explains why the failure is visible now. Control observations rule out the alternatives. | Current behaviour is measured (commands, outputs or numbers, with the ref), and each gap is tied to the code or config that produces it. |
 | **3** | Mechanism traced to code, but provenance or the alternative-ruling evidence is missing. | Measured, but not every gap is tied to its cause. |
-| **2** | A plausible cause named at file level without a mechanism; or hedged ("probably", "likely") where the evidence to settle it was available; or an observation the cause does not account for. | Current behaviour asserted, not measured. |
+| **2** | A plausible cause named at file level without a mechanism; or a cause hedged rather than settled, offered as what the author expects is happening, where the evidence to settle it was present in the spec; or an observation the cause does not account for. | Current behaviour asserted, not measured. |
 | **1** | No cause, or one contradicted by the spec's own evidence. | No problem statement beyond the goal. |
 
 ### D2 Safety argument
@@ -183,6 +197,12 @@ needs at least one finding tagged with it.
 | `pass` | Lint passes, every gate passes, every dimension is 3 or 4. |
 | `revise` | Lint fails, any gate fails, or any dimension is 2 or below. |
 | `reject` | The spec should not be built as framed: D1 is 1, or it duplicates or contradicts an accepted spec or design decision without proposing to supersede it. Needs a finding saying what a new spec would have to change. |
+
+The `revise` and `reject` rows overlap: a spec that contradicts an accepted
+decision usually also fails a gate or scores a 2. **`reject` outranks
+`revise`**, so a spec meeting any `reject` condition is `reject` however many
+gates it failed. `pass` requires that neither of the others applies. A verdict
+is not invalid for answering `reject` on a spec with a failed gate.
 
 Re-review happens on the author's next commit to the spec: that changes the
 spec's blob, which makes the old verdict stale.
@@ -265,8 +285,14 @@ Outcome: pass
 ## Changing this rubric
 
 - Bump `Rubric:` when the meaning of a gate, an anchor or the outcome table
-  changes. Wording fixes that keep the meaning do not bump it.
+  changes. Wording fixes that keep the meaning do not bump it. The rule applies
+  from the first merge of this file: before then there is no published meaning
+  to bump away from, so Rubric 1 is whatever text merges, however many times it
+  changed on the way.
 - Every edit, bumped or not, re-runs the calibration set
-  (`spec-review/calibration/README.md`) and must meet its ship bar before it merges.
+  (`spec-review/calibration/README.md`) and must meet its ship bar before it
+  merges. The runs record the blobs they were scored against, so the number is
+  not what ties a run to a rubric (`spec-review/calibration/README.md`, ship bar
+  rule 5).
 - Verdicts on an older rubric still count. The queue reports them as
   `stale-rubric`, so they can be re-reviewed when convenient.
