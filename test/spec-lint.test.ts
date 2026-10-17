@@ -189,6 +189,24 @@ describe("spec-lint per citation class (synthetic spec)", () => {
 		["(new) excuses only its own token", CLEAN.replace("`src/bridge.ts`", "`src/made.ts` (new), `src/nope.ts`"), "src/nope.ts"],
 		["one-edit symbol typo", CLEAN.replace("`setChildKeepalive`", "`setChildKeepalve`"), "setChildKeepalive"],
 		["digits-only commit in backticks", CLEAN.replace("6ea0510", "`6281470`"), "6281470"],
+		// Forms that used to be neither checked nor listed.
+		["call with arguments", CLEAN.replace("`serveBridgeHttp()`", "`serveBridgeHTTP(port, host.name)`"), "serveBridgeHTTP"],
+		["dotted method", CLEAN.replace("`serveBridgeHttp()`", "`bridge.serveBridgeHTTP`"), "serveBridgeHTTP"],
+		["PascalCase symbol", CLEAN.replace("`setChildKeepalive`", "`KiroAgentProfil`"), "KiroAgentProfile"],
+		["SCREAMING_SNAKE symbol", CLEAN.replace("`setChildKeepalive`", "`BRIDGE_MCP_SERVER_KEYY`"), "BRIDGE_MCP_SERVER_KEY"],
+		["uppercase commit", CLEAN.replace("6ea0510", "6EA0517"), "6EA0517"],
+		["far end of a commit range", CLEAN.replace("6ea0510", "6ea0510..6ea0517"), "6ea0517"],
+		["commit after a non-repository @", CLEAN.replace("6ea0510", "fix@6ea0517"), "6ea0517"],
+		["letters-only commit in backticks", CLEAN.replace("6ea0510", "`deadbeef`"), "deadbeef"],
+		["npm run with trailing flags", CLEAN.replace("`npm run verify`", "`npm run nosuch -- --watch`"), "nosuch"],
+		["npm run-script", CLEAN.replace("`npm run verify`", "`npm run-script nosuch`"), "nosuch"],
+		["section in the wrong case", CLEAN.replace("§5e.3", "§5E.3"), "5E.3"],
+		["section that is not a number", CLEAN.replace("§5e.3", "§A.1"), "§A.1 is not a section number"],
+		["section named by a prefix of a real one", CLEAN.replace("§5e.3", "§5e.3.1"), "5e.3.1"],
+		["markdown link target", CLEAN.replace("`src/bridge.ts`", "[the bridge](src/nope.ts)"), "src/nope.ts"],
+		["top-level directory in the wrong case", CLEAN.replace("`src/bridge.ts`", "`SRC/bridge.ts`"), "SRC/bridge.ts"],
+		["one-edit directory typo, whatever the file", CLEAN.replace("`src/bridge.ts`", "`scr/nope.ts`"), "scr/nope.ts"],
+		["leading ./", CLEAN.replace("`src/bridge.ts`", "`./src/nope.ts`"), "./src/nope.ts"],
 	];
 
 	const cleanFile = write("clean", syntheticSpec(CLEAN));
@@ -209,6 +227,27 @@ describe("spec-lint per citation class (synthetic spec)", () => {
 			expect(findings(result, "G2").join("\n")).toContain(token);
 		},
 	);
+
+	// Forms a real spec writes that are NOT broken citations.
+	it.each([
+		["a line anchor", "`src/bridge.ts#L10`"],
+		["a line range", "`src/bridge.ts:86-88`"],
+		["npm's own commands", "`npm ci`, `npm pack --dry-run`, `npm install`"],
+		["a colour, not a commit", "the colour #ff00aa11"],
+		["an English word made of hex letters", "a defaced banner"],
+		["a type next to a field of the same name", "`StopReason`"],
+		["an id that only looks like a path", "`kiro/auto`"],
+		["another repository's commit as a URL", "https://github.com/earendil-works/pi-coding-agent/commit/3f9a1b2c"],
+	])("does not fail %s", (_name, cite) => {
+		const [result] = lint([write(`ok-${_name.replace(/\W+/g, "-")}`, syntheticSpec(`${CLEAN} ${cite}`))]).results;
+		expect(failing(result), JSON.stringify(result.checks)).toEqual([]);
+	});
+
+	it("lists another repository's commit URL as external", () => {
+		const cite = "https://github.com/earendil-works/pi-coding-agent/commit/3f9a1b2c";
+		const [result] = lint([write("commit-url", syntheticSpec(`${CLEAN} ${cite}`))]).results;
+		expect(result.notes.external).toContain("earendil-works/pi-coding-agent@3f9a1b2c");
+	});
 
 	it("a path marked (new) is listed as proposed, not failed", () => {
 		const file = write("proposed", syntheticSpec(CLEAN.replace("`src/bridge.ts`", "`src/made.ts` (new)")));
@@ -234,15 +273,69 @@ describe("spec-lint per citation class (synthetic spec)", () => {
 
 	it("structure, type, attribution and the G3 presence check each fail on their own defect", () => {
 		const base = syntheticSpec(CLEAN);
+		const plan = "- **Negative control first.** The test fails before the fix.";
+		const criteria = "## Acceptance criteria\n\n1. It works. Evidence: a test.\n";
 		const cases: Array<[string, string]> = [
 			["structure", base.replace("## Acceptance criteria", "## Criteria")],
+			// A required section that exists only where a reader never sees it.
+			["structure", base.replace(criteria, `~~~\n${criteria}~~~\n`)],
+			["structure", base.replace(criteria, `<!--\n${criteria}-->\n`)],
+			["structure", base.replace(criteria, `\`\`\`\`md\n\`\`\`\n${criteria}\`\`\`\n\`\`\`\`\n`)],
+			// A heading that only starts with the required word.
+			["structure", base.replace("## Goal", "## Goalposts")],
+			["structure", base.replace("### In scope", "### In scopes elsewhere")],
+			["structure", base.replace("## Verification plan", "## Verification planning").replace(plan, "")],
+			// Header bullets: each required one, with a value.
+			["structure", base.replace("- Status: Draft", "- Status:")],
+			["structure", base.replace("- Area: test fixture\n", "")],
+			["structure", base.replace("- Related: `src/bridge.ts`", "- Related:")],
+			["structure", base.replace("- Target release: none", "- Targetless: none")],
+			["structure", base.replace("### Out of scope", "### Later")],
+			["structure", `${base}\n\n## Goal\n\nA second goal.`],
 			["type", base.replace("## Root cause", "## Cause")],
 			["attribution", base.replace("Spec: Test, Model 1.", "Written by a person.")],
-			["G3", base.replace("- **Negative control first.** The test fails before the fix.", "- Run the tests.")],
+			["attribution", base.replace("Spec: Test, Model 1.", "Spec: , TBD.")],
+			["attribution", base.replace("Spec: Test, Model 1.", "Spec: Test.")],
+			["attribution", base.replace("Spec: Test, Model 1.", "Spec: Test, TODO")],
+			["G3", base.replace(plan, "- Run the tests.")],
+			["G3", base.replace(plan, "- **Negative controls are not needed.**")],
+			["G3", base.replace(plan, "- **Negative control:** TODO")],
+			["G3", base.replace(plan, "Negative control first: the test fails before the fix.")],
 		];
-		const files = cases.map(([id, text]) => write(`defect-${id}`, text));
+		// One file per case: several share an id, and a shared name would lint only the last.
+		const files = cases.map(([id, text], i) => write(`defect-${id}-${i}`, text));
 		const { results } = lint(files);
 		cases.forEach(([id], i) => expect(failing(results[i]), id).toEqual([id]));
+	});
+
+	it("passes the forms of a negative control and attribution a real spec writes", () => {
+		const base = syntheticSpec(CLEAN);
+		const plan = "- **Negative control first.** The test fails before the fix.";
+		const texts = [
+			base.replace(plan, "* **Negative control first.** The test fails before the fix."),
+			base.replace(plan, "- **Negative control first.**\n  The test fails before the fix, because the timer is still referenced."),
+			base.replace(plan, "- **Negative control first (per docs/releasing.md):** before the fix, the test fails."),
+			base.replace("Spec: Test, Model 1.", "Investigation and spec: Kiro, Claude Opus 5."),
+			base.replace("Spec: Test, Model 1.", "Design: a person. Spec: other, Model 1."),
+			base.replace(/\n/g, "\r\n"),
+		];
+		const { results } = lint(texts.map((text, i) => write(`real-form-${i}`, text)));
+		results.forEach((r, i) => expect(failing(r), `form ${i}: ${JSON.stringify(r.checks)}`).toEqual([]));
+	});
+
+	it("a defect spec with a Problem section as well is still a defect spec", () => {
+		const text = syntheticSpec(CLEAN).replace("## Observed failure", "## Problem\n\nContext.\n\n## Observed failure");
+		const [result] = lint([write("both-types", text)]).results;
+		expect(result.type).toBe("defect");
+	});
+
+	it("checks a cited directory against the tree", () => {
+		const { results } = lint([
+			write("dir-ok", syntheticSpec(`${CLEAN} \`src/\``)),
+			write("dir-missing", syntheticSpec(`${CLEAN} \`src/nowhere/\``)),
+		]);
+		expect(failing(results[0])).toEqual([]);
+		expect(findings(results[1], "G2").join("\n")).toContain("src/nowhere");
 	});
 
 	it("a feature spec is typed by its Problem section", () => {
@@ -250,6 +343,88 @@ describe("spec-lint per citation class (synthetic spec)", () => {
 		const [result] = lint([write("feature", text)]).results;
 		expect(result.type).toBe("feature");
 		expect(failing(result)).toEqual([]);
+	});
+
+	// HEAD, not the calibration ref: this test file spells the typos it tests, and
+	// once it is committed a plain grep of test/ would find them as real words.
+	it("still fails a typo at HEAD that only this test file spells", () => {
+		const typos = CLEAN.replace("`serveBridgeHttp()`", "`serveBridgeHTTP()`").replace("`setChildKeepalive`", "`setChildKeepalve`");
+		const [result] = lint([write("typo-at-head", syntheticSpec(typos))], ["--ref", "HEAD"]).results;
+		const g2 = findings(result, "G2").join("\n");
+		expect(g2).toContain("serveBridgeHTTP");
+		expect(g2).toContain("setChildKeepalve");
+	});
+
+	it("fails a commit that exists but is not an ancestor of the ref, and an object that is not a commit", () => {
+		const git = (args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8" }).stdout.trim();
+		const later = git(["rev-parse", "--short=10", "HEAD"]); // never an ancestor of the calibration ref
+		const tree = git(["rev-parse", "--short=10", "HEAD^{tree}"]);
+		const { results } = lint([
+			write("not-ancestor", syntheticSpec(CLEAN.replace("6ea0510", later))),
+			write("tree-object", syntheticSpec(CLEAN.replace("6ea0510", tree))),
+		]);
+		expect(findings(results[0], "G2").join("\n")).toContain(`${later} is not an ancestor of ${expected.ref}`);
+		expect(findings(results[1], "G2").join("\n")).toContain(`${tree} names an object that is not a commit`);
+	});
+
+	it("gives the same answer from a subdirectory as from the repository root", () => {
+		const cites = CLEAN.replace("`src/bridge.ts`", "`src/nope.ts`").replace("`serveBridgeHttp()`", "`serveBridgeHTTP()`");
+		const file = write("from-subdir", syntheticSpec(cites));
+		const out = spawnSync(process.execPath, ["../scripts/spec-lint.mjs", "--json", "--ref", expected.ref, file], {
+			cwd: join(root, "src"),
+			encoding: "utf8",
+		});
+		expect(out.status, out.stderr).toBe(1);
+		const [result] = JSON.parse(out.stdout) as LintResult[];
+		const g2 = findings(result, "G2").join("\n");
+		expect(g2).toContain("`src/nope.ts` does not exist");
+		expect(g2).toContain("probable typo of `serveBridgeHttp`");
+	});
+
+	it("a section reference names that section, not a longer one it prefixes", async () => {
+		const { sectionResolves } = (await import(join(root, "scripts", "spec-lint.mjs"))) as {
+			sectionResolves: (id: string, headings: string[]) => boolean;
+		};
+		expect(sectionResolves("1", ["1. Why"])).toBe(true);
+		expect(sectionResolves("1", ["1 Why"])).toBe(true);
+		expect(sectionResolves("5e.3", ["5e.3 Fixed: a reset"])).toBe(true);
+		expect(sectionResolves("1", ["1.2 Detail"])).toBe(false);
+		expect(sectionResolves("5e", ["5e.3 Fixed: a reset"])).toBe(false);
+		expect(sectionResolves("5", ["5e. Field evidence"])).toBe(false);
+	});
+
+	it("refuses a spec larger than any spec, before reading it", () => {
+		const huge = write("huge", syntheticSpec(CLEAN) + "\n" + "x".repeat(600 * 1024));
+		const out = spawnSync(process.execPath, ["scripts/spec-lint.mjs", "--ref", expected.ref, huge], { cwd: root, encoding: "utf8" });
+		expect(out.status).toBe(2);
+		expect(out.stderr).toContain("a spec is at most");
+	});
+
+	it("handles hostile input in linear time and without crashing", () => {
+		const spaces = syntheticSpec(CLEAN).replace("Spec: Test, Model 1.", `spec:${" ".repeat(400_000)}`);
+		const section = syntheticSpec(`${CLEAN} §1${".1".repeat(20_000)}`);
+		const started = Date.now();
+		const { status, results } = lint([write("redos-attribution", spaces), write("long-section", section)]);
+		expect(Date.now() - started).toBeLessThan(10_000);
+		expect(status).toBe(1);
+		expect(failing(results[0])).toEqual(["attribution"]);
+		expect(failing(results[1])).toEqual(["G2"]);
+	});
+
+	it.each([
+		["a missing file", (dir: string) => [join(dir, "no-such.md")]],
+		["a directory", (dir: string) => [dir]],
+		["an unknown option", () => ["--jsno", cleanFile]],
+		["one unreadable file among good ones", (dir: string) => [cleanFile, join(dir, "no-such.md")]],
+	])("exits 2, with nothing on stdout, for %s", (_name, args) => {
+		const out = spawnSync(process.execPath, ["scripts/spec-lint.mjs", "--json", "--ref", expected.ref, ...args(dir)], {
+			cwd: root,
+			encoding: "utf8",
+		});
+		expect(out.status).toBe(2);
+		expect(out.stdout).toBe("");
+		expect(out.stderr).toMatch(/^spec-lint: /);
+		if (_name === "an unknown option") expect(out.stderr).toContain("unknown option --jsno");
 	});
 
 	it("exits 2, not 0, when the ref cannot be resolved", () => {
