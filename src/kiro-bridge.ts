@@ -6,8 +6,12 @@
  * (concurrent subagent fan-out must not collide) and removed afterwards.
  *
  * v3 note: kiro v3 agent configs support header auth + ${VAR} expansion,
- * which would allow one stable profile — but v3 has no working headless
- * mode yet (the legacy non-TUI path is v2-only), so v2 is the target.
+ * which would allow one stable profile. v3 DOES run headless (measured: see
+ * docs/design/v3-engine.md), so the blocker is no longer the mode. It is
+ * whether v3 reads this profile format at all, and how it names a bridged
+ * tool (spike S1). A missing profile still exits 4 on v3, but its wording
+ * ("agent X not found, using default") reads like a fallback: if v3 ever acts
+ * on it, a turn would run with none of pi's tools. v2 stays the target.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
