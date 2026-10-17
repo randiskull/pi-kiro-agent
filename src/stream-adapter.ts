@@ -585,11 +585,19 @@ async function runAttempt(
 		}
 	};
 	let killTimer: ReturnType<typeof setTimeout> | undefined;
+	// Arm the SIGKILL escalation after a SIGTERM. Abort, the turn ceiling and a
+	// stream-json envelope violation can each reach this, so clear any prior
+	// timer first: only the latest is cleared at exit, and an earlier one left
+	// armed would fire a SIGKILL at a process group that has already exited.
+	const armKill = () => {
+		if (killTimer) clearTimeout(killTimer);
+		killTimer = setTimeout(() => killTree("SIGKILL"), 1_500);
+		killTimer.unref?.();
+	};
 	const onAbort = () => {
 		killTree("SIGTERM");
 		// kiro-cli's graceful shutdown can be slow -- escalate.
-		killTimer = setTimeout(() => killTree("SIGKILL"), 1_500);
-		killTimer.unref?.();
+		armKill();
 	};
 	abortSignal?.addEventListener("abort", onAbort, { once: true });
 	// Hard turn ceiling: a wedged child even with a live, patient parent
@@ -599,8 +607,7 @@ async function runAttempt(
 	const ceilingTimer = setTimeout(() => {
 		turnTimedOut = true;
 		killTree("SIGTERM");
-		killTimer = setTimeout(() => killTree("SIGKILL"), 1_500);
-		killTimer.unref?.();
+		armKill();
 	}, ceilingMs);
 	ceilingTimer.unref?.();
 
@@ -638,14 +645,15 @@ async function runAttempt(
 		let violationKilled = false;
 		child.stdout.on("data", (chunk: Buffer) => {
 			const text = decoder.write(chunk);
-			raw += text;
+			// raw is deliberately NOT accumulated here: this path settles off the
+			// parsed reader result and never calls cleanBody(raw), so a second
+			// full copy of a long turn's stdout would be dead weight.
 			streamReader.feed(text);
 			// A broken envelope fails the turn; stop kiro rather than let it run on.
 			if (streamReader.violation && !violationKilled) {
 				violationKilled = true;
 				killTree("SIGTERM");
-				killTimer = setTimeout(() => killTree("SIGKILL"), 1_500);
-				killTimer.unref?.();
+				armKill();
 			}
 		});
 		stdoutEnded = new Promise((resolve) => {
@@ -689,7 +697,10 @@ async function runAttempt(
 	});
 	if (reader) {
 		// "exit" can fire before stdout drains, and runFinished is the LAST line.
-		// Bounded: a grandchild holding the pipe must not stall the turn.
+		// Bounded: a grandchild holding the pipe must not stall the turn. The
+		// trade is that a runFinished arriving more than STREAM_JSON_DRAIN_MS
+		// after exit is lost and the turn fails as ended without runFinished;
+		// in practice stdout "end"/"close" fires immediately after a clean exit.
 		await Promise.race([stdoutEnded, new Promise((resolve) => setTimeout(resolve, STREAM_JSON_DRAIN_MS).unref?.())]);
 		finishReader();
 	}

@@ -25,6 +25,7 @@
 import type { AssistantMessage, AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { sumCredits } from "./metering.js";
 import { displayToolName } from "./tool-names.js";
+import { trace } from "./trace.js";
 import { announceToolRow } from "./transport-utils.js";
 
 /** The `runStarted.data` this reader understands. `engine` is the pinned chat engine. */
@@ -99,6 +100,8 @@ export function createStreamJsonReader(
 ) {
 	const pushMessage = options.onMessageText ?? pushThinking;
 	const turn: StreamJsonTurn = { messageText: "" };
+	/** Metadata events carrying a meteringUsage array; the 2.32 probes show exactly one. */
+	let pricedMetadata = 0;
 	let pending = "";
 	let lineNumber = 0;
 	let started = false;
@@ -209,8 +212,25 @@ export function createStreamJsonReader(
 				if (typeof data.sessionId === "string") metadataSessionId = data.sessionId;
 				if (typeof data.contextUsagePercentage === "number") turn.contextPercent = data.contextUsagePercentage;
 				if (typeof data.turnDurationMs === "number") turn.turnDurationMs = data.turnDurationMs;
+				// Credits: the last metadata carrying a meteringUsage array wins
+				// (earlier events carry it null). That depends on kiro emitting the
+				// priced metadata last, which the 2.32 probes confirm: exactly one
+				// metadata per turn is priced.
+				//
+				// The assumption is load-bearing and cannot be checked from a single
+				// event, so a turn that prices more than once is TRACED rather than
+				// resolved here. Nothing in the payload distinguishes a late summary
+				// from a late per-tool-call partial, and silently keeping the larger
+				// value would hide exactly the protocol change worth knowing about.
 				if (Array.isArray(data.meteringUsage)) {
 					const summed = sumCredits(data.meteringUsage);
+					if (++pricedMetadata > 1) {
+						trace("chat.stream.metering_repriced", {
+							priorCredits: turn.credits,
+							credits: summed.credits,
+							pricedMetadataEvents: pricedMetadata,
+						});
+					}
 					turn.credits = summed.credits;
 					turn.creditsUnitPlural = summed.unitPlural;
 					turn.creditsOtherUnits = summed.otherUnits;

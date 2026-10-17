@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **A stream-json turn that is priced more than once now traces it.** Credits come from the last
+  `metadata` event carrying a `meteringUsage` array, which rests on kiro emitting the priced
+  metadata last (the 2.32 probes show exactly one priced metadata per turn). Nothing in a single
+  event distinguishes a late summary from a late per-tool-call partial, so a turn that prices twice
+  emits a `chat.stream.metering_repriced` trace with both figures instead of being resolved
+  silently: keeping the larger value would hide the protocol change rather than report it.
+
+### Fixed
+
+- **A chat turn that reached more than one kill path leaked a SIGKILL timer (#58).** Abort, the turn
+  ceiling and a stream-json envelope violation each armed the SIGTERM-to-SIGKILL escalation by
+  overwriting the timer handle, and only the latest was cleared at exit, so an earlier one fired a
+  `SIGKILL` at a process group that had already exited. One `armKill` helper now clears any prior
+  timer before arming. The stream-json path also stopped keeping a second full copy of the turn's
+  stdout that nothing read. Both were fixed once in #55, which merged into a branch that had already
+  merged to `main`, so the fix never shipped.
+
 ## 0.4.0 - 2026-10-17
 
 ### Added
