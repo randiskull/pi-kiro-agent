@@ -62,6 +62,7 @@ import { trace } from "./trace.js";
 import { initialSystemPrompt } from "./system-prompt.js";
 import { ACP_ENGINE, authMethod, identityLine, pluginName, pluginVersion, redactSecrets, resolvePiVersion } from "./identity.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
+import { BRIDGE_MCP_SERVER_KEY, displayToolName } from "./tool-names.js";
 import {
 	advanceAcpSession,
 	dropAcpSession,
@@ -696,7 +697,7 @@ function buildMcpServersConfig(
 ): AcpMcpServer[] {
 	const servers: AcpMcpServer[] = [];
 	if (bridge) {
-		servers.push({ type: "http", name: "pi", url: bridge.urlWithToken, headers: [] });
+		servers.push({ type: "http", name: BRIDGE_MCP_SERVER_KEY, url: bridge.urlWithToken, headers: [] });
 	}
 	if (workflowServers) {
 		for (const [name, server] of Object.entries(workflowServers)) {
@@ -1113,6 +1114,10 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 							// stripLivePlaceholders removes the block from the final message.
 							const kiroToolName =
 								u._meta?.kiro?.toolName ?? u.title?.replace(/^Running:\s*@[^/]*\//, "") ?? "unknown";
+							// Drawn origin-prefixed (tool-names.ts): kiro_read for a built-in,
+							// rpiv_todo for a bridged tool, gsd_* for the workflow server.
+							const kiroServer = u._meta?.kiro?.mcpServerName ?? u.title?.match(/^Running:\s*@([^/\s]+)\//)?.[1];
+							const rowName = displayToolName(kiroToolName, kiroServer);
 							// The real kiro id is kept in the suffix: the prefix is what marks the
 							// block display-only, and retaining the id keeps traces correlatable.
 							// randomUUID (not Date.now()): tool_call updates arrive in bursts, so
@@ -1130,7 +1135,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 								id: `${LIVE_TOOL_ID_PREFIX}${u.toolCallId ?? `acp-tool-${randomUUID()}`}`,
 								// u.title can be a "Running: @<server>/<tool>" progress string; strip
 								// that prefix so history carries the bare tool name, not the banner.
-								name: kiroToolName,
+								name: rowName,
 								arguments: (u.rawInput as Record<string, unknown>) ?? {},
 							} as AssistantMessage["content"][number]);
 							// Full parity with the chat transport (stream-adapter.ts:404):
@@ -1138,7 +1143,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 							// because nothing carries `partial` until the next stream event.
 							// The thinking marker both emits that event and gives the user the
 							// same "⚙ <tool>" progress line the chat transport shows.
-							pushThinking(`\n⚙ ${kiroToolName}\n`);
+							pushThinking(`\n⚙ ${rowName}\n`);
 							break;
 						}
 						case "tool_call_update":
@@ -1163,8 +1168,8 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				// ACP transport: omit the sentinel instruction (spec §3.4 — turn completion
 				// is a protocol event; sentinel is a chat-transport artifact).
 				const promptContent = useResume
-					? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridgeToolNames, !!workflowServers, { sentinel: false, identity })
-					: buildPromptFromContext(context, bridgeToolNames, !!workflowServers, { sentinel: false, identity });
+					? buildDeltaPrompt(context.messages.slice(plan.deltaStart), bridgeToolNames, !!workflowServers, { sentinel: false, identity, toolAliases: acpEntry.bridge?.toolAliases })
+					: buildPromptFromContext(context, bridgeToolNames, !!workflowServers, { sentinel: false, identity, toolAliases: acpEntry.bridge?.toolAliases });
 
 				trace("acp.prompt.send", {
 					sessionId: currentSessionId,

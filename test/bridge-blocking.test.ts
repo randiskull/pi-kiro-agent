@@ -102,12 +102,12 @@ describe("bridge blocking-call guards", () => {
 	afterEach(() => clearBridgeCache());
 
 	it("refuses a second ask_user_question while one is still pending", async () => {
-		const h = await harness("ask_user_question");
+		const h = await harness("rpiv_ask_user_question");
 
-		const first = h.client.callTool({ name: "ask_user_question", arguments: { q: "first" } });
+		const first = h.client.callTool({ name: "rpiv_ask_user_question", arguments: { q: "first" } });
 		await h.waitForCalls(1);
 
-		const second = await h.client.callTool({ name: "ask_user_question", arguments: { q: "second" } });
+		const second = await h.client.callTool({ name: "rpiv_ask_user_question", arguments: { q: "second" } });
 		expect(isError(second)).toBe(true);
 		expect(textOf(second)).toContain("already on the user's screen");
 		expect(textOf(second)).toContain("Do not retry");
@@ -125,14 +125,14 @@ describe("bridge blocking-call guards", () => {
 	});
 
 	it("releases the guard once the pending call completes", async () => {
-		const h = await harness("ask_user_question");
+		const h = await harness("rpiv_ask_user_question");
 
-		const first = h.client.callTool({ name: "ask_user_question", arguments: {} });
+		const first = h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} });
 		await h.waitForCalls(1);
 		h.release("Yes");
 		await first;
 
-		const second = h.client.callTool({ name: "ask_user_question", arguments: {} });
+		const second = h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} });
 		await h.waitForCalls(2);
 		h.release("No");
 		const result = await second;
@@ -161,8 +161,8 @@ describe("bridge blocking-call guards", () => {
 	});
 
 	it("hands the tool a live signal rather than an already-settled one", async () => {
-		const h = await harness("ask_user_question");
-		const call = h.client.callTool({ name: "ask_user_question", arguments: {} });
+		const h = await harness("rpiv_ask_user_question");
+		const call = h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} });
 		await h.waitForCalls(1);
 
 		const [signal] = h.signals();
@@ -181,11 +181,11 @@ describe("bridge blocking-call guards", () => {
 	 * the tool to unwind.
 	 */
 	it("keeps refusing while an abandoned call is still inside its grace window", async () => {
-		const h = await harness("ask_user_question");
+		const h = await harness("rpiv_ask_user_question");
 		setSingleFlightOrphanGraceMs(60_000);
 
 		const ac = new AbortController();
-		const first = h.client.callTool({ name: "ask_user_question", arguments: {} }, undefined, {
+		const first = h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} }, undefined, {
 			signal: ac.signal,
 		});
 		await h.waitForCalls(1);
@@ -193,7 +193,7 @@ describe("bridge blocking-call guards", () => {
 		await first.catch(() => undefined);
 		await waitUntil(() => h.signals()[0]?.aborted === true, "the tool's signal to abort");
 
-		const second = await h.client.callTool({ name: "ask_user_question", arguments: {} });
+		const second = await h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} });
 		expect(isError(second)).toBe(true);
 		// Still on screen, so a second overlay must not be stacked on the user.
 		expect(h.entered()).toBe(1);
@@ -203,11 +203,11 @@ describe("bridge blocking-call guards", () => {
 	});
 
 	it("releases the guard once an abandoned call outlives its grace window", async () => {
-		const h = await harness("ask_user_question");
+		const h = await harness("rpiv_ask_user_question");
 		setSingleFlightOrphanGraceMs(25);
 
 		const ac = new AbortController();
-		const first = h.client.callTool({ name: "ask_user_question", arguments: {} }, undefined, {
+		const first = h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} }, undefined, {
 			signal: ac.signal,
 		});
 		await h.waitForCalls(1);
@@ -218,7 +218,7 @@ describe("bridge blocking-call guards", () => {
 
 		// The orphan is still blocked inside execute(), so this proves the release
 		// path, not the finally.
-		const second = h.client.callTool({ name: "ask_user_question", arguments: {} });
+		const second = h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} });
 		await h.waitForCalls(2);
 		h.release("orphan answer"); // the abandoned call, resolving late
 		h.release("live answer");
@@ -238,18 +238,18 @@ describe("bridge blocking-call guards", () => {
 		// either: the slot was unreleasable for the life of the process and every
 		// later question from every child was refused. A ceiling measured from
 		// startedAt bounds that case.
-		const h = await harness("ask_user_question");
+		const h = await harness("rpiv_ask_user_question");
 		// Grace far out of reach, so only the ceiling can release this.
 		setSingleFlightOrphanGraceMs(60_000);
 		setSingleFlightCeilingMs(25);
 
-		const first = h.client.callTool({ name: "ask_user_question", arguments: {} });
+		const first = h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} });
 		await h.waitForCalls(1);
 		await new Promise((r) => setTimeout(r, 60));
 
 		// Nothing aborted, so abortedAt is undefined and orphanedForMs stays
 		// undefined: before the ceiling this was refused, with entered() stuck at 1.
-		const second = h.client.callTool({ name: "ask_user_question", arguments: {} });
+		const second = h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} });
 		await h.waitForCalls(2);
 		expect(h.entered()).toBe(2);
 
@@ -262,11 +262,11 @@ describe("bridge blocking-call guards", () => {
 	});
 
 	it("does not let a late orphan clear a successor's slot", async () => {
-		const h = await harness("ask_user_question");
+		const h = await harness("rpiv_ask_user_question");
 		setSingleFlightOrphanGraceMs(25);
 
 		const ac = new AbortController();
-		const orphan = h.client.callTool({ name: "ask_user_question", arguments: {} }, undefined, {
+		const orphan = h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} }, undefined, {
 			signal: ac.signal,
 		});
 		await h.waitForCalls(1);
@@ -275,14 +275,14 @@ describe("bridge blocking-call guards", () => {
 		await waitUntil(() => h.signals()[0]?.aborted === true, "the tool's signal to abort");
 		await new Promise((r) => setTimeout(r, 60));
 
-		const live = h.client.callTool({ name: "ask_user_question", arguments: {} });
+		const live = h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} });
 		await h.waitForCalls(2);
 
 		// The orphan finishes now. Its finally must leave the live call's slot alone.
 		h.release("orphan answer");
 		await waitUntil(() => h.signals().length === 2, "both calls to be registered");
 
-		const third = await h.client.callTool({ name: "ask_user_question", arguments: {} });
+		const third = await h.client.callTool({ name: "rpiv_ask_user_question", arguments: {} });
 		expect(isError(third)).toBe(true);
 		expect(h.entered()).toBe(2);
 

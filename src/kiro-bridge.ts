@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync }
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { HttpBridgeHandle } from "./bridge.js";
+import { BRIDGE_MCP_SERVER_KEY } from "./tool-names.js";
 import { envMs } from "./transport-utils.js";
 
 export function bridgeEnabled(): boolean {
@@ -71,7 +72,7 @@ export function writeAgentProfile(
 			"Throwaway pi-kiro-agent delegation profile (auto-generated per turn; safe to delete). Exposes the calling Pi session's tools over a loopback MCP bridge and/or the project's gsd-workflow MCP server.",
 		mcpServers: {
 			...(extraMcpServers ?? {}),
-			...(handle ? { pi: { type: "http", url: handle.urlWithToken } } : {}),
+			...(handle ? { [BRIDGE_MCP_SERVER_KEY]: { type: "http", url: handle.urlWithToken } } : {}),
 		},
 		tools: ["*"],
 		allowedTools: ["*"],

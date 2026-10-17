@@ -29,6 +29,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { bridgedToolName } from "./tool-names.js";
 import { trace } from "./trace.js";
 import { envPositiveInt } from "./transport-utils.js";
 
@@ -44,17 +45,23 @@ export const BRIDGE_SOURCES = [
 	"@tintinweb/pi-subagents",
 ];
 
+/** Exposed (origin-prefixed, see tool-names.ts) names of the tools bridged by default. */
 export const DEFAULT_BRIDGE_TOOLS = [
-	"ask_user_question",
-	"todo",
-	"advisor",
-	"Agent",
-	"get_subagent_result",
-	"steer_subagent",
+	"rpiv_ask_user_question",
+	"rpiv_todo",
+	"rpiv_advisor",
+	"subagents_Agent",
+	"subagents_get_subagent_result",
+	"subagents_steer_subagent",
 ];
 
 export interface CapturedTool {
+	/** The name the bridge exposes: origin-prefixed once captured. */
 	name: string;
+	/** Package that registered the tool (a BRIDGE_SOURCES entry); set by capture. */
+	source?: string;
+	/** The name the tool registered itself under, before prefixing; set by capture. */
+	originalName?: string;
 	description: string;
 	parameters: unknown;
 	execute: (
@@ -132,7 +139,7 @@ export function allowedToolNames(envOverride: string | undefined): Set<string> {
 	return new Set(DEFAULT_BRIDGE_TOOLS);
 }
 
-type ExtensionModule = { default?: (pi: ExtensionAPI) => unknown };
+export type ExtensionModule = { default?: (pi: ExtensionAPI) => unknown };
 
 /**
  * Extension entry files declared by a package manifest: `pi.extensions`
@@ -234,6 +241,31 @@ async function importBridgeModules(source: string): Promise<ExtensionModule[]> {
 	}
 }
 
+/**
+ * Run one source's modules against a shim of their own, so every captured tool
+ * is attributable to the package that registered it, and stamp each with its
+ * source, its original name, and the origin-prefixed name the bridge exposes.
+ * Exported as a test hook.
+ */
+export async function captureSourceTools(
+	realPi: ExtensionAPI,
+	source: string,
+	modules: ExtensionModule[],
+): Promise<CapturedTool[]> {
+	const sourceSink: CapturedTool[] = [];
+	const shim = makeCaptureShim(realPi, sourceSink);
+	for (const module of modules) {
+		try {
+			if (typeof module.default === "function") {
+				await module.default(shim);
+			}
+		} catch {
+			// sibling failed to initialize — bridge without it
+		}
+	}
+	return sourceSink.map((tool) => ({ ...tool, name: bridgedToolName(source, tool.name), source, originalName: tool.name }));
+}
+
 let capturePromise: Promise<CapturedTool[]> | undefined;
 
 /**
@@ -257,17 +289,8 @@ let capturePromise: Promise<CapturedTool[]> | undefined;
 export async function captureBridgeTools(realPi: ExtensionAPI, envOverride?: string): Promise<CapturedTool[]> {
 	capturePromise ??= (async () => {
 		const sink: CapturedTool[] = [];
-		const shim = makeCaptureShim(realPi, sink);
 		for (const source of BRIDGE_SOURCES) {
-			for (const module of await importBridgeModules(source)) {
-				try {
-					if (typeof module.default === "function") {
-						await module.default(shim);
-					}
-				} catch {
-					// sibling failed to initialize — bridge without it
-				}
-			}
+			sink.push(...(await captureSourceTools(realPi, source, await importBridgeModules(source))));
 		}
 		const seen = new Set<string>();
 		return sink.filter((tool) => {
@@ -354,7 +377,8 @@ let callCounter = 0;
  * retries -- so without a guard here, any question a human thought about for
  * longer than that window was asked again, once per window.
  */
-const SINGLE_FLIGHT_TOOLS = new Set(["ask_user_question"]);
+// Keyed on the exposed (prefixed) name: that is what tools/call carries.
+const SINGLE_FLIGHT_TOOLS = new Set(["rpiv_ask_user_question"]);
 
 /** What a single-flight tool is currently holding, and whether its caller left. */
 type InFlightEntry = {
@@ -582,7 +606,14 @@ export interface HttpBridgeHandle {
 	urlWithToken: string;
 	/** Per-session bearer token required on every request. */
 	token: string;
+	/** Exposed (origin-prefixed) names, as kiro sees them in tools/list. */
 	toolNames: string[];
+	/**
+	 * Exposed name -> the name the tool registered under, for tools whose two
+	 * names differ. The prompt uses it to tell kiro which exposed tool a
+	 * caller-session tool name in the history refers to.
+	 */
+	toolAliases?: Record<string, string>;
 	/** Optional `reason` is diagnostic only; it lands in the `bridge.close` trace. */
 	close: (reason?: string) => Promise<void>;
 	/**
@@ -784,6 +815,11 @@ export async function serveBridgeHttp(
 		urlWithToken: `http://127.0.0.1:${address.port}/mcp/${token}`,
 		token,
 		toolNames,
+		toolAliases: Object.fromEntries(
+			tools
+				.filter((tool) => tool.originalName !== undefined && tool.originalName !== tool.name)
+				.map((tool) => [tool.name, tool.originalName as string]),
+		),
 		close,
 		onToolCall: (listener) => {
 			callListeners.add(listener);

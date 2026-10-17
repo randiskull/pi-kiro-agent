@@ -495,6 +495,41 @@ describe("makeStreamViaAcp", () => {
 	});
 
 	describe("tool-call events (parity: chat transport synthesized from log lines)", () => {
+		it("draws a kiro built-in as kiro_<name> and a bridged tool under its exposed name", async () => {
+			const child = new AcpScriptChild();
+			spawnMock.mockImplementationOnce(() => child);
+			void (async () => {
+				const initReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: false }, sessionCapabilities: {}, auth: {} }, authMethods: [], agentInfo: { name: "Kiro", version: "test" } }});
+				const sessionReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId: "sess-n1", modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
+				child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId: "sess-n1", commands: [] }});
+				const promptReq = (await child.awaitLine()) as { id: number };
+				child.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-n1", update: {
+					sessionUpdate: "tool_call", toolCallId: "tooluse_r1", title: "Reading note.txt:1", kind: "read",
+					rawInput: { operations: [{ mode: "Line", path: "note.txt" }] }, _meta: { kiro: { toolName: "read" }},
+				}}});
+				child.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-n1", update: {
+					sessionUpdate: "tool_call", toolCallId: "tooluse_t1", title: "Running: @pi/rpiv_todo",
+					rawInput: { action: "list" }, _meta: { kiro: { toolName: "rpiv_todo", mcpServerName: "pi" }},
+				}}});
+				child.sendLine({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-n1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" }}}});
+				child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+				child.end();
+			})();
+			const events = await collect({ messages: [user("read and list")] });
+			const names = new Set(
+				events
+					.flatMap((e) => ("partial" in e && e.partial ? e.partial.content : []))
+					.filter((b) => b.type === "toolCall")
+					.map((b) => (b as { name: string }).name),
+			);
+			expect([...names]).toEqual(["kiro_read", "rpiv_todo"]);
+			const thinking = events.filter((e) => e.type === "thinking_delta").map((e) => (e as { delta: string }).delta).join("");
+			expect(thinking).toContain("⚙ kiro_read");
+			expect(thinking).toContain("⚙ rpiv_todo");
+		});
+
 		it("surfaces tool_call events for display but strips them from the final message", async () => {
 			const child = new AcpScriptChild();
 			spawnMock.mockImplementationOnce(() => child);
@@ -529,7 +564,7 @@ describe("makeStreamViaAcp", () => {
 				.flatMap((e) => ("partial" in e && e.partial ? e.partial.content : []))
 				.filter((b) => b.type === "toolCall");
 			expect(partialToolCalls.length).toBeGreaterThan(0);
-			expect((partialToolCalls[0] as { name: string }).name).toBe("my_tool");
+			expect((partialToolCalls[0] as { name: string }).name).toBe("mcp_my_tool");
 			// ...tagged display-only, so the strip pass can find it.
 			expect((partialToolCalls[0] as { id: string }).id).toContain("kiro-live-");
 			// ...and it keeps kiro's own id in the suffix so traces stay correlatable.

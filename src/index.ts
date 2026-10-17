@@ -8,9 +8,9 @@
  *
  * An MCP bridge (loopback Streamable-HTTP + per-turn kiro agent profile)
  * exposes the calling Pi session's tools inside delegated runs as
- * @pi/<tool> — whatever bridgeable extensions are installed (pi-subagents'
- * Agent/get_subagent_result/steer_subagent; rpiv's ask_user_question, todo,
- * advisor when present).
+ * @pi/<prefix>_<tool> — whatever bridgeable extensions are installed
+ * (pi-subagents' subagents_Agent/_get_subagent_result/_steer_subagent; rpiv's
+ * rpiv_ask_user_question, rpiv_todo, rpiv_advisor when present).
  *
  * Commands:
  *   /kiro            — readiness status; (re)registers the provider

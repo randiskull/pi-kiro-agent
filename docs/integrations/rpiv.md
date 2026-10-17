@@ -20,8 +20,12 @@ pi install npm:@juicesharp/rpiv-todo
 pi install npm:@juicesharp/rpiv-advisor
 ```
 
-They then appear inside kiro as `@pi/ask_user_question`, `@pi/todo` and
-`@pi/advisor`. No configuration: the bridge captures whatever bridgeable tools
+They then appear inside kiro as `@pi/rpiv_ask_user_question`, `@pi/rpiv_todo`
+and `@pi/rpiv_advisor`. Every bridged tool is exposed under an origin prefix
+taken from the package that registered it (`rpiv_` for the rpiv packages,
+`subagents_` for pi-subagents), so a transcript always shows which
+implementation ran; the delegated prompt tells kiro that the caller's `todo` is
+`@pi/rpiv_todo`. No configuration: the bridge captures whatever bridgeable tools
 your Pi session actually has at turn start.
 
 `ask_user_question` is the one worth understanding. A delegated turn runs
@@ -32,7 +36,9 @@ and block on the answer, instead of guessing and continuing.
 The bridgeable set is a fixed allowlist (`bridge.ts`, `BRIDGE_SOURCES`): the
 three rpiv packages above plus `@tintinweb/pi-subagents`. Project-scope packages
 are never trusted as bridge sources, so a cloned repo cannot inject a tool.
-Override which of the captured tools are exposed with `PI_KIRO_BRIDGE_TOOLS`, or
+Override which of the captured tools are exposed with `PI_KIRO_BRIDGE_TOOLS`
+(prefixed names, e.g. `rpiv_todo,subagents_Agent`; a bare `todo` matches
+nothing and is reported as missing), or
 disable the bridge with `PI_KIRO_BRIDGE=off`.
 
 ## Subagent routing

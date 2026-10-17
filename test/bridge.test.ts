@@ -193,6 +193,37 @@ describe("serveBridgeHttp", () => {
 		).rejects.toThrow();
 	});
 
+	it("serves origin-prefixed names only: a bare name is unknown, aliases map back, onToolCall reports the exposed name", async () => {
+		const tool = makeTool({ name: "rpiv_todo", source: "@juicesharp/rpiv-todo", originalName: "todo" });
+		const handle = await serveBridgeHttp([tool], () => FAKE_CTX, new AbortController().signal);
+		if (!handle?.onToolCall) throw new Error("expected handle with onToolCall");
+		expect(handle.toolNames).toEqual(["rpiv_todo"]);
+		expect(handle.toolAliases).toEqual({ rpiv_todo: "todo" });
+		const seen: string[] = [];
+		handle.onToolCall((name) => seen.push(name));
+		const client = new Client({ name: "test-client", version: "1.0.0" });
+		try {
+			await client.connect(
+				new StreamableHTTPClientTransport(new URL(handle.url), {
+					requestInit: { headers: { Authorization: `Bearer ${handle.token}` } },
+				}),
+			);
+			expect((await client.listTools()).tools.map((entry) => entry.name)).toEqual(["rpiv_todo"]);
+
+			const ok = await client.callTool({ name: "rpiv_todo", arguments: { op: "list" } });
+			expect(ok.isError ?? false).toBe(false);
+			expect((tool.execute as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toEqual({ op: "list" });
+			expect(seen).toEqual(["rpiv_todo"]);
+
+			const bare = await client.callTool({ name: "todo", arguments: { op: "list" } });
+			expect(bare.isError).toBe(true);
+			expect(bare.content).toEqual([{ type: "text", text: "Unknown bridged tool: todo" }]);
+		} finally {
+			await client.close();
+			await handle.close();
+		}
+	});
+
 	it("onToolCall reports each call's name and arguments, and a throwing listener does not fail the call", async () => {
 		const handle = await serveBridgeHttp([makeTool()], () => FAKE_CTX, new AbortController().signal);
 		if (!handle?.onToolCall) throw new Error("expected handle with onToolCall");
@@ -345,6 +376,15 @@ describe("warnOnMissingBridgeTools", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+	});
+
+	it("a bare name in PI_KIRO_BRIDGE_TOOLS matches nothing and is named as missing", () => {
+		const spy = spyOnStderr();
+		const allowed = allowedToolNames("todo, rpiv_advisor, rpiv_advisor");
+		expect([...allowed].sort()).toEqual(["rpiv_advisor", "todo"]);
+		warnOnMissingBridgeTools(allowed, [{ name: "rpiv_todo" }, { name: "rpiv_advisor" }]);
+		expect(spy).toHaveBeenCalledTimes(1);
+		expect(String(spy.mock.calls[0]?.[0])).toContain("tool `todo` was requested");
 	});
 
 	it("names a single missing tool in the singular", () => {

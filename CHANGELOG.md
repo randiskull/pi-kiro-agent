@@ -69,6 +69,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: tool names carry their origin (#46).** A tool row in a delegated turn did not say which
+  implementation ran: `read` could be kiro's built-in or pi's, `todo` pi's native tool or rpiv's
+  through the bridge. Every name pi-kiro shows or exposes is now origin-prefixed.
+  - The bridge exposes each tool under a prefix derived from the package that registered it: `rpiv_`
+    for `@juicesharp/rpiv-*`, otherwise the unscoped package name minus `pi-`, sanitized
+    (`@tintinweb/pi-subagents` -> `subagents_`). kiro calls `@pi/rpiv_todo`; a bare `todo` is an unknown
+    tool. The delegated prompt maps the caller's names onto the exposed ones.
+  - **`PI_KIRO_BRIDGE_TOOLS` takes prefixed names only.** A bare name matches nothing and is reported
+    by the existing missing-tool warning. The defaults:
+
+    | Before | After |
+    |---|---|
+    | `ask_user_question` | `rpiv_ask_user_question` |
+    | `todo` | `rpiv_todo` |
+    | `advisor` | `rpiv_advisor` |
+    | `Agent` | `subagents_Agent` |
+    | `get_subagent_result` | `subagents_get_subagent_result` |
+    | `steer_subagent` | `subagents_steer_subagent` |
+
+  - Tool rows and `⚙` markers on both transports name kiro built-ins `kiro_<name>` (`kiro_read`),
+    gsd-workflow tools `gsd_<name>`, and tools from any other MCP server `<server>_<name>`. Names kiro and
+    GSD own are only renamed for display. A prefixed row renders with pi's generic tool renderer.
+
 - **Comment audit across `src/` and `test/`: housekeeping prose out, functional comments only.**
   Removed code history ("used to", "formerly", "previously duplicated here"), internal task and
   gate ids (`[L0-04]`, `M001`, `G9`, probe-gate references), incident anecdotes, measurement

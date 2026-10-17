@@ -20,11 +20,13 @@
 
 import { createHash } from "node:crypto";
 import type { ToolCall } from "@earendil-works/pi-ai";
+import { displayToolName } from "./tool-names.js";
 
 /** One MCP tool invocation parsed from kiro's non-interactive output. */
 export interface KiroToolUse {
 	name: string;
-	server: string;
+	/** The MCP server the tool came from; undefined when the line names none. */
+	server: string | undefined;
 	arguments: Record<string, unknown>;
 }
 
@@ -47,11 +49,11 @@ const MCP_TOOL_LINE = /^\s*\[tool\]\s+Running:\s+@([^/\s]+)\/(\S+)\s*$/;
  * Match either tool-use grammar kiro has emitted. Returning a normalized
  * {name, server} keeps the two capture-group orders from leaking into callers.
  */
-function matchToolUseLine(line: string): { name: string; server: string } | undefined {
+function matchToolUseLine(line: string): { name: string; server: string | undefined } | undefined {
 	const legacy = line.match(TOOL_USE_LINE);
-	if (legacy) return { name: legacy[1] ?? "", server: legacy[2] ?? "" };
+	if (legacy) return { name: legacy[1] ?? "", server: legacy[2] || undefined };
 	const compact = line.match(MCP_TOOL_LINE);
-	if (compact) return { name: compact[2] ?? "", server: compact[1] ?? "" };
+	if (compact) return { name: compact[2] ?? "", server: compact[1] || undefined };
 	return undefined;
 }
 
@@ -139,7 +141,8 @@ export function synthesizeToolCallBlocks(body: string): ToolCall[] {
 	return parseKiroToolUses(body).map((use, index) => ({
 		type: "toolCall",
 		id: `kiro-mcp-${bodyDigest}-${index}-${use.name}`,
-		name: use.name,
+		// Origin-prefixed for display (tool-names.ts); the id keeps kiro's name.
+		name: displayToolName(use.name, use.server),
 		// Parsed from JSON text, so every value is already JSON; pi >= 0.86 types
 		// ToolCall.arguments as JsonObject rather than Record<string, unknown>.
 		arguments: use.arguments as ToolCall["arguments"],
