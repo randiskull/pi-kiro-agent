@@ -471,15 +471,15 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
 - **Lint presence is not substance.** An author can write a
   `- **Negative control` bullet that is not one. Lint only stops the omission;
   the reviewer judges the content, and c3 tests that the reviewer does.
-- **Six cases from two real specs, five of them from one, all defect-typed.** The feature column of D1
-  is uncalibrated, and the set can over-fit one exemplar's shape. This spec is
-  the first feature spec. Rubric 2 should add a feature case and a mutant of it.
+- **Eight cases from three specs, six of them from two exemplars.** Rubric 2
+  added the first feature-typed pair (c7, c8), so D1's feature column has an
+  expectation, on one spec's shape. The set can still over-fit its exemplars.
 - **The eligible model pool shrinks with every pass.** A model that took part in
   a pass, or in a wording fix made in response to one, cannot be one of the two
   runs. Six are now spent, and the fixes the last pair calls for will spend the
   next two. That cost is the reason Rubric 2 should widen the set rather than
   keep re-tuning these six: a wider set makes each exclusion cheaper.
-- **The c2 labels are judgement.** The maintainer ratifies them before
+- **The c2 and c7 labels are judgement.** The maintainer ratifies them before
   criterion 12 counts as met. The held-out run passed c2 G3 and G4 where the key
   fails them, which puts those two labels specifically in question.
 - **Three gate-wording defects were found by the held-out pair**, deferred so

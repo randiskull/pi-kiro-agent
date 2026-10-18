@@ -1,6 +1,6 @@
 # Calibration set for the spec-review rubric
 
-Six specs with known answers. The rubric (`spec-review/rubric.md`) may only
+Eight specs with known answers. The rubric (`spec-review/rubric.md`) may only
 merge, or change, when two independent reviewer runs over this set meet the ship
 bar below. The set stays as a regression suite: every rubric edit re-runs it.
 
@@ -45,6 +45,8 @@ The names are opaque on purpose: a reviewer that sees `c3.md` learns nothing.
 | c4 | real spec (`acp-print-mode-exit.md`), the exemplar, corrected by calibration | false fails: this one should pass |
 | c5 | mutant of c4 | G2: a nonexistent commit and a misspelled symbol |
 | c6 | mutant of c4 | D1: the causal chain replaced by a hedge, with the evidence left in place |
+| c7 | feature spec written for the set (R8 and R9 of `docs/design/v3-engine.md`), at ref `68ffb40` | false fails on a **feature** spec: this one should pass, and its Problem is measured |
+| c8 | mutant of c7, at ref `68ffb40` | D1's feature column: the same Problem with every measurement replaced by an assertion |
 
 c2 and c4 are frozen copies of two specs that were untracked in the
 maintainer's working copy on 2026-10-17. Both originals are now committed under
@@ -58,21 +60,26 @@ sha256, so an edit to a case fails CI until `expected.json` is updated on purpos
 original corrected over eight passes, and the diff between them is that audit
 trail.
 
-Every case cites code as of commit `61bb96f`, so it is linted and reviewed
-against that commit, not against `main`. c4 and the mutants cite
+c1 to c6 cite code as of commit `61bb96f`, so they are linted and reviewed
+against that commit, not against `main`. c4 and its mutants cite
 `docs/specs/dual-host-pi-gsd.md`, which in this set is `cases/c2.md`
-(`expected.json` `aliases`).
+(`expected.json` `aliases`). c7 and c8 cite `docs/design/v3-engine.md`, which
+`61bb96f` predates, so they carry their own ref, `68ffb40` (`expected.json`
+`cases.<name>.ref`): the last commit on `main` before this set merged, so a
+clone checked out there cannot reach the key either. A case with no `ref` uses
+the set's.
 
 ## Running the deterministic half
 
 ```
 node scripts/spec-lint.mjs --ref 61bb96f \
   --alias docs/specs/dual-host-pi-gsd.md=spec-review/calibration/cases/c2.md \
-  spec-review/calibration/cases/c*.md
+  spec-review/calibration/cases/c[1-6].md
+node scripts/spec-lint.mjs --ref 68ffb40 spec-review/calibration/cases/c[78].md
 ```
 
 c3 must fail `[G3]`, c5 must fail `[G2]` naming both `6ea0517` and
-`serveBridgeHTTP`, and the other four must pass. `npm test` runs the same check
+`serveBridgeHTTP`, and the other six must pass. `npm test` runs the same check
 (`test/spec-lint.test.ts`), so CI holds it.
 
 ## Running a reviewer pass
@@ -86,7 +93,7 @@ clone that has never held the key:
 
 ```
 git clone --no-local --no-checkout . ../pk-cal && cd ../pk-cal
-git checkout --detach 61bb96f
+git checkout --detach 61bb96f    # 68ffb40 for c7 and c8, in a clone of its own
 git for-each-ref --format='%(refname)' | xargs -r -n1 git update-ref -d
 git reflog expire --expire=now --all && git gc --prune=now
 git cat-file -e <expected.json blob> && echo "LEAK: the key is reachable" && exit 1
@@ -102,7 +109,9 @@ cp spec-review/rubric.md spec-review/calibration/cases/c2.md "$in"/
 cp spec-review/calibration/cases/c1.md "$in"/spec.md
 ```
 
-`c2.md` is copied for every case because the others cite it. Give the verdict
+`c2.md` is copied for c1 to c6, because c4 and its mutants cite it; c7 and c8
+cite nothing outside their clone, so their input directory holds only the
+rubric and `spec.md`, and the prompt drops its `c2.md` sentence. Give the verdict
 path explicitly, so parallel sessions cannot overwrite each other. Then give the
 reviewer this prompt, working directory `../pk-cal`:
 
@@ -143,8 +152,9 @@ From `expected.json` `shipBar`, in short:
    every dimension threshold, and, where a case lists `mustQuoteOneOf`, a finding
    quoting one of those strings with the expected tag. A `revise` on c4 is a
    false fail and counts as a miss.
-3. **Gate agreement**: the two runs agree on all 30 gate decisions (6 cases x
-   5 gates). Dimensions are held to thresholds, not to agreement.
+3. **Gate agreement**: the two runs agree on every gate decision, 40 since
+   Rubric 2 (8 cases x 5 gates; 30 before c7 and c8). Dimensions are held to
+   thresholds, not to agreement.
 4. A disagreement or a miss means the rubric's wording is wrong. Fix the
    wording, bump `Rubric:` if the meaning changed (from this file's first merge
    onwards), and re-run **both** passes. Never resolve it by choosing the run
@@ -321,7 +331,8 @@ under Rubric 1, and what changed is the text a reviewer reads to reach them.
 | G5 says what the words "dropped", "unchanged" and "no follow-up" do, and that a descriptive word is a reason | c2 G5's reason, which counted an "unchanged" item as having no disposition | each of the three words is a disposition on its own, so c3 to c6's "No follow-up" item still passes; a word describing the item ("not needed") is a reason beside one, not a disposition |
 | `Reviewer:` is written by the runner | the pair's six self-reported model ids | the runner gives the line or writes it; an unknown reviewer is `unknown, unknown`. The spec's `## Attribution` line has the same limit and the same rule |
 
-Two reasons in `expected.json` were corrected with them, and no label: c2 G2 now
+It also adds two cases, c7 and c8 ("The feature cases", below). Two reasons in
+`expected.json` were corrected with the wording, and no label: c2 G2 now
 fails on three unnamed sources rather than one, and c2 G5 on the transport item
 alone. c1's G1 reason now argues the label from the mutation and the code at
 `61bb96f` (`useResume` is decided before `resolveSession()` runs and still
@@ -334,17 +345,40 @@ G5 wording, and they cover c3, c5 and c6 where the text is shared. `shipBar.held
 The two runs that measure Rubric 2 must come from models outside that list, and
 they spend two more.
 
-## Known limits of Rubric 1's set
+## The feature cases
 
-- **All six are defect specs.** No feature spec is calibrated, so the feature
-  column of D1 is untested. `docs/specs/spec-review-bus.md` is the first feature
-  spec; Rubric 2 should add one feature case and a mutant of it.
-- **Five of six derive from one exemplar** (c4 and its four mutants). The set can teach a rubric to grade
-  that spec's shape well. Add real specs as they are reviewed.
-- **The c2 labels are judgement, not construction.** A mutant's answer follows
-  from the edit that made it; c2's follows from reading it. The maintainer
-  ratifies them before the first run counts (`expected.json` `labelledBy`), and
-  the held-out run put G3 and G4 specifically in question.
+Rubric 2 adds c7 and c8, the set's first feature-typed pair, so D1's feature
+column has an expectation for the first time. c7 is not a copy of an existing
+spec: `docs/specs/spec-review-bus.md` was the only feature spec in the repository,
+and it describes this calibration set, so a reviewer given it would be reading
+about the answer key. c7 instead takes two requirements of the v3 engine design
+(R8 and R9 of `docs/design/v3-engine.md`) that no spike blocks, and writes them
+up as a small, buildable spec with its Problem measured at `68ffb40`: the reader
+driven with the design doc's recorded v3 payloads, and a `jq` count over every
+committed v2 capture. Both measurements were re-run before the case was frozen
+and reproduce.
+
+c8 removes exactly those measurements and states the same findings as
+assertions. Everything else, including the gaps' ties to code, is unchanged, so
+the pair differs only in what D1's feature anchors 2 and 3 separate.
+
+c7's labels are judgement, as c4's were when it was frozen, and c4 needed eight
+passes to become a passing exemplar. A first pass that fails c7 is evidence
+about c7 before it is evidence about the rubric, and is checked against the
+code at `68ffb40` the way c4's corrections were.
+
+## Known limits of the set
+
+- **Two feature cases against six defect cases.** c7 and c8 calibrate D1's
+  feature column on one spec's shape.
+- **Six of eight derive from two exemplars** (c4 and its four mutants, c7 and
+  its one). The set can teach a rubric to grade those shapes well. Add real
+  specs as they are reviewed.
+- **The c2 and c7 labels are judgement, not construction.** A mutant's answer
+  follows from the edit that made it; c2's and c7's follow from reading them.
+  The maintainer ratifies them before the first run counts (`expected.json`
+  `labelledBy`), and the held-out run put c2's G3 and G4 specifically in
+  question.
 - **The eligible model pool is shrinking.** Every pass spends its models: six
   are now excluded, all named in `expected.json` `shipBar.heldOut` since
   Rubric 2. A set that can only be

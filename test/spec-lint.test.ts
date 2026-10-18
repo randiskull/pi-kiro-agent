@@ -40,16 +40,20 @@ interface LintResult {
 interface Expected {
 	ref: string;
 	aliases: Record<string, string>;
-	cases: Record<string, { sha256: string; lint: { fail: string[]; mustName?: string[] } }>;
+	cases: Record<string, { ref?: string; sha256: string; lint: { fail: string[]; mustName?: string[] } }>;
 }
 
 const expected = JSON.parse(readFileSync(join(calibration, "expected.json"), "utf8")) as Expected;
 
-function lint(files: string[], extra: string[] = []): { status: number | null; results: LintResult[]; stderr: string } {
+function lint(
+	files: string[],
+	extra: string[] = [],
+	ref: string = expected.ref,
+): { status: number | null; results: LintResult[]; stderr: string } {
 	const aliasArgs = Object.entries(expected.aliases).flatMap(([cited, actual]) => ["--alias", `${cited}=${actual}`]);
 	const run = spawnSync(
 		process.execPath,
-		["scripts/spec-lint.mjs", "--json", "--ref", expected.ref, ...aliasArgs, ...extra, ...files],
+		["scripts/spec-lint.mjs", "--json", "--ref", ref, ...aliasArgs, ...extra, ...files],
 		{ cwd: root, encoding: "utf8" },
 	);
 	const results = run.status === 2 ? [] : (JSON.parse(run.stdout) as LintResult[]);
@@ -62,12 +66,23 @@ const findings = (r: LintResult, id: string) => r.checks.find((c) => c.id === id
 describe("spec-lint on the calibration set (spec-review/calibration)", () => {
 	const caseNames = Object.keys(expected.cases).sort();
 	const files = caseNames.map((name) => `spec-review/calibration/cases/${name}.md`);
-	const run = lint(files);
+	// A case cites the code at its own ref (expected.json cases.<name>.ref), else
+	// the set's: one lint run per ref, results put back in case order.
+	const refOf = (name: string) => expected.cases[name].ref ?? expected.ref;
+	const runs = [...new Set(caseNames.map(refOf))].map((ref) => {
+		const names = caseNames.filter((name) => refOf(name) === ref);
+		return { names, ...lint(names.map((name) => `spec-review/calibration/cases/${name}.md`), [], ref) };
+	});
+	const byName = new Map(runs.flatMap((r) => r.names.map((name, i) => [name, r.results[i]] as const)));
+	const run = { results: caseNames.map((name) => byName.get(name) as LintResult) };
 
 	it("runs to a verdict rather than giving up (exit 0 or 1, never 2)", () => {
-		expect(run.stderr, "spec-lint could not verify; a shallow clone needs fetch-depth: 0").toBe("");
-		expect([0, 1]).toContain(run.status);
-		expect(run.results.map((r) => r.spec)).toEqual(files);
+		for (const r of runs) {
+			expect(r.stderr, "spec-lint could not verify; a shallow clone needs fetch-depth: 0").toBe("");
+			expect([0, 1]).toContain(r.status);
+			expect(r.results.map((x) => x.spec)).toEqual(r.names.map((name) => `spec-review/calibration/cases/${name}.md`));
+		}
+		expect(run.results.map((r) => r?.spec)).toEqual(files);
 	});
 
 	it("expected.json and cases/ name the same cases", () => {
@@ -76,7 +91,7 @@ describe("spec-lint on the calibration set (spec-review/calibration)", () => {
 			.map((f) => f.replace(/\.md$/, ""))
 			.sort();
 		expect(onDisk).toEqual(caseNames);
-		expect(caseNames.length).toBe(6);
+		expect(caseNames.length).toBe(8);
 	});
 
 	it("every case is byte-identical to the one that was labelled", () => {

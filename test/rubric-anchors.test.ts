@@ -73,7 +73,7 @@ const rubric = readFileSync(join(root, "spec-review", "rubric.md"), "utf8");
 
 describe("spec-review/rubric.md does not quote the calibration cases", () => {
 	it("reads the cases it grades against", () => {
-		expect(cases.size).toBe(6);
+		expect(cases.size).toBe(8);
 	});
 
 	// Without this, an extractor that returned nothing would satisfy the

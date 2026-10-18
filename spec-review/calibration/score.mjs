@@ -23,6 +23,11 @@
  * one, or a case name that is not a bare name all come back as a non-counting run,
  * because the exit code is what criterion 12 reads.
  *
+ * A run is scored on the cases its RUN.json says it reviewed (scoredAgainst.cases),
+ * or on every case when it has no RUN.json. A case added to the set after a run was
+ * made is named on a line of its own and not scored: that run predates it, and its
+ * blobs already say it cannot count. Gate agreement is over the cases every run has.
+ *
  * Exit 0 only when every run counts, every case meets every expectation in every
  * run and, with two or more runs, all gate decisions agree. Criterion 12 of
  * docs/specs/spec-review-bus.md is this exit code, so a stale or self-declared
@@ -126,11 +131,19 @@ function checkBlobs(dir) {
 	return { counted: true, line: "blobs: match the rubric, the key and every case here; the run counts" };
 }
 
+function casesOf(dir) {
+	const runJson = join(dir, "RUN.json");
+	if (!existsSync(runJson)) return Object.keys(expected.cases);
+	const listed = Object.keys(JSON.parse(readFileSync(runJson, "utf8")).scoredAgainst?.cases ?? {});
+	return listed.length ? Object.keys(expected.cases).filter((name) => listed.includes(name)) : Object.keys(expected.cases);
+}
+
 function scoreRun(dir) {
 	const lines = [];
 	const decisions = {};
 	let missed = 0;
-	for (const [name, c] of Object.entries(expected.cases)) {
+	const names = casesOf(dir);
+	for (const [name, c] of Object.entries(expected.cases).filter(([name]) => names.includes(name))) {
 		const v = parseVerdict(readFileSync(join(dir, `${name}.verdict.md`), "utf8"));
 		const want = c.review;
 		const misses = [];
@@ -150,6 +163,8 @@ function scoreRun(dir) {
 		const dims = DIMS.map((d) => `${d}${Number.isNaN(v.dims[d]) ? "?" : v.dims[d]}`).join(" ");
 		lines.push(`  ${name}: ${(v.outcome ?? "?").padEnd(7)} gates ${gates} ${dims}  ${misses.length ? `MISS: ${misses.join("; ")}` : "OK"}`);
 	}
+	const absent = Object.keys(expected.cases).filter((name) => !names.includes(name));
+	if (absent.length) lines.push(`  not in this run (added to the set after it): ${absent.join(", ")}`);
 	return { lines, decisions, missed };
 }
 
@@ -162,7 +177,7 @@ const runs = dirs.map((d) => ({ dir: d, blobs: checkBlobs(d), ...scoreRun(d) }))
 for (const r of runs) console.log(`=== ${basename(r.dir)}\n  ${r.blobs.line}\n${r.lines.join("\n")}`);
 let disagreements = [];
 if (runs.length > 1) {
-	const keys = Object.keys(runs[0].decisions);
+	const keys = Object.keys(runs[0].decisions).filter((k) => runs.every((r) => k in r.decisions));
 	disagreements = keys.filter((k) => new Set(runs.map((r) => r.decisions[k])).size > 1);
 	console.log(`gate agreement: ${keys.length - disagreements.length}/${keys.length}${disagreements.length ? `  (disagree: ${disagreements.join(", ")})` : ""}`);
 }

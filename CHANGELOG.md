@@ -25,10 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `countsTowardsShipBar: false` (`spec-review/calibration/runs/SCORE.md`). Rubric 2 fixes the
   three gate-wording defects those misses exposed (G1, G2 and G4), clarifies G5, and has the person
   running a review write the verdict's `Reviewer:` line instead of the model, which cannot see its
-  own model id (#67). It has no calibration run yet, and the spec's ship-bar criterion says `Open`.
-  The queue, verdict validation and the CI gate are specified and not built. Contributor tooling
-  only: nothing under `spec-review/` or `scripts/` is in the published package. Design:
-  `docs/specs/spec-review-bus.md`.
+  own model id (#67). It also adds the set's first feature-typed case and a mutant of it, so D1's
+  feature column has an expectation. It has no calibration run yet, and the spec's ship-bar
+  criterion says `Open`. The queue, verdict validation and the CI gate are specified and not built.
+  Contributor tooling only: nothing under `spec-review/` or `scripts/` is in the published package.
+  Design: `docs/specs/spec-review-bus.md`.
 
 ### Changed
 
