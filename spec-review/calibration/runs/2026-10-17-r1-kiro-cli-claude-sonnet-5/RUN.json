@@ -1,0 +1,21 @@
+{
+	"runId": "2026-10-17-r1-kiro-cli-claude-sonnet-5",
+	"harness": "kiro-cli",
+	"model": "claude-sonnet-5",
+	"calibrationPass": null,
+	"ref": "61bb96f",
+	"scoredAgainst": {
+		"rubric": "cc5e347454eab30dd3cbe6d749694a95d4a338bc",
+		"expected": "7c3482560567bb1a12c6ece5a75e245a966c1a1f",
+		"cases": {
+			"c1": "4f7fc8231a50c5b7198959520e93ef9da1886775",
+			"c2": "243a1eaadb9f21732996bcc8abba5bc34e6025b0",
+			"c3": "20985efe4052a821ad6abd5ac02852b2c2146a2d",
+			"c4": "3e3e121ec784f541c8a192a7cb581cded0ad8bc7",
+			"c5": "2dbde55c3fdfd8322fc317a3fe051451d300e161",
+			"c6": "d9ad6cb04248e96c40d8b881ebe47cdac694ec20"
+		}
+	},
+	"countsTowardsShipBar": false,
+	"whyNot": "Held out from passes 1 to 8 and scored against the key unchanged, which is why it is the honest measurement of Rubric 1 as it stood. It missed three cases, so it does not meet the bar; and its misses drove the wording fixes for review items 7, 8 and 20, which puts claude-sonnet-5 in the tuning loop for any later run (shipBar.heldOut)."
+}

@@ -19,6 +19,11 @@ jobs:
         node: ["22", "24"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history: test/spec-lint.test.ts resolves the commits the
+          # spec-review calibration set cites, and a shallow clone has none of
+          # them (spec-lint exits 2 there rather than passing).
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}

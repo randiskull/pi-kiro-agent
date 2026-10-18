@@ -1,0 +1,21 @@
+{
+	"runId": "2026-10-17-r1-other-claude-opus-5-5",
+	"harness": "other",
+	"model": "claude-opus-5-5",
+	"calibrationPass": 8,
+	"ref": "61bb96f",
+	"scoredAgainst": {
+		"rubric": "cc5e347454eab30dd3cbe6d749694a95d4a338bc",
+		"expected": "7c3482560567bb1a12c6ece5a75e245a966c1a1f",
+		"cases": {
+			"c1": "4f7fc8231a50c5b7198959520e93ef9da1886775",
+			"c2": "243a1eaadb9f21732996bcc8abba5bc34e6025b0",
+			"c3": "20985efe4052a821ad6abd5ac02852b2c2146a2d",
+			"c4": "3e3e121ec784f541c8a192a7cb581cded0ad8bc7",
+			"c5": "2dbde55c3fdfd8322fc317a3fe051451d300e161",
+			"c6": "d9ad6cb04248e96c40d8b881ebe47cdac694ec20"
+		}
+	},
+	"countsTowardsShipBar": false,
+	"whyNot": "Pass 8's answer key was relabelled (c1 G1) because this run and its pair both failed that gate, and the same two runs were then scored against the new key with nothing re-run. shipBar.relabelling forbids that, so the 30/30 is withdrawn. The model is also in the tuning loop for passes 1 to 8 (shipBar.heldOut)."
+}

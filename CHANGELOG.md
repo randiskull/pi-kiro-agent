@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **Implementation specs get a rubric and a linter before anyone builds them.**
+  `spec-review/rubric.md` (Rubric 1) defines five pass/fail gates and six separately scored
+  dimensions for a spec in `docs/specs/`, and `scripts/spec-lint.mjs` checks the part a script can:
+  structure, defect or feature typing, attribution, and that cited paths, commits, `§` sections and
+  npm scripts exist, with near-miss detection for misspelled symbols. A six-case calibration set
+  (`spec-review/calibration/`) measures whether two independent reviewers reach the same gate
+  decisions on it, with the two real specs two cases were frozen from committed beside them
+  (`spec-review/calibration/originals/`); `test/spec-lint.test.ts` pins the linter against the set,
+  and `test/rubric-anchors.test.ts` holds that no rubric anchor quotes a case it has to catch.
+  **Rubric 1 has no passing calibration result:** the first reported one was scored against an
+  answer key that had been relabelled to match those same runs and is withdrawn, and three later
+  runs held out from every pass each missed cases, most recently a pair that agreed with each other
+  on 28 of 30 gate decisions and missed four of twelve cases. All five committed runs record
+  `countsTowardsShipBar: false` (`spec-review/calibration/runs/SCORE.md`). The three gate-wording
+  defects those misses exposed are deferred to Rubric 2 (issue 67), and the spec's ship-bar
+  criterion says `Open`. The queue, verdict validation and the CI gate are specified and not
+  built. Contributor tooling only: nothing under `spec-review/` or `scripts/` is
+  in the published package. Design: `docs/specs/spec-review-bus.md`.
+
 ### Changed
 
 - **A stream-json turn that is priced more than once now traces it.** Credits come from the last
