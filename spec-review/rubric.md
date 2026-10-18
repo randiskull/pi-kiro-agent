@@ -1,6 +1,6 @@
 # Spec review rubric
 
-Rubric: 1
+Rubric: 2
 
 This is the bar an implementation spec in `docs/specs/` must clear before anyone
 builds it. It is written for a reviewer that is not the author: a teammate
@@ -62,6 +62,20 @@ or signature other code or users will depend on.
   decision to whoever implements it, or marks it to be settled later. Also an
   option list with no selection, and a degrade or fallback path that does not
   say what is skipped.
+- **Also fails, with no choice offered:** a behaviour the spec introduces whose
+  effect in a case the spec names is decided nowhere. The spec need not present
+  it as open. If the change removes or bypasses something that existing code
+  relies on to handle that case, and the spec neither says what replaces it nor
+  why the case cannot arise, the case is undecided, even though the code would
+  do something when run.
+- **Not G1:** a behaviour the spec does decide, but whose safety it does not
+  argue, is a D2 finding; one that contradicts another part of the spec or a
+  design decision is a D3 finding. A spec can fail G1 and lose D2 or D3 for the
+  same change when both are true: the first asks whether the behaviour is
+  decided at all, the others whether the decision is sound.
+
+This list is the gate. The opening sentence says what G1 is for, and every way
+of falling short of it is one of the bullets above.
 
 Check: reviewer.
 
@@ -70,8 +84,11 @@ Check: reviewer.
 Every cited path, symbol, commit, § reference and command exists and is the
 thing the spec says it is. A claim the spec credits to a source (a rule, a
 document, a note, another program's behaviour) is a citation too: the source is
-named precisely enough to open, and it says what the spec says it does. "Per the
-repo rule" with no rule in the repo, or "older notes" with no notes named, fails.
+named precisely enough to open, and it says what the spec says it does. A
+source that is not named fails on that alone: "per the repo rule" with no rule
+named, or "older notes" with no notes named, fails whether or not a document
+saying something similar exists. A reviewer who finds such a document does not
+repair the citation; naming it is the author's fix.
 
 - **Script half (lint G2):** a repo path that does not exist at the ref; a path
   or symbol that is a near miss of a real one (`scr/` for `src/`, wrong case, or
@@ -107,11 +124,21 @@ then reviewer (it is a real one).
 
 Each acceptance criterion states an observable outcome (exit code, output,
 trace event, test assertion, file content, a link to a CI run) and names the
-evidence to capture, and at least one Verification plan step produces that
-evidence. A documentation criterion's evidence is the named file.
+evidence to capture. A **behaviour criterion** (anything a program does) also
+needs at least one Verification plan step that produces that evidence.
+
+A **documentation criterion** (one that is met by what a file in the
+repository says, such as a CHANGELOG entry, a version field or a doc section)
+is governed by this paragraph alone, not by the step requirement above. It
+passes when it names the file precisely enough to open and says what the file
+must contain. Its evidence is that file, so it needs no Verification plan step;
+a step that inspects the file is allowed, and its absence is not a finding. A
+criterion that mixes the two is a behaviour criterion for its behaviour part.
 
 - **Fails:** "works", "is robust", "no regressions" without the suite named; a
-  criterion no Verification plan step would produce evidence for.
+  behaviour criterion no Verification plan step would produce evidence for; a
+  documentation criterion that does not say which file, or does not say what it
+  must contain.
 
 Check: reviewer.
 
@@ -119,7 +146,12 @@ Check: reviewer.
 
 `### In scope` and `### Out of scope` are both present, and each out-of-scope
 item says where it goes: a named spec, issue or owner, or that it is dropped
-or unchanged with no follow-up, with the reason. A reason alone is not a
+or unchanged with no follow-up, with the reason. The word dropped or unchanged
+is itself the statement that nothing follows; it need not be repeated as "no
+follow-up". A word that describes the item instead of deciding about it (that
+it is not affected, not needed or not relevant) is a reason, not a
+disposition, so it passes only alongside one of the dispositions above. A
+reason alone is not a
 disposition: saying why the item is out of scope does not say whether anything
 follows it, and an item that gives only a reason fails.
 
@@ -229,7 +261,7 @@ exact spec text it judged:
 
 ```
 spec-review verdict for docs/specs/<slug>.md blob <40-hex git blob sha>
-Rubric: 1
+Rubric: 2
 Reviewer: <harness>, <model>
 Outcome: pass
 
@@ -257,6 +289,8 @@ Outcome: pass
   committing a verdict never changes a spec's blob, so it cannot re-trigger a review.
 - Every line above `## Findings` is machine-read: ASCII only, exact spelling,
   one gate or dimension per line, all eleven present.
+- The `Reviewer:` line comes from whoever ran the review, never from the
+  reviewing model's idea of itself ("Reviewer independence").
 - A verdict is invalid, and counts as no verdict, if the header does not parse,
   a gate or dimension line is missing, the outcome does not follow from the
   gates and dimensions by the table above, or a failed gate or a dimension at 2
@@ -270,6 +304,14 @@ Outcome: pass
 - The verdict's `Reviewer:` line records harness and model. The queue flags,
   without blocking, a verdict whose reviewer matches the spec's
   `## Attribution` harness and model.
+- **The `Reviewer:` line is written by whoever runs the review, not by the
+  reviewing model.** A model cannot see its own model id, so a line it fills in
+  is a guess. The person or script that starts the session knows which harness
+  and model it launched: it either gives the reviewer the exact line to copy,
+  or writes the line into the verdict after the session ends. A reviewer that
+  was not given the line writes `Reviewer: unknown, unknown`, which is valid
+  and which the independence flag cannot match. The line is a record made by
+  the runner, so it is as trustworthy as the runner, and no more.
 
 ## Review procedure
 
