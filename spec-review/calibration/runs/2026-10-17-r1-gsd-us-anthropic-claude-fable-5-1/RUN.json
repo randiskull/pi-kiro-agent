@@ -1,0 +1,24 @@
+{
+	"runId": "2026-10-17-r1-gsd-us-anthropic-claude-fable-5-1",
+	"harness": "gsd",
+	"harnessVersion": "@opengsd/gsd-pi 1.22.0",
+	"model": "us.anthropic.claude-fable-5-1",
+	"modelRoute": "amazon-bedrock, us-west-2. The base model id is anthropic.claude-fable-5-1; us.anthropic.claude-fable-5-1 is its US cross-region inference profile, which is what on-demand invocation requires. Both are public Bedrock identifiers. The same weights are reachable through kiro-cli as claude-fable-5.1, which that CLI flags as internal and development-only; the public Bedrock identifier is recorded here on purpose.",
+	"calibrationPass": null,
+	"ref": "61bb96f",
+	"scoredAtCommit": "f64d2eb0e665de5c6fe75a158e3d4be8ac1ff82b",
+	"scoredAgainst": {
+		"rubric": "c3caeb287c84b3a41cb6fa1c319bab24fa937902",
+		"expected": "dfd81da8a350c99fab027c97cd2c75c82f5bcd51",
+		"cases": {
+			"c1": "4f7fc8231a50c5b7198959520e93ef9da1886775",
+			"c2": "0cc053895dd7742ed2987524854b870290723d53",
+			"c3": "20985efe4052a821ad6abd5ac02852b2c2146a2d",
+			"c4": "3e3e121ec784f541c8a192a7cb581cded0ad8bc7",
+			"c5": "2dbde55c3fdfd8322fc317a3fe051451d300e161",
+			"c6": "d9ad6cb04248e96c40d8b881ebe47cdac694ec20"
+		}
+	},
+	"countsTowardsShipBar": false,
+	"whyNot": "Missed two cases: c1 G1 (passed where the key says fail) and c2 G5 (passed where the key says fail). The two runs are a pair and are scored together; the bar they are measured against is shipBar, which asks for two independent passes that each miss no case. They do not meet it. Gate agreement between them is 28 of 30, and four of the twelve cases carry a miss: c1 G1 in both runs, c2 G5 in the gsd run, c3 G4 in the kiro-cli run. Both runs did get c1's reject right, which is the item-8 precedence fix working. Nothing in the key, the rubric or the cases was changed after these verdicts were collected, so the measurement stands as taken; the next pair has to be a fresh pair of models (shipBar.heldOut), and the pool is now five models deep."
+}

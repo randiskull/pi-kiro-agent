@@ -4,14 +4,15 @@ Six specs with known answers. The rubric (`spec-review/rubric.md`) may only
 merge, or change, when two independent reviewer runs over this set meet the ship
 bar below. The set stays as a regression suite: every rubric edit re-runs it.
 
-> **The ship bar is not met yet, and the earlier 30/30 is withdrawn.** Pass 8
+> **The ship bar is not met, and the earlier 30/30 is withdrawn.** Pass 8
 > reported agreement on all 30 gate decisions. That number was produced by
 > relabelling the answer key to match what those two runs said and then scoring
 > the same two runs against the new key, with nothing re-run; see "How the set
-> was corrected", pass 8, and `runs/SCORE.md`. A third run, held out from every
-> pass and scored against the key exactly as it stood, missed three of six cases.
-> Rubric 1 has no measured result until the two passes described under "Running a
-> reviewer pass" are made and committed.
+> was corrected", pass 8, and `runs/SCORE.md`. Three later runs, each held out
+> from every pass and scored against the key as it stood, each missed cases: one
+> missed three of six, and a fresh pair run after the review fixes missed four
+> of twelve between them. Five run directories are committed and all five record
+> `countsTowardsShipBar: false`. Rubric 1 still has no passing result.
 
 **Never give a reviewer this directory, and never give one a worktree of this
 branch.** The answers are in `expected.json`, and the cases are near-copies of
@@ -251,6 +252,40 @@ Two of the three were wording defects, which is rule 4 working as intended. The
 cost is that `claude-sonnet-5` is now in the tuning loop and cannot be one of the
 two passes that meet the bar.
 
+## The pair run after the review fixes, and what it measured
+
+Two more runs were made once the review-item fixes landed, against the rubric,
+the cases and the key as commit `f64d2eb` left them, by two models that took
+part in no earlier pass and in no wording fix: `gsd` 1.22.0 on
+`us.anthropic.claude-fable-5-1` and `kiro-cli` 2.32.0 on `gpt-5.6-sol`. Twelve
+sessions, each in its own directory off one ref-stripped clone, all twelve
+exiting 0 with header blobs matching their case, and an isolation audit that
+came back clean. They agreed with each other on 28 of 30 gate decisions and
+**four of the twelve cases carry a miss**, so the bar is not met. Nothing was
+changed after the verdicts were collected; `runs/SCORE.md` has the numbers and
+each run's `NOTES.md` has its protocol and deviations.
+
+| miss | what it showed | what it calls for |
+| --- | --- | --- |
+| c1 G1 `pass`, key `fail`, in **both** runs | both reviewers found c1's defect and filed it as `D3` (the Approach contradicts Goal 3, criterion 4 and the out-of-scope line) and `D2` (the safety argument never reaches a second bridged turn). Neither read it as an open contract. G1's opening sentence reaches the key's reading; G1's `Fails` list does not, because every bullet there describes a spec that offers a choice and c1 offers none | rule 4's relabelling clause forbids changing the label because two runs said so. Either c1's `G1 fail` is re-derived from the construction, or G1 is reworded to separate "open contract" from "decided but unargued". Open |
+| c3 G4 `fail`, key `pass` | the same run passed c4's G4 and failed c3's on byte-identical text: c3 is a mutant of c4 touching only the negative control and one phrase, and criterion 6 and the verification step the finding quotes are the same in both. This reproduces the "one run decided identical text both ways" defect on a fresh model | G4 says both "at least one Verification plan step produces that evidence" and "A documentation criterion's evidence is the named file" without saying which governs a documentation criterion. Open |
+| c2 G5 `pass`, key `fail` | reviewer variance, not wording: that run raised no out-of-scope finding at all, while the other run under the same rubric text failed G5 and cited the transport item | nothing in the rubric. But the key's c2 G5 reason names two items and one of them does state a listed disposition, so the reason overstates while the verdict holds |
+
+Both runs got c1's `outcome: reject` right, where the `claude-sonnet-5` run did
+not, so the precedence fix is confirmed. Both passed c5 G5, so the G5 rewrite is
+confirmed. Both also failed c2 G2 on the unnamed "repo engineering rule", one of
+them after reading the file the key's corrected reason points at, which says the
+corrected reason reads G2 too narrowly: the gate asks that a source be named
+precisely enough to open, so an unnamed source fails whether or not something
+matching it exists, and G2's example should stop conditioning on existence.
+
+The cost: `us.anthropic.claude-fable-5-1` and `gpt-5.6-sol` are now spent too,
+and the fixes above will spend the next pair. Neither the rubric nor the key was
+edited to record that, on purpose: any edit to `expected.json` changes its blob
+and stales the two runs keyed to it, so `shipBar.heldOut` is brought up to date
+in the same commit as the wording fixes, and both are measured by the pair after
+that.
+
 ## Known limits of Rubric 1's set
 
 - **All six are defect specs.** No feature spec is calibrated, so the feature
@@ -262,8 +297,16 @@ two passes that meet the bar.
   from the edit that made it; c2's follows from reading it. The maintainer
   ratifies them before the first run counts (`expected.json` `labelledBy`), and
   the held-out run put G3 and G4 specifically in question.
-- **The eligible model pool is shrinking.** Every pass spends its models: four
-  are now excluded (`expected.json` `shipBar.heldOut`). A set that can only be
+- **The eligible model pool is shrinking.** Every pass spends its models: six
+  are now excluded. `expected.json` `shipBar.heldOut` still names the first
+  four, because adding the newest two would change that file's blob and stale
+  the two runs keyed to it; it is updated in the same commit as the rubric fixes
+  those runs call for. A set that can only be
   validated by models it has never seen is a set that gets harder to validate
   each time it is corrected. Rubric 2 should add cases rather than keep
   re-tuning these six, so that a model's exclusion costs less.
+- **The rubric asks the reviewer for a field it cannot know.** A verdict's
+  `Reviewer: <harness>, <model>` line is self-reported, and the six sessions of
+  one run guessed their own model six different ways, once naming a model that
+  was not used. `RUN.json` is the record to trust; Rubric 2 should have the
+  harness write that line or drop it.
