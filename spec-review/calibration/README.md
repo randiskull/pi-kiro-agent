@@ -12,7 +12,10 @@ bar below. The set stays as a regression suite: every rubric edit re-runs it.
 > from every pass and scored against the key as it stood, each missed cases: one
 > missed three of six, and a fresh pair run after the review fixes missed four
 > of twelve between them. Five run directories are committed and all five record
-> `countsTowardsShipBar: false`. Rubric 1 still has no passing result.
+> `countsTowardsShipBar: false`. Rubric 1 still has no passing result. The bus
+> spec merged with its criterion 12 open, by maintainer decision: the four
+> misses are rubric-wording defects, they are listed in issue 67, and they are
+> deferred to Rubric 2.
 
 **Never give a reviewer this directory, and never give one a worktree of this
 branch.** The answers are in `expected.json`, and the cases are near-copies of

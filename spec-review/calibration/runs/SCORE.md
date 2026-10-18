@@ -191,3 +191,11 @@ visible, and it is the reason criterion 12 is a gate on the spec rather than a
 box to tick.
 
 Until two passes are committed, criterion 12 is unmet and the README says so.
+
+**Decision, 2026-10-17: the bus merges with criterion 12 open.** The four misses
+above are rubric-wording defects, not defects in anything the bus builds, and
+holding the mechanism that catches them out of the repo costs more than landing
+it with the gap recorded. The wording work is listed in issue 67 and deferred to
+Rubric 2, where the set also gets the feature case it is missing. Nothing here
+is retracted by that decision: five runs, five `countsTowardsShipBar: false`,
+and the spec's criterion 12 says `Open`.
