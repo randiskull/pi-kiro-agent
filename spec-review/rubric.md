@@ -63,11 +63,13 @@ or signature other code or users will depend on.
   option list with no selection, and a degrade or fallback path that does not
   say what is skipped.
 - **Also fails, with no choice offered:** a behaviour the spec introduces whose
-  effect in a case the spec names is decided nowhere. The spec need not present
-  it as open. If the change removes or bypasses something that existing code
-  relies on to handle that case, and the spec neither says what replaces it nor
-  why the case cannot arise, the case is undecided, even though the code would
-  do something when run.
+  trigger, whose effect in a case the spec names, or whose handling of an error
+  the change can raise is decided nowhere; or a name, signature or format that
+  other code or users will depend on and that the spec does not fix. The spec need not present any of
+  these as open. If the change removes or bypasses something that existing code
+  relies on to handle a named case, and the spec neither says what replaces it
+  nor why the case cannot arise, the case is undecided, even though the code
+  would do something when run.
 - **Not G1:** a behaviour the spec does decide, but whose safety it does not
   argue, is a D2 finding; one that contradicts another part of the spec or a
   design decision is a D3 finding. A spec can fail G1 and lose D2 or D3 for the

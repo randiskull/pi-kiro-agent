@@ -313,7 +313,7 @@ under Rubric 1, and what changed is the text a reviewer reads to reach them.
 
 | change | for | what it says now |
 | --- | --- | --- |
-| G1 gains an **Also fails, with no choice offered** bullet, a **Not G1** bullet, and a line saying the list is the gate | c1 G1, both runs of the pair | a behaviour whose effect in a named case is decided nowhere fails, even when the spec offers no choice; a decided but unargued behaviour is D2, a contradiction D3 |
+| G1 gains an **Also fails, with no choice offered** bullet, a **Not G1** bullet, and a line saying the list is the gate | c1 G1, both runs of the pair | every part of the opening sentence (trigger, each named case, errors, depended-on names) now has a bullet, and none needs the spec to offer a choice; a decided but unargued behaviour is D2, a contradiction D3 |
 | G2's example names instead of conditioning on existence | c2 G2's reason | an unnamed source fails on being unnamed, whether or not a similar document exists, and a reviewer does not repair the citation |
 | G4 splits **behaviour** and **documentation** criteria and says which sentence governs each | c3 G4 against c4 G4 on identical text | a documentation criterion needs the file named and its required content stated, and no Verification plan step |
 | G5 says what the word "dropped" or "unchanged" does, and that a descriptive word is a reason | c2 G5's reason, which counted an "unchanged" item as having no disposition | the word is the disposition; a word describing the item is not |
