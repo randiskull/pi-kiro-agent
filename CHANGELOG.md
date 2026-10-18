@@ -18,10 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decisions on it, with the two real specs two cases were frozen from committed beside them
   (`spec-review/calibration/originals/`); `test/spec-lint.test.ts` pins the linter against the set,
   and `test/rubric-anchors.test.ts` holds that no rubric anchor quotes a case it has to catch.
-  **Rubric 1 has no passing calibration result yet:** the first reported one was scored against an
-  answer key that had been relabelled to match those same runs, and is withdrawn
-  (`spec-review/calibration/runs/SCORE.md`). The queue, verdict validation and the CI gate are
-  specified and not built. Contributor tooling only: nothing under `spec-review/` or `scripts/` is
+  **Rubric 1 has no passing calibration result:** the first reported one was scored against an
+  answer key that had been relabelled to match those same runs and is withdrawn, and three later
+  runs held out from every pass each missed cases, most recently a pair that agreed with each other
+  on 28 of 30 gate decisions and missed four of twelve cases. All five committed runs record
+  `countsTowardsShipBar: false` (`spec-review/calibration/runs/SCORE.md`). The three gate-wording
+  defects those misses exposed are deferred to Rubric 2 (issue 67), and the spec's ship-bar
+  criterion says `Open`. The queue, verdict validation and the CI gate are specified and not
+  built. Contributor tooling only: nothing under `spec-review/` or `scripts/` is
   in the published package. Design: `docs/specs/spec-review-bus.md`.
 
 ### Changed
