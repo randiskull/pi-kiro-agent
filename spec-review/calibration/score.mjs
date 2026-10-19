@@ -19,6 +19,9 @@
  * matches the file as it stands here, and its own countsTowardsShipBar says true.
  * A run that records countsTowardsShipBar: true over blobs that do not match is a
  * contradiction and is called out as one: that is the shape this check exists for.
+ * Nothing a RUN.json can contain makes this throw: a malformed file, an unreadable
+ * one, or a case name that is not a bare name all come back as a non-counting run,
+ * because the exit code is what criterion 12 reads.
  *
  * Exit 0 only when every run counts, every case meets every expectation in every
  * run and, with two or more runs, all gate decisions agree. Criterion 12 of
@@ -50,12 +53,28 @@ function meets(score, want) {
 	return m[1] === "<=" ? score <= n : m[1] === ">=" ? score >= n : score === n;
 }
 
-/** The sha git would store for this file's current bytes, or null if it is gone. */
+/**
+ * The sha git would store for this file's current bytes, or null if it cannot be
+ * read as a file at all. Every failure in this check has to come back as a line,
+ * never as a stack trace, because the exit code is what criterion 12 reads.
+ */
 function blobSha(path) {
 	if (!existsSync(path)) return null;
-	const body = readFileSync(path);
-	return createHash("sha1").update(`blob ${body.length}\0`).update(body).digest("hex");
+	try {
+		const body = readFileSync(path);
+		return createHash("sha1").update(`blob ${body.length}\0`).update(body).digest("hex");
+	} catch {
+		return null;
+	}
 }
+
+/**
+ * A case name out of RUN.json is used to build a path, so it has to be a bare
+ * name. Rejecting a separator or a dot segment is not just hygiene: a name like
+ * "../rubric" would otherwise be compared against the wrong file and reported as
+ * a match.
+ */
+const BARE_CASE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 /**
  * Enforces shipBar.blobs. Returns { counted, line }: a run counts only when it
@@ -67,15 +86,25 @@ function blobSha(path) {
 function checkBlobs(dir) {
 	const runJson = join(dir, "RUN.json");
 	if (!existsSync(runJson)) return { counted: false, line: "blobs: no RUN.json, so nothing is recorded and the run cannot count (shipBar.blobs)" };
-	const run = JSON.parse(readFileSync(runJson, "utf8"));
+	let run;
+	try {
+		run = JSON.parse(readFileSync(runJson, "utf8"));
+	} catch (e) {
+		return { counted: false, line: `blobs: RUN.json is not valid JSON, so the run cannot count (shipBar.blobs): ${e.message}` };
+	}
 	const against = run.scoredAgainst;
 	if (!against || typeof against !== "object") return { counted: false, line: "blobs: RUN.json has no scoredAgainst, so the run cannot count (shipBar.blobs)" };
+	const problems = [];
+	const cases = Object.entries(against.cases ?? {});
+	const named = cases.filter(([name]) => BARE_CASE_NAME.test(name));
+	for (const [name] of cases.filter(([name]) => !BARE_CASE_NAME.test(name))) {
+		problems.push(`${JSON.stringify(name)} is not a case name, so it is not resolved to a file`);
+	}
 	const recorded = [
 		["spec-review/rubric.md", join(here, "..", "rubric.md"), against.rubric],
 		["spec-review/calibration/expected.json", join(here, "expected.json"), against.expected],
-		...Object.entries(against.cases ?? {}).map(([name, sha]) => [`cases/${name}.md`, join(here, "cases", `${name}.md`), sha]),
+		...named.map(([name, sha]) => [`cases/${name}.md`, join(here, "cases", `${name}.md`), sha]),
 	];
-	const problems = [];
 	for (const [label, path, sha] of recorded) {
 		if (typeof sha !== "string" || !sha) problems.push(`${label}: no blob recorded`);
 		else {

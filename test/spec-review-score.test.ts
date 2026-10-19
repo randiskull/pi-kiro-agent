@@ -19,7 +19,7 @@
  * formula the scorer uses, so this also holds that the scorer computes git blob
  * shas rather than some other digest that happens to be self-consistent.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -39,14 +39,15 @@ interface Run {
 	out: string;
 }
 
+/**
+ * spawnSync, not execFileSync: execFileSync returns stdout only on success, so a
+ * line the scorer wrote to stderr would be invisible to an assertion on a passing
+ * run and visible on a failing one. Both paths have to read the same.
+ */
 function runScorer(scorer: string, dirs: string[]): Run {
-	try {
-		const out = execFileSync("node", [scorer, ...dirs], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-		return { exitCode: 0, out };
-	} catch (e) {
-		const err = e as { status?: number; stdout?: string; stderr?: string };
-		return { exitCode: err.status ?? -1, out: `${err.stdout ?? ""}${err.stderr ?? ""}` };
-	}
+	const r = spawnSync("node", [scorer, ...dirs], { encoding: "utf8" });
+	if (r.error) throw r.error;
+	return { exitCode: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
 const VERDICT = `spec-review verdict for spec.md blob irrelevant
@@ -107,6 +108,7 @@ function makeFixture() {
 		expected: gitBlob(join(calib, "expected.json")),
 		f1: gitBlob(join(calib, "cases", "f1.md")),
 	};
+	const writeRunRaw = (body: string) => writeFileSync(join(calib, "runs", "r1", "RUN.json"), body);
 	const writeRun = (scoredAgainst: unknown, counts: unknown) => {
 		const body: Record<string, unknown> = { runId: "r1", harness: "other", model: "test-fixture" };
 		if (scoredAgainst !== undefined) body.scoredAgainst = scoredAgainst;
@@ -115,7 +117,7 @@ function makeFixture() {
 	};
 	const score = () => runScorer(join(calib, "score.mjs"), [join(calib, "runs", "r1")]);
 	const honest = () => ({ rubric: truth.rubric, expected: truth.expected, cases: { f1: truth.f1 } });
-	return { dir, calib, truth, writeRun, score, honest };
+	return { dir, calib, truth, writeRun, writeRunRaw, score, honest };
 }
 
 const fixtures: string[] = [];
@@ -214,6 +216,43 @@ describe("score.mjs enforces shipBar.blobs", () => {
 		const b = noRunJson.score();
 		expect(b.exitCode, b.out).toBe(1);
 		expect(b.out).toContain("no RUN.json");
+	});
+
+	// Found by the repository's own review bot on the PR that added this check.
+	// A RUN.json is a file on disk, so nothing it can contain may escape as a stack
+	// trace: the exit code is what criterion 12 reads, and 1-from-a-crash and
+	// 1-from-a-stale-blob are not the same answer.
+	it("reports malformed JSON in RUN.json as a non-counting run, not a crash", () => {
+		const f = fixture();
+		f.writeRunRaw('{ "runId": "r1", "scoredAgainst": { "rubric": ');
+		const r = f.score();
+		expect(r.exitCode, r.out).toBe(1);
+		expect(r.out).toContain("RUN.json is not valid JSON");
+		expect(r.out, "a stack trace is not an answer").not.toContain("at checkBlobs");
+	});
+
+	// A case name builds a path. "../rubric" must be refused, not resolved: resolved,
+	// it would be compared against the wrong file and could be reported as a match.
+	it("refuses a case name that is not a bare name instead of resolving it", () => {
+		const f = fixture();
+		f.writeRun({ rubric: f.truth.rubric, expected: f.truth.expected, cases: { "../rubric": f.truth.rubric, f1: f.truth.f1 } }, true);
+		const r = f.score();
+		expect(r.exitCode, r.out).toBe(1);
+		expect(r.out).toContain("is not a case name");
+		expect(r.out).toContain("../rubric");
+		// It must not have been hashed as cases/../rubric.md either way.
+		expect(r.out).not.toContain("cases/../rubric.md");
+	});
+
+	// The traversal above is only interesting if it could otherwise have been
+	// reported as a match. This pins that a bare name is still accepted, so the
+	// guard above is a guard and not a blanket rejection.
+	it("still accepts the bare case names the key uses", () => {
+		const f = fixture();
+		f.writeRun(f.honest(), true);
+		const r = f.score();
+		expect(r.exitCode, r.out).toBe(0);
+		expect(r.out).not.toContain("is not a case name");
 	});
 
 	// A tidier fixture than the repository would let the defect live here. These

@@ -50,7 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cases with a miss: 0` and exited 0. `score.mjs` now hashes `rubric.md`, `expected.json` and
   every case it was scored against, compares each to the blob the run recorded, requires a blob for
   every case in the key, honours `countsTowardsShipBar`, names a `true` claim over stale blobs as a
-  contradiction, and exits 1 unless every run counts. Every committed transcript still reproduces
+  contradiction, and exits 1 unless every run counts. Nothing a `RUN.json` can contain makes it
+  throw: malformed JSON, an unreadable file and a case name that is not a bare name (a path, which
+  would otherwise be resolved against the wrong file) all come back as a non-counting run, because
+  the exit code is what criterion 12 reads. Every committed transcript still reproduces
   line for line; only the exit and one line per run change. Contributor tooling only: nothing under
   `spec-review/` is in the published package. Test: `test/spec-review-score.test.ts` (all ten cases
   fail with the check reverted).
