@@ -42,7 +42,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emits a `chat.stream.metering_repriced` trace with both figures instead of being resolved
   silently: keeping the larger value would hide the protocol change rather than report it.
 
+- **The test suite drops git's own environment variables before any test runs.** git exports `GIT_DIR`
+  to the hooks it runs and this repository's pre-push hook runs the whole suite, so a test that shells
+  out to git in a temp directory acted on the repository being pushed instead: the new spec-lint
+  fixture's `git init`, `add` and `commit` put its two files over `src/bridge.ts` and `package.json`
+  on the branch, and through a worktree's git directory `init` also wrote `core.bare = true` into the
+  config the main checkout shares. The suite still passed; a later test linting at HEAD is what
+  noticed. `test/global-setup.ts` now removes every `GIT_*` variable once per run, and the fixtures
+  strip them per child as well, since a test may set one itself. Test-only: no published code reads
+  these. Test: `test/spec-lint-symlink.test.ts` (`stripGitEnv`, plus a decoy repository with a
+  worktree whose HEAD and `core.bare` must not move; both fail with the filter removed).
+
 ### Fixed
+
+- **A cited path below a symlink was reported as a broken citation.** `scripts/spec-lint.mjs` asks
+  `git check-ignore` whether a cited path is a local, gitignored file, and read any non-zero exit as
+  "not ignored". git answers a path below a symlink with a fatal ("beyond a symbolic link"), whose
+  exit status is non-zero in exactly the same way, so for a developer who links a working directory
+  into the repo (`.gsd` -> a project directory elsewhere) real files were noted `external` rather than
+  `local`, and the calibration assertion about the exemplar's investigation note failed on that
+  machine while CI, which has no such link, stayed green. The linter now settles that case from the
+  filesystem before git is asked, rather than from git's message, which is not stable across git
+  versions. A cited path that climbs out of the repository (`../x/y.ts`) is not that case and still
+  ends at an `external` note, which is why a fatal is not read as unverifiable instead. A component
+  the linter cannot look at (a directory it may not search) is neither answer, so it stops the spec as
+  unverifiable (exit 2), naming the path; one that cannot exist (a name too long for the filesystem)
+  is absent, so an odd citation still gets its ordinary finding. Contributor tooling only: nothing
+  under `scripts/` is in the published package.
+  Test: `test/spec-lint-symlink.test.ts`, which builds its own throwaway repository because the
+  condition cannot exist in this repository's CI checkout: the classification fails with the check
+  reverted, its negative control fails if the check is made unconditional, and the unsearchable and
+  too-long cases each fail if their error is read the other way.
 
 - **The calibration scorer ignored the blobs the ship bar is keyed to (#67).** `expected.json`
   `shipBar.blobs` says a run "counts towards the ship bar only when both match the committed

@@ -55,7 +55,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -77,6 +77,17 @@ function root() {
 	return repoRoot;
 }
 
+/**
+ * git, at the repository root, with the caller's `env` keys winning.
+ *
+ * The ambient `GIT_*` variables are passed through on purpose. This is a git
+ * tool: `root()`, `loadTree()` and `check-ignore` have to resolve the same
+ * repository git itself would, so under a hook (which exports `GIT_DIR`) or a
+ * `--git-dir` invocation all three follow it together. Stripping them for the
+ * one call that passes an `env` would point that call at a different repository
+ * than the ref the others read. A caller that must not inherit them cleans the
+ * env of the process it spawns, which is what the test fixtures do.
+ */
 function git(args, { allowFail = false, env } = {}) {
 	const result = spawnSync("git", args, {
 		cwd: root(),
@@ -89,6 +100,40 @@ function git(args, { allowFail = false, env } = {}) {
 		throw new Unverifiable(`git ${args.join(" ")} failed: ${(result.stderr ?? "").trim()}`);
 	}
 	return result.stdout;
+}
+
+/** lstat errors that mean nothing can be at that component, so it is not a link. */
+const ABSENT = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG"]);
+
+/**
+ * True when a component of `path` under the repository root is a symlink. git
+ * declines every question about such a path ("beyond a symbolic link"), so the
+ * answer is read off the filesystem instead of off git's message, which is not
+ * stable across versions. A component that does not exist is not a symlink, and
+ * neither is a path that climbs out of the repository. A component the linter
+ * cannot look at (a directory it may not search) is neither answer, so it is
+ * unverifiable rather than a guess.
+ */
+function underSymlink(path) {
+	let at = root();
+	for (const part of path.split("/")) {
+		if (!part || part === ".") continue;
+		// A path that climbs out of the repository is not this case, whatever sits
+		// above the root: git declines it for being outside the repository, and that
+		// falls through to an `external` note, which is the right answer for it.
+		if (part === "..") return false;
+		at = join(at, part);
+		try {
+			if (lstatSync(at).isSymbolicLink()) return true;
+		} catch (error) {
+			// Nothing there, or nothing that could be there (a file used as a
+			// directory, a name too long to exist): not a link. A cited path that is
+			// merely odd must still reach its G2 finding, not stop the whole spec.
+			if (ABSENT.has(error.code)) return false;
+			throw new Unverifiable(`cannot tell whether \`${path}\` is below a symlink: ${error.code ?? error.message} at ${at}`);
+		}
+	}
+	return false;
 }
 
 /** git's exit status alone, for commands whose answer is the status. */
@@ -562,10 +607,21 @@ function resolvePath(path, token, at, tree, aliases, failures, note) {
 	}
 	if (tree.fileSet.has(path) || tree.dirSet.has(path)) return;
 	if (/^docs\/specs\/[^/]+\.md$/.test(path) && existsSync(join(root(), path))) return; // a sibling in the same change
+	// A path below a symlink is the author's own tree, not repo content: a
+	// developer who links a working directory into the repo (`.gsd` -> a project
+	// directory elsewhere) cites real files git will not resolve at all. Decided
+	// before git is asked, because git answers such a path with a fatal, and a
+	// fatal is indistinguishable from "not ignored" by exit status alone.
+	if (underSymlink(path)) {
+		note("local", path);
+		return;
+	}
 	// Before the top-level check: a gitignored file under a tracked directory (a
 	// local log, a tfvars) is provenance on the author's machine, not a broken path.
 	// The user's own excludes file is switched off, so the answer does not depend
 	// on who runs the linter; `--` keeps a path shaped like an option a path.
+	// Non-zero is "not ignored" or git declining (a path outside the repository):
+	// both fall through to the checks below, which end at an `external` note.
 	const ignored = git(["-c", "core.excludesFile=/dev/null", "check-ignore", "--no-index", "-q", "--", path], {
 		allowFail: true,
 		env: { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
