@@ -76,6 +76,12 @@ function removeProfileFiles(dir: string, name: string): void {
  * can be recycled by an unrelated process. Files of a live pi mid-turn are left
  * alone. Age is judged per file, not per pid: a live pid can own an ancient
  * leftover it inherited and its own current profile at the same time.
+ *
+ * @remarks Called once at activation, before any turn is registered. The
+ * `pid === process.pid` branch assumes no turn is in flight for this process
+ * at the moment of the call -- do not call from a mid-session context (e.g.,
+ * a periodic cleanup or a post-turn hook) or it will silently delete profiles
+ * belonging to concurrently running turns in the same process.
  */
 export function sweepStaleAgentProfiles(dir: string = agentProfilesDir()): number {
 	let removed = 0;
