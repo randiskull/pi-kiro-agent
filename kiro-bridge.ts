@@ -80,7 +80,14 @@ export function writeAgentProfile(
 	};
 }
 
-/** Suffixes for the profile file itself plus kiro-cli v3's backup variants. */
+/**
+ * Suffixes for the profile file itself plus kiro-cli v3's backup variants.
+ *
+ * kiro-cli v3 engine start creates `.bak`, `.bak.1`, `.bak.2`, … alongside
+ * the original profile when it converts the format. In observed v3 behaviour
+ * the count is at most a small handful; the cap at `.bak.9` is a conservative
+ * upper bound that covers all known cases without an unbounded loop.
+ */
 function bakSuffixes(): string[] {
 	const suffixes = [""];
 	suffixes.push(".bak");
@@ -102,6 +109,9 @@ function bakSuffixes(): string[] {
  * other agent profiles (code-reviewer.json etc.) are never touched.
  *
  * Returns { scanned, swept } for observability. Never throws.
+ *
+ * @remarks Called once at activation. The `pid === process.pid` branch assumes
+ * no turn is in flight for this process — do not call from a mid-session context.
  */
 export function sweepStaleAgentProfiles(): { scanned: number; swept: number } {
 	const PROFILE_PATTERN = /^pi-kiro-bridge-(\d+)-\d+\.json$/;

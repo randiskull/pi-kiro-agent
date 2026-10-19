@@ -74,7 +74,7 @@ describe("writeAgentProfile — remove() deletes .bak backup files", () => {
 });
 
 describe("sweepStaleAgentProfiles", () => {
-	it("removes dead-pid profiles and leaves live-pid profiles alone", () => {
+	it("removes dead-pid and own-pid profiles, leaves non-matching files alone", () => {
 		const dir = agentProfilesDir();
 		// Write a profile for a dead pid (99999999 is practically never alive).
 		const deadPid = 99999999;
