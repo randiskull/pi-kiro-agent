@@ -401,9 +401,12 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
     specifies - comparable capability, neither model in the tuning loop, each
     from a clone that cannot reach the key, each with a `RUN.json` matching the
     committed blobs - scored by `spec-review.mjs score` with exit 0. Evidence:
-    the run directories and the score output, committed. **Open, and merged
-    open by maintainer decision; tracked by issue 67.** Five runs exist and
-    none counts. Two are withdrawn for being scored against a key fitted to
+    the run directories and the score output, committed. The blob clause and
+    `countsTowardsShipBar` are enforced by the scorer itself, so the exit code
+    carries the whole criterion and not only the case expectations
+    (`test/spec-review-score.test.ts`); `spec-review.mjs score` must keep that.
+    **Open, and merged open by maintainer decision; tracked by issue 67.**
+    Five runs exist and none counts. Two are withdrawn for being scored against a key fitted to
     them. The `claude-sonnet-5` run was held out and honest, but it missed
     three cases and its misses drove wording fixes, so that model is now in the
     tuning loop. The last pair - `gsd` 1.22.0 on

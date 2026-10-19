@@ -11,6 +11,15 @@ history, with `countsTowardsShipBar: false` in their `RUN.json`.
 
 Produced by `node spec-review/calibration/score.mjs runs/2026-10-17-r1-other-claude-opus-5-5 runs/2026-10-17-r1-other-gpt-6-astra` against `expected.json` (run A is the Claude run, run B the GPT run). The scorer was committed after the fact; it reproduces every case line and both totals below, and names each run by its directory where the original said run A and run B.
 
+`score.mjs` now also checks the blobs each run recorded against the rubric, the
+key and the cases as they stand (`expected.json` `shipBar.blobs`, ship bar rule
+5), so re-running it on any run below prints one `blobs:` line per run and a
+closing `runs that do not count:` line, and it exits 1. **Every case line and
+both totals below are unchanged.** For this pair the exit was 0 before that
+check existed, on `30/30` with no miss, which is the withdrawn result this file
+opens by retracting: the retraction was prose, and the scorer disagreed with it.
+It no longer does.
+
 ```
 === run A (2026-10-17-r1-other-claude-opus-5-5)
   c1: reject  gates FPPPP D14 D22 D31 D43 D53 D63  OK
