@@ -39,6 +39,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The calibration scorer ignored the blobs the ship bar is keyed to (#67).** `expected.json`
+  `shipBar.blobs` says a run "counts towards the ship bar only when both match the committed
+  blobs", and criterion 12 of `docs/specs/spec-review-bus.md` is `score.mjs`'s exit code. The
+  scorer read `scoredAgainst.cases` as a list of case names and read `scoredAgainst.rubric`,
+  `scoredAgainst.expected` and `countsTowardsShipBar` not at all, so rule 5 was enforced nowhere:
+  the `spec-review / calibration` job named as its evidence is specified and unbuilt. Scoring the
+  two pass-8 runs, which `runs/SCORE.md` declares WITHDRAWN and which both record
+  `countsTowardsShipBar: false` over pre-review blobs, printed `gate agreement: 30/30`,
+  `cases with a miss: 0` and exited 0. `score.mjs` now hashes `rubric.md`, `expected.json` and
+  every case it was scored against, compares each to the blob the run recorded, requires a blob for
+  every case in the key, honours `countsTowardsShipBar`, names a `true` claim over stale blobs as a
+  contradiction, and exits 1 unless every run counts. Every committed transcript still reproduces
+  line for line; only the exit and one line per run change. Contributor tooling only: nothing under
+  `spec-review/` is in the published package. Test: `test/spec-review-score.test.ts` (all ten cases
+  fail with the check reverted).
+
 - **Bridge profiles left the bridge token on disk (#63).** A kiro-cli v3-engine start, from pi, the
   IDE or KAS, converts every `~/.kiro/agents/*.json` and saves the original as `<name>.json.bak`
   (then `.bak.1`, ...), and that original holds the tokenized loopback URL. `remove()` deleted only

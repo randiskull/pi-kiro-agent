@@ -10,10 +10,23 @@
  *
  * Per case: the outcome, every gate label, every dimension threshold ("1", "<=2",
  * ">=3"), and mustQuoteOneOf (some finding's line contains one of the strings).
- * Exit 0 only when every case meets every expectation in every run and, with two
- * or more runs, all gate decisions agree.
+ *
+ * Per run, before any case is scored: the blobs its RUN.json records. shipBar.blobs
+ * ties a run to the rubric, the answer key and the cases by blob sha and counts it
+ * "only when both match the committed blobs", and shipBar rule 5 is what makes a
+ * stale run visible instead of plausible. A run counts only when it records a blob
+ * for the rubric, the key and every case in expected.json, every one of those blobs
+ * matches the file as it stands here, and its own countsTowardsShipBar says true.
+ * A run that records countsTowardsShipBar: true over blobs that do not match is a
+ * contradiction and is called out as one: that is the shape this check exists for.
+ *
+ * Exit 0 only when every run counts, every case meets every expectation in every
+ * run and, with two or more runs, all gate decisions agree. Criterion 12 of
+ * docs/specs/spec-review-bus.md is this exit code, so a stale or self-declared
+ * non-counting run cannot produce it.
  */
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -35,6 +48,53 @@ function meets(score, want) {
 	if (!m || Number.isNaN(score)) return false;
 	const n = Number(m[2]);
 	return m[1] === "<=" ? score <= n : m[1] === ">=" ? score >= n : score === n;
+}
+
+/** The sha git would store for this file's current bytes, or null if it is gone. */
+function blobSha(path) {
+	if (!existsSync(path)) return null;
+	const body = readFileSync(path);
+	return createHash("sha1").update(`blob ${body.length}\0`).update(body).digest("hex");
+}
+
+/**
+ * Enforces shipBar.blobs. Returns { counted, line }: a run counts only when it
+ * records every blob the rule names, each matches the file here, and its own
+ * countsTowardsShipBar is true. The reference is the file on disk, which is the
+ * blob a clean checkout has committed; a dirty tree reads as a mismatch, which is
+ * the safe direction.
+ */
+function checkBlobs(dir) {
+	const runJson = join(dir, "RUN.json");
+	if (!existsSync(runJson)) return { counted: false, line: "blobs: no RUN.json, so nothing is recorded and the run cannot count (shipBar.blobs)" };
+	const run = JSON.parse(readFileSync(runJson, "utf8"));
+	const against = run.scoredAgainst;
+	if (!against || typeof against !== "object") return { counted: false, line: "blobs: RUN.json has no scoredAgainst, so the run cannot count (shipBar.blobs)" };
+	const recorded = [
+		["spec-review/rubric.md", join(here, "..", "rubric.md"), against.rubric],
+		["spec-review/calibration/expected.json", join(here, "expected.json"), against.expected],
+		...Object.entries(against.cases ?? {}).map(([name, sha]) => [`cases/${name}.md`, join(here, "cases", `${name}.md`), sha]),
+	];
+	const problems = [];
+	for (const [label, path, sha] of recorded) {
+		if (typeof sha !== "string" || !sha) problems.push(`${label}: no blob recorded`);
+		else {
+			const actual = blobSha(path);
+			if (actual === null) problems.push(`${label}: recorded ${sha.slice(0, 12)}, file is gone`);
+			else if (actual !== sha) problems.push(`${label}: recorded ${sha.slice(0, 12)}, here ${actual.slice(0, 12)}`);
+		}
+	}
+	const unrecorded = Object.keys(expected.cases).filter((name) => !(against.cases ?? {})[name]);
+	if (unrecorded.length) problems.push(`no blob recorded for ${unrecorded.join(", ")}`);
+	const claims = run.countsTowardsShipBar === true;
+	if (problems.length) {
+		const lead = claims
+			? "blobs: STALE, and RUN.json claims countsTowardsShipBar: true - a run cannot count against blobs it was not scored against"
+			: "blobs: stale (RUN.json already says countsTowardsShipBar is not true)";
+		return { counted: false, line: `${lead}\n${problems.map((p) => `    ${p}`).join("\n")}` };
+	}
+	if (!claims) return { counted: false, line: "blobs: match, but RUN.json says countsTowardsShipBar is not true, so the run does not count" };
+	return { counted: true, line: "blobs: match the rubric, the key and every case here; the run counts" };
 }
 
 function scoreRun(dir) {
@@ -69,8 +129,8 @@ if (dirs.length === 0) {
 	console.error("usage: score.mjs <run-dir> [<run-dir>...]");
 	process.exit(2);
 }
-const runs = dirs.map((d) => ({ dir: d, ...scoreRun(d) }));
-for (const r of runs) console.log(`=== ${basename(r.dir)}\n${r.lines.join("\n")}`);
+const runs = dirs.map((d) => ({ dir: d, blobs: checkBlobs(d), ...scoreRun(d) }));
+for (const r of runs) console.log(`=== ${basename(r.dir)}\n  ${r.blobs.line}\n${r.lines.join("\n")}`);
 let disagreements = [];
 if (runs.length > 1) {
 	const keys = Object.keys(runs[0].decisions);
@@ -79,4 +139,6 @@ if (runs.length > 1) {
 }
 const missed = runs.reduce((n, r) => n + r.missed, 0);
 console.log(`cases with a miss: ${missed}`);
-process.exit(missed === 0 && disagreements.length === 0 ? 0 : 1);
+const notCounted = runs.filter((r) => !r.blobs.counted);
+if (notCounted.length) console.log(`runs that do not count: ${notCounted.length}/${runs.length} (${notCounted.map((r) => basename(r.dir)).join(", ")}) - the ship bar asks for two that do`);
+process.exit(missed === 0 && notCounted.length === 0 && disagreements.length === 0 ? 0 : 1);
