@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `spec-review/rubric.md` (now Rubric 2) defines five pass/fail gates and six separately scored
   dimensions for a spec in `docs/specs/`, and `scripts/spec-lint.mjs` checks the part a script can:
   structure, defect or feature typing, attribution, and that cited paths, commits, `§` sections and
-  npm scripts exist, with near-miss detection for misspelled symbols. A six-case calibration set
+  npm scripts exist, with near-miss detection for misspelled symbols. An eight-case calibration set
   (`spec-review/calibration/`) measures whether two independent reviewers reach the same gate
   decisions on it, with the two real specs two cases were frozen from committed beside them
   (`spec-review/calibration/originals/`); `test/spec-lint.test.ts` pins the linter against the set,

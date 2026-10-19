@@ -8,8 +8,8 @@
   answer key was relabelled to match those runs and the same runs were then
   scored against it - and the held-out run that was scored against the key
   unchanged missed three of six cases. Rubric 2 fixes the wording the later
-  misses found and has no run yet. Criterion 12 and the c2 ratification are
-  open, so this spec is not ready to merge on its own terms.
+  misses found and has no run yet. Criterion 12 and the c2 and c7 ratification
+  are open, so this spec is not ready to merge on its own terms.
 - Area: contributor workflow / CI
 - Target release: none. No code or behaviour in the published package
   changes (see Approach, step 1); the only new file in the tarball is this
@@ -41,9 +41,9 @@ done. After this change:
 4. The rubric is held to a calibration set with known answers: it merges, and
    changes, only when two independent reviewer runs over that set meet its ship
    bar, and a CI job refuses a rubric or key edit that no current pair of runs
-   covers. What that measures is agreement between two reviewers on a six-case
-   set built from two real specs, which is weaker than "known answers" and is
-   recorded as such under Risks.
+   covers. What that measures is agreement between two reviewers on an
+   eight-case set built from three specs, which is weaker than "known answers"
+   and is recorded as such under Risks.
 
 ## Problem
 
@@ -71,7 +71,7 @@ citations are classified (Approach, step 3) instead.
 ### In scope
 
 - `spec-review/rubric.md`, Rubric 2. **Done on this branch.**
-- `spec-review/calibration/`: six cases, `expected.json`, the run protocol and
+- `spec-review/calibration/`: eight cases, `expected.json`, the run protocol and
   ship bar, and `originals/` (the two real specs two cases were frozen from, with
   the one local path in them scrubbed). **Done on this branch.**
 - `test/rubric-anchors.test.ts` (new): every quoted example of three or more
@@ -339,7 +339,7 @@ Risks says so in those words.
 the ship bar. In short: two runs at a comparable capability level, by models that
 took part in no earlier pass and in no wording fix, each case in a fresh session
 from a clone that cannot reach the answer key, every expectation met in both, and
-agreement on all 30 gate decisions (6 cases x 5 gates). A miss or a
+agreement on all 40 gate decisions (8 cases x 5 gates). A miss or a
 disagreement is fixed in the rubric's wording, never by choosing a run; the key
 may be relabelled only when the new label follows from how the case was built,
 and a relabel re-runs both passes. The lint half runs in CI on every push
@@ -525,7 +525,7 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
   reject is one reviewer's judgement, blocking the gate, with nothing to appeal
   to but the finding.
 - **The ship bar measures agreement, not correctness.** Two reviewers agreeing
-  on 30 gate decisions over six cases built from two real specs is evidence the
+  on 40 gate decisions over eight cases built from three specs is evidence the
   wording is unambiguous, not evidence the rubric asks for the right things. The
   key itself was written by reading the cases, and pass 8 showed how easily a key
   bends towards the runs. Rule 4's relabelling clause and the blob keying make
