@@ -229,27 +229,38 @@ describe.skipIf(!canLock)("spec-lint on a citation it cannot look below", () => 
 	});
 });
 
-// Run under a git hook, GIT_DIR names the repository being pushed. Before the
-// fixture dropped it, this suite committed its fixture over that repository's
-// src/bridge.ts and package.json, and passed.
+// Run under a git hook, GIT_DIR names the repository being pushed, and in a
+// worktree it names that worktree's git directory, whose config is the main
+// checkout's. Before the fixture dropped GIT_*, this suite (still passing)
+// committed its fixture over the pushed branch's src/bridge.ts and package.json,
+// and its `git init` re-initialised the repository and recorded it as bare, so
+// the main checkout stopped working as one. The decoy is laid out the same way:
+// a main checkout with a worktree, and GIT_DIR naming the worktree.
 describe("spec-lint fixtures ignore an inherited GIT_DIR", () => {
 	const scratch = mkdtempSync(join(tmpdir(), "spec-lint-gitdir-"));
 	const decoy = join(scratch, "decoy");
-	const head = () => spawnSync("git", ["rev-parse", "HEAD"], { cwd: decoy, encoding: "utf8", env: fixtureEnv() }).stdout.trim();
+	const worktree = join(scratch, "decoy-wt");
+	const git = (cwd: string, ...args: string[]) =>
+		spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=Test", ...args], {
+			cwd,
+			encoding: "utf8",
+			env: fixtureEnv(),
+		}).stdout.trim();
 	let before: string;
 	let after: string;
+	let bareAfter: string;
 	let run: ReturnType<typeof lintFixture>;
 
 	beforeAll(() => {
 		fixtureRepo(decoy);
+		git(decoy, "worktree", "add", "-q", "-b", "pushed", worktree);
 		// Unlike the fixture's, so a leaked `add` and `commit` would succeed and
 		// move HEAD, rather than find nothing to commit and fail on that instead.
-		writeFileSync(join(decoy, "src", "bridge.ts"), "// the decoy's own file\n");
-		const env = fixtureEnv();
-		spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-qam", "decoy"], { cwd: decoy, env });
-		before = head();
+		writeFileSync(join(worktree, "src", "bridge.ts"), "// the decoy's own file\n");
+		git(worktree, "commit", "-qam", "decoy");
+		before = git(worktree, "rev-parse", "HEAD");
 		const saved = process.env.GIT_DIR;
-		process.env.GIT_DIR = join(decoy, ".git");
+		process.env.GIT_DIR = git(worktree, "rev-parse", "--absolute-git-dir");
 		try {
 			const repo = join(scratch, "repo");
 			fixtureRepo(repo);
@@ -258,13 +269,18 @@ describe("spec-lint fixtures ignore an inherited GIT_DIR", () => {
 			if (saved === undefined) delete process.env.GIT_DIR;
 			else process.env.GIT_DIR = saved;
 		}
-		after = head();
+		after = git(worktree, "rev-parse", "HEAD");
+		bareAfter = git(decoy, "config", "--get", "core.bare");
 	});
 
 	afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-	it("commits nothing to the repository GIT_DIR names", () => {
+	it("commits nothing to the branch GIT_DIR names", () => {
 		expect(after).toBe(before);
+	});
+
+	it("leaves the main checkout of the repository GIT_DIR names non-bare", () => {
+		expect(bareAfter).toBe("false");
 	});
 
 	it("lints the fixture, not the repository GIT_DIR names", () => {
