@@ -8,8 +8,9 @@
   answer key was relabelled to match those runs and the same runs were then
   scored against it - and the held-out run that was scored against the key
   unchanged missed three of six cases. Rubric 2 fixes the wording the later
-  misses found and has no run yet. Criterion 12 and the c2 and c7 ratification
-  are open, so this spec is not ready to merge on its own terms.
+  misses found and has no run yet. The c2 and c7 label ratification was given
+  on 2026-10-19 with no label changed; criterion 12 is still open, so this spec
+  is not ready to merge on its own terms.
 - Area: contributor workflow / CI
 - Target release: none. No code or behaviour in the published package
   changes (see Approach, step 1); the only new file in the tarball is this
@@ -338,8 +339,10 @@ Risks says so in those words.
 `spec-review/calibration/README.md` has the cases, the blind run protocol and
 the ship bar. In short: two runs at a comparable capability level, by models that
 took part in no earlier pass and in no wording fix, each case in a fresh session
-from a clone that cannot reach the answer key, every expectation met in both, and
-agreement on all 40 gate decisions (8 cases x 5 gates). A miss or a
+from a clone that cannot reach the answer key, every expectation met in both,
+agreement on all 40 gate decisions (8 cases x 5 gates), and both runs separating
+c7 from c8 on D1, which those gate decisions do not measure
+(`expected.json` `shipBar.featureColumn`). A miss or a
 disagreement is fixed in the rubric's wording, never by choosing a run; the key
 may be relabelled only when the new label follows from how the case was built,
 and a relabel re-runs both passes. The lint half runs in CI on every push
@@ -415,8 +418,9 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
     gate decisions and missed four of twelve cases. That pair records the
     current blobs, so it is not stale: it simply misses. The four misses are
     rubric-wording defects, not defects in anything this spec builds; they are
-    listed in issue 67 and summarised in the Risks below. The c2 label
-    ratification is a precondition and is also open. Rubric 2 fixes the
+    listed in issue 67 and summarised in the Risks below. The c2 and c7 label
+    ratification was a precondition; it was given on 2026-10-19 and changed no
+    label, so it is no longer what this criterion waits on. Rubric 2 fixes the
     wording those misses found and has no run yet, so this criterion now waits
     on two runs against Rubric 2's blobs.
 13. **Only specs are added to the tarball.** `npm pack --dry-run` lists no
@@ -472,18 +476,25 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
   `- **Negative control` bullet that is not one. Lint only stops the omission;
   the reviewer judges the content, and c3 tests that the reviewer does.
 - **Eight cases from two real specs and one written for the set, six of them
-  from two exemplars.** Rubric 2
-  added the first feature-typed pair (c7, c8), so D1's feature column has an
-  expectation, on one spec's shape. The set can still over-fit its exemplars.
+  from two exemplars.** Rubric 2 added the first feature-typed pair (c7, c8), so
+  D1's feature column has an expectation, on one spec's shape. The set can still
+  over-fit its exemplars. The pair is labelled pass on all five gates, so it
+  widened the set by ten gate decisions and no fail: the original six carry all
+  8 fails in 40. What the pair discriminates is D1, which is why
+  `shipBar.featureColumn` makes that split part of the bar rather than leaving
+  gate agreement to stand for it.
 - **The eligible model pool shrinks with every pass.** A model that took part in
   a pass, or in a wording fix made in response to one, cannot be one of the two
   runs. Six are now spent, and the fixes the last pair calls for will spend the
   next two. That cost is the reason Rubric 2 widens the set with c7 and c8
   rather than re-tuning the original six: a wider set makes each exclusion
   cheaper.
-- **The c2 and c7 labels are judgement.** The maintainer ratifies them before
-  criterion 12 counts as met. The held-out run passed c2 G3 and G4 where the key
-  fails them, which puts those two labels specifically in question.
+- **The c2 and c7 labels are judgement, and were ratified on 2026-10-19**
+  without changing one. The held-out run passed c2 G3 and G4 where the key fails
+  them, but its findings were on D2, D3 and D5, so it argued against neither,
+  and `shipBar.relabelling` forbids a relabel that only a run asked for. They are
+  still judgement: ratification records who stands behind them, not that they
+  were derived.
 - **Three gate-wording defects were found by the held-out pair**, deferred so
   that this mechanism could land first (issue 67), and fixed in Rubric 2, which
   is not yet measured. They are worth keeping here because each is a way a

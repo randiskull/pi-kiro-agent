@@ -276,7 +276,7 @@ reach the key. It missed three of six cases and agreed with either pass-8 run on
 | --- | --- | --- |
 | c1 outcome `revise`, key `reject` | the reviewer applied "any failed gate makes the outcome `revise`" literally; the key's `reject` comes from a row that overlaps it with no precedence rule | the rubric now states that `reject` outranks `revise`, and that a `reject` on a spec with a failed gate is a valid verdict |
 | c5 G5 `fail`, key `pass` | it could not resolve the sibling spec an out-of-scope item names, raised that under G2, and failed G5 on the same citation - one citation counted against two gates | G5 now judges the sentence and not the citation: a named target that does not resolve is a G2 finding |
-| c2 G3 and G4 `pass`, key `fail` | both are c2 labels set by reading the spec rather than by an edit to it, and both are still awaiting ratification | left as they stand; recorded in `expected.json` `labelledBy` as open for the maintainer |
+| c2 G3 and G4 `pass`, key `fail` | both are c2 labels set by reading the spec rather than by an edit to it | left as they stand, and ratified as `fail` on 2026-10-19: this run's findings were on D2, D3 and D5, so it argued against neither label (`expected.json` `labelledBy`) |
 
 Two of the three were wording defects, which is rule 4 working as intended. The
 cost is that `claude-sonnet-5` is now in the tuning loop and cannot be one of the
@@ -376,9 +376,10 @@ code at `68ffb40` the way c4's corrections were.
   specs as they are reviewed.
 - **The c2 and c7 labels are judgement, not construction.** A mutant's answer
   follows from the edit that made it; c2's and c7's follow from reading them.
-  The maintainer ratifies them before the first run counts (`expected.json`
-  `labelledBy`), and the held-out run put c2's G3 and G4 specifically in
-  question.
+  They were ratified on 2026-10-19 with none changed (`expected.json`
+  `labelledBy`); the held-out run had put c2's G3 and G4 in question, but its
+  findings were on D2, D3 and D5, so it argued against neither. Ratification
+  records who stands behind a label, not that it was derived.
 - **The eligible model pool is shrinking.** Every pass spends its models: six
   are now excluded, all named in `expected.json` `shipBar.heldOut` since
   Rubric 2. A set that can only be

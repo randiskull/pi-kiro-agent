@@ -74,8 +74,9 @@ Pass 8's 30/30 does not hold for a reviewer the set was not tuned on.
 Two of the three misses were wording defects and are now fixed in the rubric:
 `reject` outranks `revise` (c1), and G5 judges an out-of-scope item's sentence
 rather than whether its named target resolves (c5). The third, c2 G3 and G4, is a
-pair of judgement labels awaiting the maintainer's ratification and was left
-alone (`expected.json` `labelledBy`).
+pair of judgement labels, left alone and since ratified as `fail` on 2026-10-19:
+this run's findings were on D2, D3 and D5, so it argued against neither
+(`expected.json` `labelledBy`).
 
 # Held-out pair, after the review fixes (rubric 1 at `f64d2eb`)
 
