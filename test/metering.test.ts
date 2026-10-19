@@ -170,6 +170,14 @@ describe("formatMeteringStatus", () => {
 		expect(status).toContain("(last 0.250)");
 	});
 
+	it("shows the last turn's context usage when kiro reported one", () => {
+		const totals = createMeteringTotals();
+		addTurnToTotals(totals, turn({ credits: 1.5 }));
+		expect(formatMeteringStatus(totals, 0.02)).not.toContain("ctx");
+		addTurnToTotals(totals, turn({ credits: 0.25, contextPercent: 3.7405 }));
+		expect(formatMeteringStatus(totals, 0.02)).toBe("\u25b8 1.75 credits ~$0.04 (last 0.250) ctx 3.7%");
+	});
+
 	it("uses the server-provided plural", () => {
 		const totals = createMeteringTotals();
 		addTurnToTotals(totals, turn({ credits: 2, unitPlural: "Credits" }));
@@ -200,7 +208,8 @@ describe("formatMeteringStatus", () => {
 		const totals = createMeteringTotals();
 		addTurnToTotals(totals, turn({ credits: probed.reduce((a, b) => a + b, 0) }));
 		const first = formatMeteringStatus(totals, DEFAULT_CREDIT_USD);
-		addTurnToTotals(totals, turn({ credits: probed[2] }));
+		// 3.7405% is what a lean-agent ACP turn on Haiku 4.5 reported, live, 2026-10-19.
+		addTurnToTotals(totals, turn({ credits: probed[2], contextPercent: 3.7405 }));
 		const second = formatMeteringStatus(totals, DEFAULT_CREDIT_USD);
 		expect(first).toBe("\u25b8 1.63 credits ~$0.03");
 		// The README quotes what the formatter prints, not a plausible-looking string:

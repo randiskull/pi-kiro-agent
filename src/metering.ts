@@ -162,8 +162,9 @@ function formatUsd(usd: number): string {
 }
 
 /**
- * The footer/status string: session credits, the projected dollars, and the
- * last turn. Dollars are omitted when the rate is 0, because a zero is less
+ * The footer/status string: session credits, the projected dollars, the last
+ * turn, and the share of the model's context window kiro reported for the most
+ * recent turn that carried one. Dollars are omitted when the rate is 0, because a zero is less
  * informative than no figure at all. Returns undefined before any turn has
  * reported a credit figure, so the status key stays clear rather than showing
  * a misleading 0.
@@ -178,6 +179,7 @@ export function formatMeteringStatus(
 	if (totals.lastCredits !== undefined && totals.turns > 1) {
 		parts.push("(last " + formatCredits(totals.lastCredits) + ")");
 	}
+	if (totals.lastContextPercent !== undefined) parts.push("ctx " + totals.lastContextPercent.toFixed(1) + "%");
 	return parts.join(" ");
 }
 

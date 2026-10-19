@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test/acp-transport-live.test.ts` (context under 8% of the window) and `test/bridge-live.test.ts`
   (a bridged tool called from a delegated ACP turn).
 
+- **The status line shows context usage.** After the credits it now reads `ctx N.N%`, the share of
+  the model's context window kiro reported for the last turn that carried one. pi-kiro already
+  recorded it in each turn's `kiro.metering` diagnostic but did not show it, so the effect of what a
+  turn loads was visible only by reading diagnostics. Test: `test/metering.test.ts`.
+
 - **A stream-json turn that is priced more than once now traces it.** Credits come from the last
   `metadata` event carrying a `meteringUsage` array, which rests on kiro emitting the priced
   metadata last (the 2.32 probes show exactly one priced metadata per turn). Nothing in a single

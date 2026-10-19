@@ -76,9 +76,10 @@ transport reports token counts, so Pi cannot derive a cost from a price list the
 token-billed providers. pi-kiro surfaces that figure three ways.
 
 - **A running status line** in Pi's footer. After a three-tool turn billed at 1.6338 credits it
-  reads `▸ 1.63 credits ~$0.03`; after a second turn of 0.4102 credits,
-  `▸ 2.04 credits ~$0.04 (last 0.410)`. It resets at session start, and the dollar part is dropped
-  entirely when `PI_KIRO_CREDIT_USD` is `0`.
+  reads `▸ 1.63 credits ~$0.03`; after a second turn of 0.4102 credits that used 3.7% of the
+  model's context window, `▸ 2.04 credits ~$0.04 (last 0.410) ctx 3.7%`. The `ctx` figure is the
+  last one kiro reported (the structured transports only). It resets at session start, and the
+  dollar part is dropped entirely when `PI_KIRO_CREDIT_USD` is `0`.
 - **`usage.cost.total`** on each assistant message, so credits roll into Pi's own cost totals
   after conversion at `PI_KIRO_CREDIT_USD`.
 - **A `kiro.metering` diagnostic** on each assistant message, carrying `credits`, `unit`, `source`
