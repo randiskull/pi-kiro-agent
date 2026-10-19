@@ -22,9 +22,35 @@ import { join } from "node:path";
 /** Workers read this to place their own fake $HOME inside the run-scoped dir. */
 export const TEST_HOME_ROOT_ENV = "PI_KIRO_TEST_HOME_ROOT";
 
+/**
+ * Removes git's own environment variables from `env`, returning the names it
+ * removed.
+ *
+ * git exports GIT_DIR (with GIT_INDEX_FILE, GIT_PREFIX and friends) to the hooks
+ * it runs, and this repository's pre-push hook runs the whole suite. git obeys
+ * GIT_DIR over the working directory, so a test that shells out to git inside a
+ * temp directory acts on the repository being pushed instead:
+ * test/spec-lint-symlink.test.ts did exactly that, and its `git init`, `add` and
+ * `commit` put the fixture's two files over src/bridge.ts and package.json on the
+ * branch, while `init` through a WORKTREE's git directory also wrote
+ * core.bare = true into the config the main checkout shares. The suite still
+ * passed; only a later test linting at HEAD caught it.
+ *
+ * Called once here, so every worker inherits an env without them, and again per
+ * child by the fixtures that spawn git, which is the call the regression test in
+ * test/spec-lint-symlink.test.ts kills. A test that needs one of these sets it on
+ * the child itself.
+ */
+export function stripGitEnv(env: NodeJS.ProcessEnv): string[] {
+	const removed = Object.keys(env).filter((key) => key.startsWith("GIT_"));
+	for (const key of removed) delete env[key];
+	return removed;
+}
+
 let root: string | undefined;
 
 export function setup(): void {
+	stripGitEnv(process.env);
 	root = mkdtempSync(join(tmpdir(), "pi-kiro-test-homes-"));
 	// Forked workers inherit process.env, so this reaches test-setup.ts.
 	process.env[TEST_HOME_ROOT_ENV] = root;

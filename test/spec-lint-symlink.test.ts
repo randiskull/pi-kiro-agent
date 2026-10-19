@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { stripGitEnv } from "./global-setup.js";
 
 const linter = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "spec-lint.mjs");
 
@@ -98,7 +99,9 @@ function spec(cites: string): string {
  * repository being pushed, committing the fixture's files over its own.
  */
 function fixtureEnv(): NodeJS.ProcessEnv {
-	return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+	const env = { ...process.env };
+	stripGitEnv(env);
+	return env;
 }
 
 /** A git repository at `repo` with `src/bridge.ts` and `package.json` committed. */
@@ -115,7 +118,13 @@ function fixtureRepo(repo: string): void {
 	git("-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "fixture");
 }
 
-/** spec-lint's answer, at HEAD, for `docs/specs/sym.md` citing `cites`. */
+/**
+ * spec-lint's answer, at HEAD, for `docs/specs/sym.md` citing `cites`.
+ *
+ * One spec per fixture repository: a second call on the same repo overwrites it,
+ * which is why each describe below builds its own. Nothing lints the directory as
+ * a whole, so a leftover file could not reach another describe's result anyway.
+ */
 function lintFixture(repo: string, cites: string): { status: number | null; stderr: string; result: LintResult } {
 	mkdirSync(join(repo, "docs", "specs"), { recursive: true });
 	writeFileSync(join(repo, "docs", "specs", "sym.md"), spec(cites));
@@ -236,6 +245,22 @@ describe.skipIf(!canLock)("spec-lint on a citation it cannot look below", () => 
 // and its `git init` re-initialised the repository and recorded it as bare, so
 // the main checkout stopped working as one. The decoy is laid out the same way:
 // a main checkout with a worktree, and GIT_DIR naming the worktree.
+// The one place the GIT_* filter is implemented, so the end-to-end decoy below
+// and the per-file strip in global-setup.ts cannot drift apart.
+describe("stripGitEnv", () => {
+	it("removes every GIT_* variable, names them, and leaves the rest alone", () => {
+		const env: NodeJS.ProcessEnv = {
+			GIT_DIR: "/decoy/.git",
+			GIT_INDEX_FILE: "/decoy/.git/index",
+			GIT_CONFIG_GLOBAL: "/dev/null",
+			PATH: "/bin",
+			HOME: "/home/t",
+		};
+		expect(stripGitEnv(env).sort()).toEqual(["GIT_CONFIG_GLOBAL", "GIT_DIR", "GIT_INDEX_FILE"]);
+		expect(env).toEqual({ PATH: "/bin", HOME: "/home/t" });
+	});
+});
+
 describe("spec-lint fixtures ignore an inherited GIT_DIR", () => {
 	const scratch = mkdtempSync(join(tmpdir(), "spec-lint-gitdir-"));
 	const decoy = join(scratch, "decoy");

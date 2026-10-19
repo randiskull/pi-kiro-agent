@@ -42,6 +42,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emits a `chat.stream.metering_repriced` trace with both figures instead of being resolved
   silently: keeping the larger value would hide the protocol change rather than report it.
 
+- **The test suite drops git's own environment variables before any test runs.** git exports `GIT_DIR`
+  to the hooks it runs and this repository's pre-push hook runs the whole suite, so a test that shells
+  out to git in a temp directory acted on the repository being pushed instead: the new spec-lint
+  fixture's `git init`, `add` and `commit` put its two files over `src/bridge.ts` and `package.json`
+  on the branch, and through a worktree's git directory `init` also wrote `core.bare = true` into the
+  config the main checkout shares. The suite still passed; a later test linting at HEAD is what
+  noticed. `test/global-setup.ts` now removes every `GIT_*` variable once per run, and the fixtures
+  strip them per child as well, since a test may set one itself. Test-only: no published code reads
+  these. Test: `test/spec-lint-symlink.test.ts` (`stripGitEnv`, plus a decoy repository with a
+  worktree whose HEAD and `core.bare` must not move; both fail with the filter removed).
+
 ### Fixed
 
 - **A cited path below a symlink was reported as a broken citation.** `scripts/spec-lint.mjs` asks

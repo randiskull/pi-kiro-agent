@@ -91,6 +91,9 @@ function git(args, { allowFail = false, env } = {}) {
 	return result.stdout;
 }
 
+/** lstat errors that mean nothing can be at that component, so it is not a link. */
+const ABSENT = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG"]);
+
 /**
  * True when a component of `path` under the repository root is a symlink. git
  * declines every question about such a path ("beyond a symbolic link"), so the
@@ -100,7 +103,6 @@ function git(args, { allowFail = false, env } = {}) {
  * cannot look at (a directory it may not search) is neither answer, so it is
  * unverifiable rather than a guess.
  */
-const ABSENT = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG"]);
 function underSymlink(path) {
 	let at = root();
 	for (const part of path.split("/")) {
