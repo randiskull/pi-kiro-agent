@@ -1,16 +1,18 @@
 # Implementation Spec: every spec gets an independent, rubric-scored verdict before it is built
 
 - Status: Draft. On this branch already: the rubric, the calibration set with
-  the two specs it was built from, five runs (none of which counts: see below),
-  an interim scorer, the linter and its test, and the anchor-leak test. Not built
-  yet: the queue, verdict validation, the two CI jobs and the restricted review
-  agent. **Rubric 1 has no measured result.** Pass 8's 30/30 is withdrawn - the
-  answer key was relabelled to match those runs and the same runs were then
-  scored against it - and the held-out run that was scored against the key
-  unchanged missed three of six cases. Rubric 2 fixes the wording the later
-  misses found and has no run yet. The c2 and c7 label ratification was given
-  on 2026-10-19 with no label changed; criterion 12 is still open, so this spec
-  is not ready to merge on its own terms.
+  the two specs it was built from, seven runs (none of which counts: see below),
+  a calibration runner, an interim scorer, the linter and its test, and the
+  anchor-leak test. Not built yet: the queue, verdict validation, the two CI jobs
+  and the restricted review agent. **Rubric 1 has no measured result.** Pass 8's
+  30/30 is withdrawn - the answer key was relabelled to match those runs and the
+  same runs were then scored against it - and the held-out run that was scored
+  against the key unchanged missed three of six cases. **Rubric 2 now has its
+  first pair, and it misses**: seven run-cases across five cases, and neither run
+  read D1's feature column, which fails `shipBar.featureColumn` and is the one
+  miss no rewording addresses. The c2 and c7 label ratification was given on
+  2026-10-19 with no label changed; criterion 12 is still open, so this spec is
+  not ready to merge on its own terms.
 - Area: contributor workflow / CI
 - Target release: none. No code or behaviour in the published package
   changes (see Approach, step 1); the only new file in the tarball is this
@@ -409,7 +411,7 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
     carries the whole criterion and not only the case expectations
     (`test/spec-review-score.test.ts`); `spec-review.mjs score` must keep that.
     **Open, and merged open by maintainer decision; tracked by issue 67.**
-    Five runs exist and none counts. Two are withdrawn for being scored against a key fitted to
+    Seven runs exist and none counts. Two are withdrawn for being scored against a key fitted to
     them. The `claude-sonnet-5` run was held out and honest, but it missed
     three cases and its misses drove wording fixes, so that model is now in the
     tuning loop. The last pair - `gsd` 1.22.0 on
@@ -421,8 +423,21 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
     listed in issue 67 and summarised in the Risks below. The c2 and c7 label
     ratification was a precondition; it was given on 2026-10-19 and changed no
     label, so it is no longer what this criterion waits on. Rubric 2 fixes the
-    wording those misses found and has no run yet, so this criterion now waits
-    on two runs against Rubric 2's blobs.
+    wording those misses found.
+
+    **Rubric 2's first pair ran on 2026-10-19 and misses.** `kiro-cli` 2.32.0 on
+    `gpt-5.6-terra` and `pi` 1.3.0 on `us.anthropic.claude-opus-5`, both held out
+    from every pass and every fix, both driven by `scripts/calibrate.mjs` from a
+    ref-stripped clone with `origin` removed and one working copy per session.
+    Sixteen sessions, all exit 0, all header blobs match, isolation audit clean,
+    both `RUN.json` files recording blobs that match: **36 of 40 gate decisions
+    agree and seven run-cases miss across five cases.** The pair also fails
+    `shipBar.featureColumn`, scoring c7 and c8 alike on D1, which is the first
+    miss in this set's history that no reviewing model got right and that no
+    gate rewording addresses. Run B did settle c1's disputed `G1 fail` by
+    re-deriving it from the construction, so that label stays. Four items follow,
+    listed in `spec-review/calibration/runs/SCORE.md`; each stales both runs, and
+    eight models are now spent, so this criterion waits on a ninth and a tenth.
 13. **Only specs are added to the tarball.** `npm pack --dry-run` lists no
     path under `spec-review/` (including `originals/`) or `scripts/`, and differs
     from `main`'s tracked list only by `docs/specs/*.md`. Evidence: both

@@ -17,11 +17,17 @@ bar below. The set stays as a regression suite: every rubric edit re-runs it.
 > misses are rubric-wording defects, they are listed in issue 67, and they are
 > deferred to Rubric 2.
 >
-> **Rubric 2 is the wording fix, and it has no run yet.** It changes G1, G2 and
-> G4 for the three wording misses, clarifies G5, and moves the verdict's `Reviewer:` line from
-> the reviewing model to whoever runs the review ("Rubric 2", below). Every run
-> committed here was scored against Rubric 1's blobs, so none of them says
-> anything about Rubric 2 either way.
+> **Rubric 2 is the wording fix. Its first pair has now run, and misses.** It
+> changes G1, G2 and G4 for the three wording misses, clarifies G5, and moves the
+> verdict's `Reviewer:` line from the reviewing model to whoever runs the review
+> ("Rubric 2", below). The five Rubric 1 runs were scored against Rubric 1's
+> blobs, so none of them says anything about Rubric 2 either way. The two Rubric 2
+> runs, `kiro-cli` on `gpt-5.6-terra` and `pi` on `us.anthropic.claude-opus-5`,
+> record blobs that match and **miss seven run-cases across five cases**; both are
+> committed with `countsTowardsShipBar: false`. **Neither read D1's feature
+> column**, scoring c7 and c8 alike, so the pair also fails
+> `shipBar.featureColumn`, which no rewording fixes. Seven run directories,
+> seven `false`. See "Rubric 2's first pair" below and `runs/SCORE.md`.
 
 **Never give a reviewer this directory, and never give one a worktree of this
 branch.** The answers are in `expected.json`, and the cases are near-copies of
@@ -131,6 +137,48 @@ cannot see its own model id (Rubric 1's runs show what happens otherwise). After
 the session, check that the verdict's line is the one given; a verdict whose
 line differs is corrected from `RUN.json` and the correction noted in
 `NOTES.md`.
+
+### The runner
+
+`node scripts/calibrate.mjs run --harness <harness> --model <id>` does all of
+the above for one pass: the clones, the ref strip, the leak check, an input
+directory and a prompt per case, the sessions, the verdict checks, the isolation
+audit and `RUN.json`. `--dry-run` stops after the clones and the prompts and
+before the first session, which is how to read what a session will be sent;
+`--cases c3,c7` re-runs part of a pass; `--jobs` sets how many sessions run at
+once. Two passes are two invocations, which is also what keeps them in separate
+processes. `test/calibrate.test.ts` holds its checks, each against a case it has
+to catch.
+
+Writing it down closed two gaps in the protocol above:
+
+- **A clone keeps its `origin`.** Deleting every ref does not stop
+  `git fetch origin`, and `origin` here is the repository that holds the key. The
+  runner removes the remote. Every clone made by hand before this was one fetch
+  from the answers, and no isolation audit would have shown it, because no
+  session fetched.
+- **One clone shared by every session of a pass.** The sessions of a pass run at
+  the same time, and a reviewer that writes into its working directory
+  (`kiro-cli` rewrites `.kiro/agents/*.json`) leaves traces the next session can
+  read. The runner copies the ref-stripped clone once per case and leak-checks
+  each copy.
+- **The harness brings its own tools.** A clone a reviewer cannot read the key
+  from is not isolation if the session can search somewhere else. `kiro-cli`'s
+  default agent on the maintainer's machine is `amzn-builder`, which carries MCP
+  servers, and the first attempt at the Rubric 2 pass had
+  `@builder-mcp/WorkspaceSearch` run inside a reviewer session. That attempt was
+  killed and the pass re-run; nothing from it was read beyond the tool log, and
+  no verdict it produced was kept or scored. The runner now writes a workspace
+  agent declaring no MCP server into each `kiro-cli` session's own copy and names
+  it on the command line, and gives `pi` the flags that keep this machine's
+  extensions, skills, prompt templates and MCP servers out of the session: one of
+  those extensions injects guidance into every turn.
+
+Two things it deliberately does not do: decide whether a pass met the bar, and
+set `countsTowardsShipBar`. It writes that field `false`, with a `whyNot` saying
+the pass has not been scored, and a human who has read `score.mjs` flips it with
+`calibrate.mjs finalize <run-dir> --counts true --why "<reason>"`. A runner that
+graded its own pass would be pass 8's defect with a script behind it.
 
 Save each verdict as `runs/<run-id>/<case>.verdict.md`, where `<run-id>` is
 `<yyyy-mm-dd>-r<rubric>-<harness>-<model>`. `<harness>` and `<model>` are the
@@ -343,7 +391,7 @@ G5 wording, and they cover c3, c5 and c6 where the text is shared. `shipBar.held
 `shipBar.spent` lists them for a script to read.
 
 The two runs that measure Rubric 2 must come from models outside that list, and
-they spend two more.
+they spend two more. They have now run: "Rubric 2's first pair", below.
 
 ## The feature cases
 
@@ -366,6 +414,37 @@ c7's labels are judgement, as c4's were when it was frozen, and c4 needed eight
 passes to become a passing exemplar. A first pass that fails c7 is evidence
 about c7 before it is evidence about the rubric, and is checked against the
 code at `68ffb40` the way c4's corrections were.
+
+## Rubric 2's first pair, and what it measured
+
+Two runs, by the runner above, against Rubric 2 exactly as this commit's parent
+left it: `kiro-cli` 2.32.0 on `gpt-5.6-terra` and `pi` 1.3.0 on
+`us.anthropic.claude-opus-5` (Bedrock, us-west-2). Sixteen sessions, all exited
+0, all sixteen header blobs match, the isolation audit is clean for every one,
+and both runs record blobs that match the committed files. **Seven run-cases
+miss, across five cases, and the bar is not met.** Full output, diagnosis and
+the decisions that follow: `runs/SCORE.md`; protocol per run: each run's
+`NOTES.md`.
+
+| result | which rule it bears on |
+| --- | --- |
+| **Both runs scored c7 and c8 at `D1 4`** | `shipBar.featureColumn`, failed by the pair. The pair's whole purpose is this column, and on its first outing neither reviewer read it. **No reviewing model got this right, and no rewording of a gate changes it**, which makes it the first item for the next revision. |
+| Run B failed c1's G1, deriving the key's mechanism from the code at `61bb96f` | `shipBar.relabelling`, satisfied. The Rubric 1 pair left c1's `G1 fail` open because two runs disputed it and a label may not move because a run said so. It is now re-derived from the construction, so **the label stays**. Three of four models still reach the defect and file it as `D2` or `D3`, so G1's `Fails` list is the fix. |
+| Run A failed c6's G5 on `Follow-up spec, owner: the maintainer` | A **new** G5 wording question, the third round running: G5 asks for "a named spec, issue or owner" and then says it judges the sentence rather than the citation, which settles existence and is silent on whether a role names an owner. |
+| Run B's c6 quoted the key's `mustQuoteOneOf` sentence without its full stop | A defect in the key, not the verdict. The matcher is a substring test, so one character turned a correct finding into a `MISS`. Drop terminal punctuation from those strings. |
+| c2's G2 (run A) and c3's G3 (run B), each missed by one run and caught by the other | Reviewer variance with no shared reading to fix. Run A filed ten findings on c2 and none on a source; run B passed all five of c3's gates and missed the removed fail-first step. |
+
+**c7's judgement labels held.** Both runs passed c7 on all five gates and scored
+it `D1 4`, and both passed all five of c8's gates, which is what the key says. So
+the open question about c7 ("A first pass that fails c7 is evidence about c7",
+above) is answered: the gates are confirmed by two models in two harnesses, and
+the single label neither confirmed is c8's `D1 <=2`.
+
+Neither `expected.json` nor the rubric was edited for this result, for the reason
+the last round gives: an edit changes a blob and stales the runs keyed to it.
+`gpt-5.6-terra` and `us.anthropic.claude-opus-5` are spent all the same, bringing
+the count to eight, and they join `shipBar.spent` in the same commit as the
+wording fixes.
 
 ## Known limits of the set
 

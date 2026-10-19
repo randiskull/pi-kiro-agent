@@ -1,0 +1,36 @@
+{
+	"runId": "2026-10-19-r2-pi-us-anthropic-claude-opus-5",
+	"harness": "pi",
+	"harnessVersion": "@earendil-works/pi-coding-agent 1.3.0",
+	"model": "us.anthropic.claude-opus-5",
+	"modelRoute": "amazon-bedrock, us-west-2, through pi's provider of that name. us.anthropic.claude-opus-5 is a US cross-region inference profile; the bare anthropic.* id of a current-generation model is refused for on-demand invocation. Both are public Bedrock identifiers.",
+	"calibrationPass": null,
+	"ref": "61bb96f",
+	"refsByCase": {
+		"c1": "61bb96f",
+		"c2": "61bb96f",
+		"c3": "61bb96f",
+		"c4": "61bb96f",
+		"c5": "61bb96f",
+		"c6": "61bb96f",
+		"c7": "68ffb40",
+		"c8": "68ffb40"
+	},
+	"scoredAtCommit": "5341c4b37b6f8802100ebaa2a6320bbe8c43b925",
+	"scoredAgainst": {
+		"rubric": "805c894d9369c86459cd0452d842ef77e8a9750e",
+		"expected": "b0bb323b0bc466b8eda55da39498313029153d7a",
+		"cases": {
+			"c1": "4f7fc8231a50c5b7198959520e93ef9da1886775",
+			"c2": "0cc053895dd7742ed2987524854b870290723d53",
+			"c3": "20985efe4052a821ad6abd5ac02852b2c2146a2d",
+			"c4": "3e3e121ec784f541c8a192a7cb581cded0ad8bc7",
+			"c5": "2dbde55c3fdfd8322fc317a3fe051451d300e161",
+			"c6": "d9ad6cb04248e96c40d8b881ebe47cdac694ec20",
+			"c7": "f1cabc6d9d8c2a69b2f9c873e8c999b02b2626aa",
+			"c8": "a1eeab778e11ceaf9302ebef8452ce254179965d"
+		}
+	},
+	"countsTowardsShipBar": false,
+	"whyNot": "Three of eight cases miss (see runs/SCORE.md and this run's NOTES.md): c3 scored pass with G3 pass where the key wants revise and G3 fail, c8 scored D1 4 where the key wants <=2, and c6 and c8 quote no mustQuoteOneOf string. The c8 miss breaks shipBar.featureColumn, which both runs of this pair break: c7 and c8 were both scored D1 4. The c6 miss is a key defect rather than a verdict defect: the finding is on the exact sentence the key names, with the right tag and score, and omits only the sentence's full stop, which the key string carries and the substring matcher requires."
+}

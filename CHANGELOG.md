@@ -33,6 +33,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Contributor tooling only: nothing under `spec-review/` or `scripts/` is in the published package.
   Design: `docs/specs/spec-review-bus.md`.
 
+- **A calibration pass is a script now, not a protocol followed by hand.**
+  `node scripts/calibrate.mjs run --harness <harness> --model <model>` makes a ref-stripped clone
+  per ref the set needs, copies it once per case so no two sessions share a directory, builds an
+  input directory and the README's prompt per case, runs one fresh session per case, checks each
+  verdict's header blob against the spec that session was given and its `Reviewer:` line against the
+  line it was launched with, audits every session's output for answer-key strings and for another
+  session's paths, and writes `RUN.json` with blobs it computes rather than blobs someone typed.
+  Writing it down closed three holes in the hand protocol: a clone with every ref deleted still had
+  its `origin`, which is the repository that holds the key; the sessions of a pass shared one working
+  copy; and the harness brought its own tools, which is how `@builder-mcp/WorkspaceSearch` came to
+  run inside a reviewer session on the first attempt at the Rubric 2 pass (that attempt was killed
+  and nothing from it kept). Each `kiro-cli` session now runs under a workspace agent that declares
+  no MCP server, and each `pi` session with this machine's extensions, skills, prompt templates and
+  MCP servers switched off. It never decides whether a pass met the bar - it writes
+  `countsTowardsShipBar: false` with a reason, and a human flips that through
+  `calibrate.mjs finalize` after reading `score.mjs`, because a runner that graded its own pass is
+  the withdrawn pass 8 with a script behind it. Contributor tooling only: nothing under `scripts/`
+  is in the published package. Test: `test/calibrate.test.ts`, where the leak check, the citation
+  guard, the verdict header check, the `Reviewer:` correction, the run-id slug and `finalize`'s
+  required reason each fail on a mutation of their own.
+
+- **Rubric 2 has its first measured result, and it does not meet the ship bar.** Two held-out runs
+  over all eight calibration cases: `kiro-cli` 2.32.0 on `gpt-5.6-terra`, and `pi` 1.3.0 on
+  `us.anthropic.claude-opus-5` through Amazon Bedrock. Sixteen sessions, every one exited 0, every
+  header blob matches its case, the isolation audit is clean for every one and both `RUN.json` files
+  record blobs that match the committed rubric, key and cases. **36 of 40 gate decisions agree and
+  seven run-cases miss across five cases**, so both runs are committed with
+  `countsTowardsShipBar: false` and a reason, and criterion 12 of `docs/specs/spec-review-bus.md`
+  stays open. The result that matters is not a wording defect: **neither run read D1's feature
+  column**, scoring c7 and c8 alike when the pair exists only to separate them, which fails
+  `shipBar.featureColumn` and is the first miss here that no reviewing model got right. Against
+  that, c1's disputed `G1 fail` is settled in the key's favour, because one run re-derived it from
+  how the case is built rather than from what a run said, which is what `shipBar.relabelling` asks.
+  Two smaller items follow: G5 still does not say whether a role names an owner, and one
+  `mustQuoteOneOf` string ends in a full stop, which cost a correct finding a miss on a
+  substring match. Nothing in the rubric, the cases, the key or the scorer was touched after the
+  verdicts were collected, so each item stales both runs when it lands and the next pair spends a
+  ninth and tenth model. Evidence: `spec-review/calibration/runs/SCORE.md` and the two run
+  directories, each with its `NOTES.md`.
+
 ### Changed
 
 - **A stream-json turn that is priced more than once now traces it.** Credits come from the last
