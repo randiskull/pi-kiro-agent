@@ -16,6 +16,7 @@
  */
 import { afterAll, describe, expect, it } from "vitest";
 import { _acpRegistryKey, _getAcpChildRegistry, _resetAcpChildren, makeStreamViaAcp } from "../src/acp-transport.js";
+import { readMeteringDiagnostic } from "../src/metering.js";
 import { assistant, ctx, drainTurn, LIVE, LIVE_MODEL, LIVE_TIMEOUT_MS, user, withRealHome } from "./live-support.js";
 
 const streamViaAcp = makeStreamViaAcp({ binaryPath: "kiro-cli" });
@@ -38,6 +39,15 @@ describe.skipIf(!LIVE)("live kiro ACP transport", () => {
 			const t1 = await drainTurn(streamViaAcp(LIVE_MODEL, ctx([user(seed)]), undefined));
 			expect(t1.text.length).toBeGreaterThan(0);
 			expect(t1.totalTokens).toBe(0); // seat-billed, no token accounting
+
+			// kiro reports context against the model's own window (200k for Haiku
+			// 4.5). On Haiku this turn is ~3.7% with the lean agent and inheritance
+			// disabled, ~20.7% with the lean agent inheriting, ~35.8% on a developer
+			// machine's default agent; 8% separates the first from the rest.
+			const done = t1.events.find((e) => e.type === "done");
+			const metering = done?.type === "done" ? readMeteringDiagnostic(done.message.diagnostics) : undefined;
+			expect(metering?.contextPercent).toBeDefined();
+			expect(metering?.contextPercent ?? 100).toBeLessThan(8);
 
 			// A persistent child that reached a ready ACP session -- the whole point
 			// of this transport, and unobservable through the stream alone.

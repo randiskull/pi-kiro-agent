@@ -29,9 +29,39 @@ Pi thinking levels forward to kiro's `--effort` (minimal/low→low, medium→med
 
 ## The MCP bridge
 
-Under the **chat transport** (`PI_KIRO_TRANSPORT=chat`), each delegated turn serves your Pi session's bridgeable tools over a **loopback Streamable-HTTP MCP endpoint** and writes a throwaway kiro agent profile (`~/.kiro/agents/pi-kiro-bridge-*.json`) whose inline `{type: "http"}` server points at the tokenized URL. The spawn adds `--agent <profile> --require-mcp-startup` (exit 3 retries once); profiles are unique per turn, written owner-only (`0600`) because the URL carries the token, and removed afterwards together with any `.bak` copies a kiro-cli v3-engine start saved beside them. Profiles left by a pi process that crashed mid-turn are swept at the next activation. Under the **ACP transport** (the default), the bridge mounts inline via the `session/new` protocol request's `mcpServers` array — no profile file is written and no `--agent` flag is used. Inside kiro the tools appear as `@pi/<tool>` in either case.
+Under the **chat transport** (`PI_KIRO_TRANSPORT=chat`), each delegated turn serves your Pi session's bridgeable tools over a **loopback Streamable-HTTP MCP endpoint** and writes a throwaway kiro agent profile (`~/.kiro/agents/pi-kiro-bridge-*.json`) whose inline `{type: "http"}` server points at the tokenized URL. The spawn adds `--agent <profile> --require-mcp-startup` (exit 3 retries once); profiles are unique per turn, written owner-only (`0600`) because the URL carries the token, and removed afterwards together with any `.bak` copies a kiro-cli v3-engine start saved beside them. Profiles left by a pi process that crashed mid-turn are swept at the next activation. Under the **ACP transport** (the default), the bridge mounts inline via the `session/new` protocol request's `mcpServers` array, so the bridge token never touches disk. kiro offers those servers to the model whatever agent the child runs (see [Which agent a delegated ACP turn runs](#which-agent-a-delegated-acp-turn-runs)). Inside kiro the tools appear as `@pi/<tool>` in either case.
 
 Bridged when installed: pi-subagents' `Agent` / `get_subagent_result` / `steer_subagent`, and rpiv's `ask_user_question` / `todo` / `advisor`. The capture degrades gracefully — absent extensions are simply not bridged. This makes `kiro/*` usable as a primary model for tool-orchestrating agents, including cross-runtime nesting (a kiro-delegated turn dispatching subagents that run on other providers). Setup: [docs/integrations/rpiv.md](docs/integrations/rpiv.md).
+
+## Which agent a delegated ACP turn runs
+
+By default every ACP child runs a lean agent that pi-kiro writes for it: kiro's five native coding
+tools (`fs_read`, `fs_write`, `execute_bash`, `grep`, `glob`), no MCP servers of its own and no
+inherited resources. The profile lives in a private temp directory passed to kiro as
+`KIRO_AGENT_CONFIG_DIR`, so it never appears in `~/.kiro/agents`, and is removed with the child.
+pi's own tools still arrive through the bridge, and the GSD workflow server through `session/new`.
+
+Without it, `kiro-cli acp` runs whatever agent `chat.defaultAgent` names, and that agent brings its
+MCP servers, the global `mcp.json` and every inherited steering file and skill into every turn.
+Measured on kiro-cli 2.32.0 with Opus 5.5 and a one-line prompt, from kiro's own
+`contextUsagePercentage` and `meteringUsage` (`probes/acp-probe-p7-preamble.mjs`):
+
+| Agent | Context | Credits |
+|---|---|---|
+| a developer machine's default agent, with its MCP servers and inherited steering | ~101,600 tokens | 1.25 |
+| `kiro_default`, inheritance disabled, 8 global MCP servers | ~110,000 tokens | 1.35 |
+| the lean agent | ~10,500 tokens | 0.046 |
+| a custom agent with no tools at all | ~6,900 tokens | 0.032 |
+
+The last row is the floor, and almost none of it is sent by the client: kiro-cli's own request for
+that turn is under 10 KB. It matches the preamble Kiro's service adds for a request whose `origin`
+is `KIRO_CLI`, about 6,700 tokens when measured with a direct API call, against about 1,300 for
+`KIRO_WEB`. kiro-cli 2.32.0 has no setting that changes its origin, so pi-kiro, which drives the
+official client, pays that preamble; a provider that calls Kiro's API directly can choose. Your own figures depend on what your default agent loads, and on the
+model: kiro reports context against each model's own window.
+
+`PI_KIRO_ACP_AGENT=default` restores the previous behaviour, and `PI_KIRO_ACP_AGENT=<name>` runs
+one of your own agents instead (see [Environment](#environment)).
 
 ## How output is parsed
 
@@ -113,7 +143,8 @@ fails quietly — see the transport section of the
 | `PI_KIRO_BRIDGE_TOOLS` | built-in allowlist | Comma-separated override of bridged tools, by their origin-prefixed names (`rpiv_todo`, `subagents_Agent`); a bare name matches nothing |
 | `PI_KIRO_BRIDGE_MAX_BODY_BYTES` | `33554432` (32 MiB) | Largest single request kiro may send a bridged tool (its arguments, as JSON). MCP carries binary as base64, so the usable payload is about three quarters of this. A larger request is refused before the tool runs, with a one-time warning on stderr. Read when a bridge mounts. Does not limit tool results. |
 | `PI_KIRO_WORKFLOW_MCP` | `on` | Set `off` to disable auto-mounting the GSD workflow-MCP server in delegated turns |
-| `PI_KIRO_WORKSPACE_SETTINGS` | `on` | Set `off` to stop delegated turns from disabling kiro's default-resource inheritance. When on, a turn behind a generated agent profile sets `chat.disableInheritingDefaultResources` in `<cwd>/.kiro/settings/cli.json` and restores the file afterwards, which keeps roughly 30,000 tokens of inherited steering, skills and `AGENTS.md` out of every turn. An explicit value you have already set for that key is never overridden. An edit you make to that file during a turn is kept (only the key is taken back). If pi is killed mid-turn, the next delegated turn in that directory restores the file; if a restore fails, pi-kiro says so on stderr and retries on the next turn. Until then your own interactive kiro sessions in that directory run without inherited steering and skills, so `off` is the safe choice for a project you also use kiro in directly while pi turns run. |
+| `PI_KIRO_ACP_AGENT` | `lean` | **ACP transport only.** Which kiro agent each ACP child runs. `lean` (or unset): a pi-owned agent with kiro's five native coding tools and nothing inherited, see [Which agent a delegated ACP turn runs](#which-agent-a-delegated-acp-turn-runs). `default`: no `--agent`, so kiro runs your `chat.defaultAgent` with everything it loads. Any other value: `--agent <value>`, one of your own agents, which keeps whatever it inherits. Read when a child starts |
+| `PI_KIRO_WORKSPACE_SETTINGS` | `on` | Set `off` to stop delegated turns from disabling kiro's default-resource inheritance. When on, a chat-transport turn behind a generated agent profile, or an ACP child running the lean agent, sets `chat.disableInheritingDefaultResources` in `<cwd>/.kiro/settings/cli.json` and restores the file afterwards (for ACP, as soon as kiro-cli has started, because it reads the setting once at startup), which keeps the inherited steering, skills and `AGENTS.md` out of every turn: roughly 30,000 to 47,000 tokens on a developer machine. An explicit value you have already set for that key is never overridden. An edit you make to that file during a turn is kept (only the key is taken back). If pi is killed mid-turn, the next delegated turn in that directory restores the file; if a restore fails, pi-kiro says so on stderr and retries on the next turn. Until then your own interactive kiro sessions in that directory run without inherited steering and skills, so `off` is the safe choice for a project you also use kiro in directly while pi turns run. |
 | `PI_KIRO_RESUME` | (enabled) | **Chat transport only.** Set `off` to disable incremental context / session resume (forces full-context re-send every turn). The ACP transport has its own built-in divergence detection: it always creates a fresh session when the context prefix changes and resumes on a pure-append; `PI_KIRO_RESUME` has no effect on it. To fully disable session continuity under ACP, switch to the chat transport (`PI_KIRO_TRANSPORT=chat`) and set `PI_KIRO_RESUME=off`. |
 | `PI_KIRO_TRANSPORT` | `acp` | Set `chat` to fall back to the per-turn chat transport. ACP holds one kiro-cli child for the session and speaks a protocol, so tool arguments and the credit metadata arrive as structured events and kiro keeps its prefix cache warm across turns; the chat transport spawns a child per turn and, below the stream-json floor, recovers the answer by scraping prose. An unrecognized value keeps ACP and writes one `transport.unknown` trace, so a typo cannot silently downgrade a session. The live transport is named in the identity line |
 | `PI_KIRO_CHAT_FORMAT` | `stream-json` on kiro-cli ≥ 2.21.4, else `text` | **Chat transport only.** `stream-json` reads kiro-cli's structured `--output-format stream-json` events instead of scraping its text: real tool arguments, kiro's built-in tools as `kiro_*` rows, and a loud failure if the event format changes. `text` forces the text scrape. An explicit value is honoured on any kiro-cli version; any other value fails the turn |

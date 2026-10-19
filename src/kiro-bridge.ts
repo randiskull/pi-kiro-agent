@@ -342,7 +342,8 @@ function reapStaleRestore(dir: string): void {
 }
 
 /**
- * Turn off kiro's default-resource inheritance for this turn by setting
+ * Turn off kiro's default-resource inheritance for this turn (chat transport)
+ * or this child's startup (ACP, see acp-agent.ts) by setting
  * `chat.disableInheritingDefaultResources` at WORKSPACE scope, recovering
  * ~30,200 tokens per delegated turn (6.430% -> 3.409% of a 1M window, measured
  * on kiro-cli 2.32.0 engine v2).

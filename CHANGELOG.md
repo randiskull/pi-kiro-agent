@@ -56,6 +56,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **ACP turns run a lean pi-owned agent instead of your default kiro agent.** With no `--agent`,
+  `kiro-cli acp` ran whatever `chat.defaultAgent` named, and that agent brought its own MCP servers,
+  the global `mcp.json` and every inherited steering file and skill into each turn, none of which pi
+  uses. Measured on kiro-cli 2.32.0, Opus 5.5, a one-line prompt: ~101,600 tokens and 1.25 credits a
+  turn on a developer machine's default agent, ~10,500 tokens and 0.046 credits on the lean agent.
+  The agent carries kiro's five native coding tools (`fs_read`, `fs_write`, `execute_bash`, `grep`,
+  `glob`); its profile lives in a private temp directory passed as `KIRO_AGENT_CONFIG_DIR`, never in
+  `~/.kiro/agents`, and is removed with the child. The pi bridge and the GSD workflow server still
+  mount through `session/new`, which kiro honours for any agent. Inherited resources are disabled for
+  the child through the same workspace setting the chat transport uses, held only from just before
+  spawn until `initialize` answers, because kiro reads it once at startup: written only at
+  `session/new` it has no effect (20.7% of Haiku 4.5's window against 3.6%). `PI_KIRO_ACP_AGENT=default`
+  restores the old behaviour and `PI_KIRO_ACP_AGENT=<name>` runs one of your own agents. Probes:
+  `probes/acp-probe-p7-preamble.mjs` (cost per agent configuration) and
+  `probes/acp-probe-p8-lean-agent.mjs` (bridge under the lean agent, when the setting is read).
+  Tests: `test/acp-transport.test.ts` ("ACP agent selection"), and live,
+  `test/acp-transport-live.test.ts` (context under 8% of the window) and `test/bridge-live.test.ts`
+  (a bridged tool called from a delegated ACP turn).
+
 - **A stream-json turn that is priced more than once now traces it.** Credits come from the last
   `metadata` event carrying a `meteringUsage` array, which rests on kiro emitting the priced
   metadata last (the 2.32 probes show exactly one priced metadata per turn). Nothing in a single

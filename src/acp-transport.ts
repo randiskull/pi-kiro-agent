@@ -63,6 +63,8 @@ import { initialSystemPrompt } from "./system-prompt.js";
 import { ACP_ENGINE, authMethod, identityLine, pluginName, pluginVersion, redactSecrets, resolvePiVersion } from "./identity.js";
 import { creditCostUsd, meteringDiagnostic, sumCredits, type TurnMetering } from "./metering.js";
 import { discoverWorkflowMcpServers } from "./workflow-mcp-discovery.js";
+import { prepareAcpAgent, type AcpAgentLaunch } from "./acp-agent.js";
+import { disableInheritedResources } from "./kiro-bridge.js";
 import { BRIDGE_MCP_SERVER_KEY, displayToolName } from "./tool-names.js";
 import {
 	advanceAcpSession,
@@ -254,6 +256,8 @@ interface MetadataParams {
 interface AcpChild {
 	child: ChildProcess;
 	cwd: string;
+	/** The kiro agent this child runs; see acp-agent.ts. */
+	agent: AcpAgentLaunch;
 	/** Composite registry key: `${cwd}\x00${conversationKey}`. */
 	registryKey: string;
 	/** Active ACP session ID (undefined between session/new calls). */
@@ -452,6 +456,7 @@ function teardownChild(entry: AcpChild, reason: string, options: { kill: boolean
 		} catch { /* already gone */ }
 	}
 	unregisterChildForCleanup(entry.child);
+	entry.agent.cleanup();
 	setChildKeepalive(entry, false);
 	for (const [, resolve] of entry.pending) {
 		resolve({ jsonrpc: "2.0", error: { code: -1, message: `acp child terminated: ${reason}` } });
@@ -886,14 +891,25 @@ async function spawnAcpChild(
 	turnSignal: AbortSignal,
 ): Promise<AcpChild> {
 	warnIfUlimitTooLow();
-	const args = ["acp", "--trust-all-tools", "--agent-engine", ACP_ENGINE];
+	const agent = prepareAcpAgent();
+	// kiro reads workspace settings once, at startup, so the project's settings
+	// file is ours from just before spawn until initialize has answered.
+	const settings = agent.disableInheritance ? disableInheritedResources(cwd) : undefined;
+	const args = ["acp", "--trust-all-tools", "--agent-engine", ACP_ENGINE, ...agent.args];
 	const detached = process.platform !== "win32";
-	const child = spawn(binaryPath ?? "kiro-cli", args, {
-		cwd,
-		env: process.env,
-		stdio: ["pipe", "pipe", "pipe"],
-		detached,
-	});
+	let child: ChildProcess;
+	try {
+		child = spawn(binaryPath ?? "kiro-cli", args, {
+			cwd,
+			env: agent.env,
+			stdio: ["pipe", "pipe", "pipe"],
+			detached,
+		});
+	} catch (error) {
+		settings?.restore();
+		agent.cleanup();
+		throw error;
+	}
 	// Detached children outlive an uncleanly-dying parent — tether them to the
 	// parent's exit hook (see orphan-reaper.ts).
 	registerChildForCleanup(child, detached);
@@ -901,6 +917,7 @@ async function spawnAcpChild(
 	const entry: AcpChild = {
 		child,
 		cwd,
+		agent,
 		registryKey: key,
 		acpSessionId: undefined,
 		sessionModelId: undefined,
@@ -944,7 +961,12 @@ async function spawnAcpChild(
 	trace("acp.child.spawn", { registryKey: key, pid: child.pid, children: registry.size });
 
 	// Handshake: initialize
-	const initResp = await request(entry, "initialize", buildInitializeParams());
+	let initResp: AcpMessage;
+	try {
+		initResp = await request(entry, "initialize", buildInitializeParams());
+	} finally {
+		settings?.restore();
+	}
 	if (initResp.error) {
 		registry.delete(key);
 		killChild(entry, "initialize failed");
