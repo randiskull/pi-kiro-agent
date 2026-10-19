@@ -175,8 +175,17 @@ record to trust.
 pre-review blobs in `RUN.json`, and ship bar rule 5 counts a run only when its
 recorded blobs match the committed ones, so the wording fixes staled them on
 purpose; that is the mechanism working, because a stale run is now visible
-rather than plausible. The two newest record the current blobs and are not
-stale - they simply miss, four cases between them.
+rather than plausible. The two newest recorded the blobs that were current when
+they ran and were not stale then - they simply miss, four cases between them.
+
+**Rubric 2 stales those two as well, and that is not a retraction of their
+measurement.** The G1, G2, G4 and G5 wording fixes change `spec-review/rubric.md`,
+and the corrected c1, c2 and c4 reasons change `expected.json`, so neither blob
+in any committed `RUN.json` matches the committed file any more and rule 5 now
+counts none of the five runs. The four misses above stand as the honest
+measurement of Rubric 1, which is what the wording fixes were made from. **Rubric
+2 has no run at all**, and the two models that produced those misses are spent
+under rule 6, so meeting the bar needs a seventh and an eighth.
 
 The bar still needs two passes that each miss no case, at a comparable
 capability level, by models that took part in no pass and no wording fix (rules

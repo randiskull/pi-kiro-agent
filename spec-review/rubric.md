@@ -147,15 +147,16 @@ Check: reviewer.
 ### G5 Scope fenced
 
 `### In scope` and `### Out of scope` are both present, and each out-of-scope
-item says where it goes: a named spec, issue or owner, or that it is dropped
-or unchanged with no follow-up, with the reason. Each of the words dropped,
-unchanged and "no follow-up" is on its own the statement that nothing follows,
-so an item needs one of them, not all three. A word that describes the item
-instead of deciding about it (that it is not affected, not needed or not
-relevant) is a reason, not a disposition: it passes beside one of the
-dispositions above, a bare "no follow-up" included, and fails on its own. A
-reason alone is not a disposition: saying why the item is out of scope does not
-say whether anything follows it, and an item that gives only a reason fails.
+item says where it goes: a named spec, issue or owner, which needs no reason
+beside it, or that it is dropped or unchanged with no follow-up, with the
+reason. Each of the words dropped, unchanged and "no follow-up" is on its own
+the statement that nothing follows, so an item needs one of them, not all
+three. A word that describes the item instead of deciding about it (that it is
+not affected, not needed or not relevant) is a reason, not a disposition: it
+passes beside one of the dispositions above, a bare "no follow-up" included,
+and fails on its own. A reason alone is not a disposition: saying why the item
+is out of scope does not say whether anything follows it, and an item that
+gives only a reason fails.
 
 G5 judges the sentence, not the citation. An item that names a spec, issue or
 owner has a disposition whether or not that target resolves from this

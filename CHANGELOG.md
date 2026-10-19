@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `spec-review/rubric.md` (now Rubric 2) defines five pass/fail gates and six separately scored
   dimensions for a spec in `docs/specs/`, and `scripts/spec-lint.mjs` checks the part a script can:
   structure, defect or feature typing, attribution, and that cited paths, commits, `§` sections and
-  npm scripts exist, with near-miss detection for misspelled symbols. An eight-case calibration set
+  npm scripts exist, with near-miss detection for misspelled symbols. A six-case calibration set
   (`spec-review/calibration/`) measures whether two independent reviewers reach the same gate
   decisions on it, with the two real specs two cases were frozen from committed beside them
   (`spec-review/calibration/originals/`); `test/spec-lint.test.ts` pins the linter against the set,
@@ -25,9 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `countsTowardsShipBar: false` (`spec-review/calibration/runs/SCORE.md`). Rubric 2 fixes the
   three gate-wording defects those misses exposed (G1, G2 and G4), clarifies G5, and has the person
   running a review write the verdict's `Reviewer:` line instead of the model, which cannot see its
-  own model id (#67). It has no calibration run yet, and the spec's ship-bar criterion says `Open`. The queue, verdict validation and the CI gate are specified and not
-  built. Contributor tooling only: nothing under `spec-review/` or `scripts/` is
-  in the published package. Design: `docs/specs/spec-review-bus.md`.
+  own model id (#67). It has no calibration run yet, and the spec's ship-bar criterion says `Open`.
+  The queue, verdict validation and the CI gate are specified and not built. Contributor tooling
+  only: nothing under `spec-review/` or `scripts/` is in the published package. Design:
+  `docs/specs/spec-review-bus.md`.
 
 ### Changed
 
