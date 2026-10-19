@@ -12,7 +12,9 @@
   read D1's feature column, which fails `shipBar.featureColumn` and is the one
   miss no rewording addresses. The c2 and c7 label ratification was given on
   2026-10-19 with no label changed; criterion 12 is still open, so this spec is
-  not ready to merge on its own terms.
+  not ready to merge on its own terms. **Rubric 3 fixes what that pair found and
+  stales it by blob**, so all seven runs on this branch are visibly stale and
+  Rubric 3 has no run at all.
 - Area: contributor workflow / CI
 - Target release: none. No code or behaviour in the published package
   changes (see Approach, step 1); the only new file in the tarball is this
@@ -73,7 +75,7 @@ citations are classified (Approach, step 3) instead.
 
 ### In scope
 
-- `spec-review/rubric.md`, Rubric 2. **Done on this branch.**
+- `spec-review/rubric.md`, Rubric 3. **Done on this branch.**
 - `spec-review/calibration/`: eight cases, `expected.json`, the run protocol and
   ship bar, and `originals/` (the two real specs two cases were frozen from, with
   the one local path in them scrubbed). **Done on this branch.**
@@ -436,8 +438,21 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
     miss in this set's history that no reviewing model got right and that no
     gate rewording addresses. Run B did settle c1's disputed `G1 fail` by
     re-deriving it from the construction, so that label stays. Four items follow,
-    listed in `spec-review/calibration/runs/SCORE.md`; each stales both runs, and
-    eight models are now spent, so this criterion waits on a ninth and a tenth.
+    listed in `spec-review/calibration/runs/SCORE.md`.
+
+    **Rubric 3 lands all four in this branch, and stales that pair.** D1 gains a
+    precondition paragraph beside its anchor table and the Review procedure gains
+    a step that lists the Problem's evidence; G1's `Not G1` bullet says that
+    finding the D2 or the D3 does not answer G1, and a procedure step lists the
+    cases the spec names; G5 says an owner may be a person, a role or a team; and
+    six `mustQuoteOneOf` strings lose a terminal full stop that a substring match
+    had made load-bearing. **No answer-key label moved on any gate or dimension.**
+    The two Rubric 2 runs are now stale by blob, by design, so **seven run
+    directories are stale and Rubric 3 has no run at all**. Eight models are
+    spent, so this criterion waits on a ninth and a tenth - and on the honest
+    caveat that Rubric 3's text is an argument about why two reviewers scored what
+    they scored, not yet a measurement: Rubric 2's G1 bullet was written for c1,
+    read correctly, and one of two reviewers passed c1's G1 anyway.
 13. **Only specs are added to the tarball.** `npm pack --dry-run` lists no
     path under `spec-review/` (including `originals/`) or `scripts/`, and differs
     from `main`'s tracked list only by `docs/specs/*.md`. Evidence: both

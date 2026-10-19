@@ -395,3 +395,53 @@ so. The 2026-10-17 decision stands for the same reason it was taken: these are
 defects in the rubric's wording and in one key string, not in anything the bus
 builds, and the mechanism that found them is working. It found them on a rubric
 revision, by a script, with the isolation holes closed.
+
+# Rubric 3 lands, and stales both runs above
+
+All four items are fixed in the same commit, and **both runs above are now stale
+by blob**, which is the mechanism doing what rule 5 describes. Re-running the
+command in "Rubric 2's first pair" prints `blobs: stale` for each run instead of
+`blobs: match`, and **every case line and both totals are unchanged**, because
+nothing a run recorded moved: the scorer reads the verdicts, and the verdicts are
+the same files.
+
+**No answer-key label moved**, on any gate or any dimension, in any case. What
+changed:
+
+| item | where | what it was |
+| --- | --- | --- |
+| 1 | `rubric.md` D1 and the Review procedure | measurement is now a stated precondition of a feature 3 or 4, outside the anchor table, with a procedure step that lists the Problem's evidence and caps D1 at 2 when the list is empty |
+| 2 | `rubric.md` G1 and the Review procedure | `Not G1` now says that finding the D2 or the D3 does not answer G1, and a procedure step lists the cases the spec names before any gate is decided |
+| 3 | `rubric.md` G5 | an owner may be a person, a role or a team |
+| 4 | `expected.json` | six `mustQuoteOneOf` strings lost a terminal full stop, five in c1 and one in c6, and `shipBar.quoteMatching` states the rule |
+
+Items 1 and 2 are the same shape, and the shape is why they are procedure steps
+and not more gate text. **In both, a reviewer found the defect and scored it in
+the wrong place.** Run A found c1's contradiction with the design doc and filed
+it as `D3`; both runs read c8's Problem, checked its claims against the checkout,
+found them true, and scored `D1 4`. Neither is a reviewer that misread the spec.
+Both are a reviewer answering a question the rubric did not quite ask of them, at
+the moment it mattered. G1's `Also fails, with no choice offered` bullet, added in
+Rubric 2 for exactly c1, already covered the case and still did not get applied:
+**the gate text was right and had no place in the workflow that forced the
+question.** So Rubric 3 puts the question in the procedure, where step 3 already
+makes a reviewer work through a list.
+
+Two further notes on what this does and does not buy:
+
+- **Item 4 was larger than the pair revealed.** The test written for it found
+  five more offending strings in c1 that no run had reached, because no run
+  quoted those sentences. One miss exposed a defect in six key strings, and the
+  test now also checks that every string is still findable in its case, so
+  trimming one into something unquotable fails too.
+- **Nothing here has been measured.** Rubric 3's text is an argument about why
+  two reviewers scored what they scored. Whether it changes what a reviewer
+  does is the next pair's question, and the pair before this one is the
+  cautionary case: Rubric 2's G1 bullet was written for c1, read correctly, and
+  one of two reviewers passed c1's G1 anyway.
+
+`shipBar.spent` is now eight, with `gpt-5.6-terra` and
+`us.anthropic.claude-opus-5` added in this commit rather than the last, for the
+reason the last section gives. Criterion 12 of `docs/specs/spec-review-bus.md`
+stays `Open`: **Rubric 3 has no run at all**, and the next pair needs a ninth and
+a tenth model.

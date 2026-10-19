@@ -1,6 +1,6 @@
 # Spec review rubric
 
-Rubric: 2
+Rubric: 3
 
 This is the bar an implementation spec in `docs/specs/` must clear before anyone
 builds it. It is written for a reviewer that is not the author: a teammate
@@ -75,6 +75,14 @@ or signature other code or users will depend on.
   design decision is a D3 finding. A spec can fail G1 and lose D2 or D3 for the
   same change when both are true: the first asks whether the behaviour is
   decided at all, the others whether the decision is sound.
+
+**Finding the D2 or the D3 does not answer G1.** The questions are asked of
+different things: D2 and D3 are about the behaviour the spec chose, G1 about the
+cases it left without one. A reviewer who has written the contradiction down
+still owes G1 the other question, asked of every case the spec names. Expect the
+two together, because a change that overturns a decision usually also leaves the
+path that decision protected undecided, and the contradiction is the easier of
+the two to see.
 
 This list is the gate. The opening sentence says what G1 is for, and every way
 of falling short of it is one of the bullets above.
@@ -163,6 +171,12 @@ owner has a disposition whether or not that target resolves from this
 checkout; a named target that does not exist is a G2 finding, not a G5 one.
 Failing both gates on one citation is one claim counted twice.
 
+An owner may be a person, a role or a team. The gate asks that the item name
+where it goes, not that the destination be an individual, so a role is a
+disposition and how specific it is is not G5's question. What fails is an item
+that names no destination of any kind and does not say it is dropped or
+unchanged.
+
 Check: reviewer.
 
 ## Dimensions
@@ -179,6 +193,22 @@ needs at least one finding tagged with it.
 | **3** | Mechanism traced to code, but provenance or the alternative-ruling evidence is missing. | Measured, but not every gap is tied to its cause. |
 | **2** | A plausible cause named at file level without a mechanism; or a cause hedged rather than settled, offered as what the author expects is happening, where the evidence to settle it was present in the spec; or an observation the cause does not account for. | Current behaviour asserted, not measured. |
 | **1** | No cause, or one contradicted by the spec's own evidence. | No problem statement beyond the goal. |
+
+**For a feature spec, measurement is a precondition, not one of several
+credits.** Rows 4 and 3 both open with it, so a 3 or a 4 needs the spec itself to
+show how the current behaviour was observed: a command that was run, an output or
+a number it produced, and the ref it was taken at, present in the spec where a
+reader can see them. Tying each gap to the code that produces it is the rest of
+row 4 and carries no score on its own, so a Problem that names the right code and
+states its findings as claims is a 2, however precise those claims are and
+however well they hold up.
+
+**Score the evidence the spec presents, not whether its conclusions are true.** A
+reviewer who checks the claims against the checkout and finds them right has
+learned that the author was right, which is not the same as the spec having
+measured anything. Row 2 is where a Problem that turns out to be correct but is
+not measured belongs, and raising it because it turned out to be correct is the
+most likely way to read this column wrong.
 
 ### D2 Safety argument
 
@@ -264,7 +294,7 @@ exact spec text it judged:
 
 ```
 spec-review verdict for docs/specs/<slug>.md blob <40-hex git blob sha>
-Rubric: 2
+Rubric: 3
 Reviewer: <harness>, <model>
 Outcome: pass
 
@@ -327,9 +357,19 @@ Outcome: pass
 2. Read the spec in full, then every file and `§` it cites that its Root cause
    (or Problem) and Approach depend on.
 3. Work through every item lint listed under notes (G2 reviewer half).
-4. Decide each gate, then score each dimension against its anchors. Score what
+4. **List the cases the spec names**, in its Goal, its Scope and its Approach,
+   and beside each the sentence that says what the change does in that case.
+   This list is what G1 is decided from. A case with no such sentence fails G1,
+   and a contradiction or an unargued risk found elsewhere does not settle it.
+5. **List what the spec offers as evidence for its own starting point**: each
+   command run, each output or number it produced, and the ref. That is the
+   Problem for a feature spec, Observed failure for a defect spec. Make the list
+   even when it comes out empty, because an empty one caps D1 at 2 whatever else
+   that section does well, and the cap is easy to miss once the rest of the spec
+   reads well.
+6. Decide each gate, then score each dimension against its anchors. Score what
    is written, not what the author probably meant.
-5. Write findings, then the outcome by the table. Do not soften the outcome to
+7. Write findings, then the outcome by the table. Do not soften the outcome to
    match the findings' tone, or the findings to match the outcome.
 
 ## Changing this rubric

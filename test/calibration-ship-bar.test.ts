@@ -16,9 +16,15 @@ import { describe, expect, it } from "vitest";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const key = JSON.parse(readFileSync(join(root, "spec-review", "calibration", "expected.json"), "utf8")) as {
-	cases: Record<string, { review: { gates: Record<string, string>; dimensions?: Record<string, string> } }>;
-	shipBar: Record<string, string>;
+	cases: Record<
+		string,
+		{ review: { gates: Record<string, string>; dimensions?: Record<string, string>; mustQuoteOneOf?: string[] } }
+	>;
+	shipBar: Record<string, string | string[]>;
 };
+const quotes = Object.entries(key.cases).flatMap(([name, c]) =>
+	(c.review.mustQuoteOneOf ?? []).map((text) => ({ name, text })),
+);
 const GATES = ["G1", "G2", "G3", "G4", "G5"];
 
 describe("the ship bar describes the set it is keyed to", () => {
@@ -60,6 +66,31 @@ describe("the ship bar describes the set it is keyed to", () => {
 		const fails = (name: string) => GATES.filter((g) => key.cases[name]?.review.gates[g] === "fail").length;
 		expect(fails("c7") + fails("c8")).toBe(0);
 		expect(key.shipBar.featureColumn).toContain("no fail");
+	});
+
+	// shipBar.quoteMatching: score.mjs matches a mustQuoteOneOf string as a plain
+	// substring of a finding's line, so a string ending in the sentence's own full
+	// stop asks a reviewer for a character it has no reason to carry. Rubric 2's
+	// pair paid for that: a finding on the right sentence, with the right tag and
+	// the right score, missed on one period. The count guard is the point of the
+	// test - an empty `quotes` would pass the loop below having checked nothing.
+	it("keeps every mustQuoteOneOf string free of terminal punctuation", () => {
+		expect(quotes.length, "no mustQuoteOneOf strings found; the extractor is broken, not the key clean").toBeGreaterThan(0);
+		const bad = quotes.filter((q) => /[.,;]$/.test(q.text)).map((q) => `${q.name}: ${JSON.stringify(q.text)}`);
+		expect(bad, "a terminal . , or ; makes the substring match fail on a verbatim quote").toEqual([]);
+		expect(key.shipBar.quoteMatching, "shipBar.quoteMatching is missing").toBeTruthy();
+	});
+
+	// And the strings have to be findable in the case, or the rule above would be
+	// satisfied by trimming them into something no reviewer could quote. This is
+	// what makes the punctuation test safe rather than merely green.
+	it("asks only for text the case actually contains", () => {
+		expect(quotes.length).toBeGreaterThan(0);
+		const missing = quotes.filter((q) => {
+			const file = join(root, "spec-review", "calibration", "cases", `${q.name}.md`);
+			return !readFileSync(file, "utf8").includes(q.text);
+		});
+		expect(missing.map((q) => `${q.name}: ${JSON.stringify(q.text)}`)).toEqual([]);
 	});
 
 	// Every case the key scores has a label for every gate; a missing one would be

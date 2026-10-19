@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Implementation specs get a rubric and a linter before anyone builds them.**
-  `spec-review/rubric.md` (now Rubric 2) defines five pass/fail gates and six separately scored
+  `spec-review/rubric.md` (now Rubric 3) defines five pass/fail gates and six separately scored
   dimensions for a spec in `docs/specs/`, and `scripts/spec-lint.mjs` checks the part a script can:
   structure, defect or feature typing, attribution, and that cited paths, commits, `§` sections and
   npm scripts exist, with near-miss detection for misspelled symbols. An eight-case calibration set
@@ -72,6 +72,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verdicts were collected, so each item stales both runs when it lands and the next pair spends a
   ninth and tenth model. Evidence: `spec-review/calibration/runs/SCORE.md` and the two run
   directories, each with its `NOTES.md`.
+
+- **Rubric 3: the four fixes Rubric 2's pair bought, and it stales that pair.** No answer-key label
+  moved, on any gate or dimension, in any case; every change is to the text a reviewer reads or to
+  one key string's punctuation. **D1** gains a precondition paragraph beside its anchor table: for a
+  feature spec, measurement is a precondition of a 3 or a 4 rather than one of several credits, tying
+  each gap to its code carries no score alone, and the evidence the spec presents is what is scored
+  rather than whether its conclusions turn out to be true. **G1**'s `Not G1` bullet now says that
+  finding the D2 or the D3 does not answer G1, because the two questions are asked of different
+  things. **G5** says an owner may be a person, a role or a team, so a role is a disposition and how
+  specific it is is not G5's question. The **Review procedure** gains two listing steps, one for the
+  cases the spec names and one for the evidence behind its starting point, the second of which caps
+  D1 at 2 when the list comes out empty. And six `mustQuoteOneOf` strings lose a terminal full stop
+  that a substring match had made load-bearing (`shipBar.quoteMatching`). The first two fixes are the
+  same shape, which is why they are procedure steps and not more gate text: in both, a reviewer found
+  the defect and scored it in the wrong place, and Rubric 2's G1 bullet had been written for that
+  exact case, read correctly, and still not applied. Both runs committed last are now **stale by
+  blob, by design**, so all seven run directories are stale, Rubric 3 has no run at all, and
+  criterion 12 of `docs/specs/spec-review-bus.md` stays open. `gpt-5.6-terra` and
+  `us.anthropic.claude-opus-5` join `shipBar.spent`, bringing it to eight, so the next pair needs a
+  ninth and a tenth. Test: `test/calibration-ship-bar.test.ts`, where the punctuation rule and a
+  second test that every string is still findable in its case each fail on a mutation of their own;
+  the punctuation test found five offending strings in c1 that no run had reached.
+  Reasoning: `spec-review/calibration/README.md` ("Rubric 3") and
+  `spec-review/calibration/runs/SCORE.md`.
 
 ### Changed
 

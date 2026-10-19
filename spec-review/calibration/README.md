@@ -17,17 +17,16 @@ bar below. The set stays as a regression suite: every rubric edit re-runs it.
 > misses are rubric-wording defects, they are listed in issue 67, and they are
 > deferred to Rubric 2.
 >
-> **Rubric 2 is the wording fix. Its first pair has now run, and misses.** It
-> changes G1, G2 and G4 for the three wording misses, clarifies G5, and moves the
-> verdict's `Reviewer:` line from the reviewing model to whoever runs the review
-> ("Rubric 2", below). The five Rubric 1 runs were scored against Rubric 1's
-> blobs, so none of them says anything about Rubric 2 either way. The two Rubric 2
-> runs, `kiro-cli` on `gpt-5.6-terra` and `pi` on `us.anthropic.claude-opus-5`,
-> record blobs that match and **miss seven run-cases across five cases**; both are
-> committed with `countsTowardsShipBar: false`. **Neither read D1's feature
-> column**, scoring c7 and c8 alike, so the pair also fails
-> `shipBar.featureColumn`, which no rewording fixes. Seven run directories,
-> seven `false`. See "Rubric 2's first pair" below and `runs/SCORE.md`.
+> **Rubric 2's first pair ran, missed, and Rubric 3 is what those misses bought.**
+> The pair was `kiro-cli` on `gpt-5.6-terra` and `pi` on
+> `us.anthropic.claude-opus-5`: sixteen clean sessions, blobs matching, and
+> **seven run-cases missed across five cases**. The miss that mattered was not a
+> gate's wording: **neither run read D1's feature column**, scoring c7 and c8
+> alike, which fails `shipBar.featureColumn`. Rubric 3 answers that and three
+> smaller items ("Rubric 3", below). It also stales that pair by blob, on purpose,
+> so **Rubric 3 has no run at all** and seven run directories all record
+> `countsTowardsShipBar: false`. See "Rubric 2's first pair" below and
+> `runs/SCORE.md`.
 
 **Never give a reviewer this directory, and never give one a worktree of this
 branch.** The answers are in `expected.json`, and the cases are near-copies of
@@ -199,7 +198,10 @@ From `expected.json` `shipBar`, in short:
 2. **Every expectation met, in both runs**: the outcome, every gate label,
    every dimension threshold, and, where a case lists `mustQuoteOneOf`, a finding
    quoting one of those strings with the expected tag. A `revise` on c4 is a
-   false fail and counts as a miss.
+   false fail and counts as a miss. Those strings are matched as substrings, so
+   **none of them ends in sentence punctuation**: Rubric 2's pair cost a correct
+   finding a miss on a single full stop (`shipBar.quoteMatching`,
+   `test/calibration-ship-bar.test.ts`).
 3. **Gate agreement**: the two runs agree on every gate decision, 40 since
    Rubric 2 (8 cases x 5 gates; 30 before c7 and c8). Dimensions are held to
    thresholds, not to agreement.
@@ -219,8 +221,10 @@ From `expected.json` `shipBar`, in short:
    a check on the number would let those edits through with stale runs. Each run
    directory's `RUN.json` records the git blob of `rubric.md`, of `expected.json`
    and of each case as they stood when it was scored, and a run counts only when
-   those match the committed blobs. Every run here records Rubric 1's blobs, so
-   all five are visibly stale against Rubric 2 rather than plausibly current.
+   those match the committed blobs. **All seven runs here are visibly stale**
+   rather than plausibly current: five record Rubric 1's blobs, and Rubric 3's
+   wording fixes staled the two that recorded Rubric 2's. That is the mechanism
+   working, and it is the standing cost of a fix - see rule 4.
 6. **The two runs are at a comparable capability level.** The bar measures
    agreement between them, so a strong-plus-weak pair cannot tell an ambiguous
    rubric from a reviewer that could not do the task, which is the distinction
@@ -231,6 +235,13 @@ From `expected.json` `shipBar`, in short:
 7. **Neither run may be in the tuning loop.** A model that took part in a pass,
    or in a wording fix made in response to one, is excluded
    (`expected.json` `shipBar.heldOut`).
+8. **Both runs separate c7 from c8 on D1**, c7 at 3 or more and c8 at 2 or less
+   (`shipBar.featureColumn`). Rule 2 already asks this of each run; it is a rule
+   of its own because rule 3 cannot see it - c7 and c8 are `pass` on all five
+   gates, so the pair added ten gate decisions and no fail, and the feature
+   column is the only thing it discriminates. **This is the rule no reviewing
+   model has yet satisfied**, and it is numbered last only so rules 4 to 7 keep
+   the numbers the rest of this repository cites.
 
 ## How the set was corrected
 
@@ -387,7 +398,7 @@ alone. c1's G1 reason now argues the label from the mutation and the code at
 selects the delta prompt), which is what `shipBar.relabelling` asks of a label
 that a run has questioned. c4, which had only a D5 reason, gained G1, G4 and G5
 reasons arguing its pass labels under Rubric 2's wider G1, its G4 split and its
-G5 wording, and they cover c3, c5 and c6 where the text is shared. `shipBar.heldOut` names all six spent models, and
+G5 wording, and they cover c3, c5 and c6 where the text is shared. `shipBar.heldOut` names every spent model, and
 `shipBar.spent` lists them for a script to read.
 
 The two runs that measure Rubric 2 must come from models outside that list, and
@@ -417,8 +428,10 @@ code at `68ffb40` the way c4's corrections were.
 
 ## Rubric 2's first pair, and what it measured
 
-Two runs, by the runner above, against Rubric 2 exactly as this commit's parent
-left it: `kiro-cli` 2.32.0 on `gpt-5.6-terra` and `pi` 1.3.0 on
+Two runs, by the runner above, against Rubric 2 exactly as it stood when they
+ran. **Rubric 3 has since staled them both by blob**, which is rule 5 doing its
+job; every case line and both totals are unchanged, because the verdicts are the
+same files. Harnesses and models: `kiro-cli` 2.32.0 on `gpt-5.6-terra` and `pi` 1.3.0 on
 `us.anthropic.claude-opus-5` (Bedrock, us-west-2). Sixteen sessions, all exited
 0, all sixteen header blobs match, the isolation audit is clean for every one,
 and both runs record blobs that match the committed files. **Seven run-cases
@@ -428,7 +441,7 @@ the decisions that follow: `runs/SCORE.md`; protocol per run: each run's
 
 | result | which rule it bears on |
 | --- | --- |
-| **Both runs scored c7 and c8 at `D1 4`** | `shipBar.featureColumn`, failed by the pair. The pair's whole purpose is this column, and on its first outing neither reviewer read it. **No reviewing model got this right, and no rewording of a gate changes it**, which makes it the first item for the next revision. |
+| **Both runs scored c7 and c8 at `D1 4`** | `shipBar.featureColumn`, failed by the pair. The pair's whole purpose is this column, and on its first outing neither reviewer read it. **No reviewing model got this right, and no rewording of a gate changes it**, which makes it the first item of Rubric 3. |
 | Run B failed c1's G1, deriving the key's mechanism from the code at `61bb96f` | `shipBar.relabelling`, satisfied. The Rubric 1 pair left c1's `G1 fail` open because two runs disputed it and a label may not move because a run said so. It is now re-derived from the construction, so **the label stays**. Three of four models still reach the defect and file it as `D2` or `D3`, so G1's `Fails` list is the fix. |
 | Run A failed c6's G5 on `Follow-up spec, owner: the maintainer` | A **new** G5 wording question, the third round running: G5 asks for "a named spec, issue or owner" and then says it judges the sentence rather than the citation, which settles existence and is silent on whether a role names an owner. |
 | Run B's c6 quoted the key's `mustQuoteOneOf` sentence without its full stop | A defect in the key, not the verdict. The matcher is a substring test, so one character turned a correct finding into a `MISS`. Drop terminal punctuation from those strings. |
@@ -445,6 +458,40 @@ the last round gives: an edit changes a blob and stales the runs keyed to it.
 `gpt-5.6-terra` and `us.anthropic.claude-opus-5` are spent all the same, bringing
 the count to eight, and they join `shipBar.spent` in the same commit as the
 wording fixes.
+
+## Rubric 3
+
+Rubric 3 answers the four items Rubric 2's pair produced, and nothing else. **No
+answer-key label moved**, in any case, on any gate or dimension: every change is
+to the text a reviewer reads, or to one key string's punctuation.
+
+| change | for | what it says now |
+| --- | --- | --- |
+| **D1 gains a precondition paragraph beside its table**, and the Review procedure gains a step that lists the Problem's evidence | c8's `D1 4` in **both** runs (`shipBar.featureColumn`) | measurement is a precondition of a feature 3 or 4, not one of several credits; tying each gap to its code is the rest of row 4 and carries no score alone; **the evidence the spec presents is scored, not whether its conclusions turn out to be true**; and an empty evidence list caps D1 at 2 before the rest of the spec is read |
+| **G1's `Not G1` bullet says that finding the D2 or the D3 does not answer G1**, and the Review procedure gains a step that lists the cases the spec names | c1's `G1 pass` in run A, and in both runs of the previous pair | the two questions are asked of different things - D2 and D3 about the behaviour the spec chose, G1 about the cases it left without one - and they arrive together, because a change that overturns a decision usually leaves the path that decision protected undecided |
+| **G5 says an owner may be a person, a role or a team** | c6's `G5 fail` in run A | the gate asks that an item name where it goes, not that the destination be an individual; how specific the name is is not G5's question, and what fails is an item naming no destination of any kind |
+| **No `mustQuoteOneOf` string ends in sentence punctuation** (`shipBar.quoteMatching`) | c6's quote miss in run B | the matcher is a plain substring test, so a key string carrying the sentence's full stop asks for a character the reviewer has no reason to copy. Six strings lost one, five in c1 and one in c6; the text quoted is unchanged |
+
+The first two are the ones worth reading twice, because they are the same shape:
+**a reviewer that found the defect scored it in the wrong place.** Run A found
+c1's contradiction and filed it as `D3`; both runs read c8's Problem, checked its
+claims against the checkout, found them true and scored `D1 4`. Neither is a
+reviewer failing to understand the spec. Both are a reviewer answering a question
+the rubric did not quite ask, so both fixes are a listing step in the procedure
+rather than another sentence in a gate: the gate text had the right meaning and
+no place in the reviewer's workflow that forced the question.
+
+**`Rubric:` is bumped to 3** because G5's meaning changes (a role is now
+explicitly a disposition) and D1's feature anchors are now read with a
+precondition in front of them. The two procedure steps and the punctuation fix
+would not have bumped it on their own.
+
+`gpt-5.6-terra` and `us.anthropic.claude-opus-5` join `shipBar.spent` in the same
+commit, bringing it to eight, and `shipBar.heldOut` says why. Rubric 3 was
+drafted by `us.anthropic.claude-opus-5`, which its own run had already spent, so
+the draft excludes nothing that was not already excluded. **The next pair needs a
+ninth and a tenth model**, and this is the cost `shipBar.heldOut` exists to make
+visible.
 
 ## Known limits of the set
 
