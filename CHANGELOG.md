@@ -98,6 +98,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself; it also asserts the file list is non-empty and that each pattern still matches a
   known-bad sample, so neither the loop nor the patterns can pass vacuously.
 
+- **The live ACP test looked its child up under a key the registry no longer uses.** Children are
+  keyed by cwd and conversation since the parent and each subagent got their own, but
+  `test/acp-transport-live.test.ts` still asked for `process.cwd()`, found nothing and failed on
+  `main` before any of its real assertions ran. It now builds the key with `_acpRegistryKey`, as the
+  unit tests do. Test-only.
+
 - **A cited path below a symlink was reported as a broken citation.** `scripts/spec-lint.mjs` asks
   `git check-ignore` whether a cited path is a local, gitignored file, and read any non-zero exit as
   "not ignored". git answers a path below a symlink with a fatal ("beyond a symbolic link"), whose

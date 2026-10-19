@@ -15,7 +15,7 @@
  * means anything if turn 1 ran in the same process moments earlier.
  */
 import { afterAll, describe, expect, it } from "vitest";
-import { _getAcpChildRegistry, _resetAcpChildren, makeStreamViaAcp } from "../src/acp-transport.js";
+import { _acpRegistryKey, _getAcpChildRegistry, _resetAcpChildren, makeStreamViaAcp } from "../src/acp-transport.js";
 import { assistant, ctx, drainTurn, LIVE, LIVE_MODEL, LIVE_TIMEOUT_MS, user, withRealHome } from "./live-support.js";
 
 const streamViaAcp = makeStreamViaAcp({ binaryPath: "kiro-cli" });
@@ -32,7 +32,7 @@ describe.skipIf(!LIVE)("live kiro ACP transport", () => {
 		async () => {
 			_resetAcpChildren();
 			const registry = _getAcpChildRegistry();
-			const key = process.cwd();
+			const key = _acpRegistryKey(process.cwd(), undefined);
 			const seed = "Remember this codeword for later: ORBIT-ACP-77. Reply with just OK.";
 
 			const t1 = await drainTurn(streamViaAcp(LIVE_MODEL, ctx([user(seed)]), undefined));
