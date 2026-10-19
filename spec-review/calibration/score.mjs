@@ -146,22 +146,32 @@ function checkBlobs(dir) {
 }
 
 /**
- * The cases a run is scored on. No RUN.json, one that does not parse, or one that
- * lists nothing all fall back to the whole set: checkBlobs has already reported
- * that run as non-counting, so the exit is 1 either way, and scoring the whole set
- * is the reading that cannot understate what the run was asked to cover.
+ * The cases a run is scored on, and any name it listed that is not a case here.
+ * No RUN.json, one that does not parse, or one that lists nothing all fall back to
+ * the whole set: checkBlobs has already reported that run as non-counting, so the
+ * exit is 1 either way, and scoring the whole set is the reading that cannot
+ * understate what the run was asked to cover.
+ *
+ * A listed name that is no case in the key (a rename, a typo) is returned rather
+ * than dropped. The blob check already refuses such a run, but without this the
+ * run would be scored on fewer cases than its RUN.json names with no line saying
+ * which, and a smaller scored set is the direction that hides a miss.
  */
 function casesOf(dir) {
 	const { run } = readRunJson(dir);
 	const listed = Object.keys(run?.scoredAgainst?.cases ?? {});
-	return listed.length ? Object.keys(expected.cases).filter((name) => listed.includes(name)) : Object.keys(expected.cases);
+	if (!listed.length) return { names: Object.keys(expected.cases), unknown: [] };
+	return {
+		names: Object.keys(expected.cases).filter((name) => listed.includes(name)),
+		unknown: listed.filter((name) => !(name in expected.cases)),
+	};
 }
 
 function scoreRun(dir) {
 	const lines = [];
 	const decisions = {};
 	let missed = 0;
-	const names = casesOf(dir);
+	const { names, unknown } = casesOf(dir);
 	for (const [name, c] of Object.entries(expected.cases).filter(([name]) => names.includes(name))) {
 		const v = parseVerdict(readFileSync(join(dir, `${name}.verdict.md`), "utf8"));
 		const want = c.review;
@@ -184,6 +194,7 @@ function scoreRun(dir) {
 	}
 	const absent = Object.keys(expected.cases).filter((name) => !names.includes(name));
 	if (absent.length) lines.push(`  not in this run (added to the set after it): ${absent.join(", ")}`);
+	if (unknown.length) lines.push(`  listed by this run but no case here: ${unknown.join(", ")}`);
 	return { lines, decisions, missed, absentNames: absent };
 }
 
@@ -215,4 +226,6 @@ if (absentNames.length) {
 // (the set was not covered, as against the blobs do not match), and the line above
 // is the only place that names which cases are missing. Removing this term changes
 // no exit code reachable today, so no test can hold it: see the note in SCORE.md.
+// test/spec-review-score.test.ts pins that LINE, not this term: the exit it asserts
+// is driven by notCounted. Nothing here is evidence that this term works.
 process.exit(missed === 0 && notCounted.length === 0 && absentNames.length === 0 && disagreements.length === 0 ? 0 : 1);

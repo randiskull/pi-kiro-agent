@@ -289,6 +289,22 @@ describe("score.mjs enforces shipBar.blobs", () => {
 		}
 	});
 
+	// Without this a run whose RUN.json names a case the key no longer has is scored
+	// on fewer cases than it claims, with nothing saying which went missing. The blob
+	// check refuses the run either way; a quietly smaller scored set is the direction
+	// that hides a miss, so the name has to be printed.
+	it("names a case the run listed that is no case in the key", () => {
+		const f = fixture();
+		const against = f.honest() as { cases: Record<string, string> };
+		against.cases.f0_renamed = "0".repeat(40);
+		f.writeRun(against, true);
+		const r = f.score();
+		expect(r.out).toContain("listed by this run but no case here: f0_renamed");
+		// f1 is still scored: the unknown name must not take the real case with it.
+		expect(r.out).toMatch(/f1: pass/);
+		expect(r.exitCode, r.out).toBe(1);
+	});
+
 	// c7 and c8 were added to the set after all five runs, so every one of them is
 	// short of the set. This pins the diagnostic, which is the reachable half of the
 	// absent-case rule: the exit term itself is subsumed by the blob check, because
