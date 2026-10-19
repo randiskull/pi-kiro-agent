@@ -20,7 +20,7 @@
 
 import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { captureBridgeTools, type HttpBridgeHandle, serveBridgeHttp } from "./bridge.js";
-import { bridgeEnabled } from "./kiro-bridge.js";
+import { bridgeEnabled, sweepStaleAgentProfiles } from "./kiro-bridge.js";
 import { DEFAULT_SUBAGENT_MODEL, FALLBACK_MODELS, fetchKiroModels, KIRO_PROVIDER } from "./models.js";
 import { checkKiroReadiness, clearKiroReadinessCache } from "./readiness.js";
 import { reapOrphanedKiroChildren } from "./orphan-reaper.js";
@@ -117,6 +117,14 @@ export default async function piKiro(pi: ExtensionAPI): Promise<void> {
 		reapOrphanedKiroChildren();
 	} catch {
 		// ignore — worst case the orphans survive until the next activation
+	}
+	// Remove stale agent profile files from crashed or SIGKILL'd turns — the
+	// finally-block remove() cannot run on hard kills, so each activation sweeps
+	// the profiles dir (see kiro-bridge.ts sweepStaleAgentProfiles). Best-effort.
+	try {
+		sweepStaleAgentProfiles();
+	} catch {
+		// ignore — worst case stale profiles persist until the next activation
 	}
 
 	pi.on("context", (_event, ctx) => {
