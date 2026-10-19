@@ -74,7 +74,18 @@ describe("spec-lint on the calibration set (spec-review/calibration)", () => {
 		return { names, ...lint(names.map((name) => `spec-review/calibration/cases/${name}.md`), [], ref) };
 	});
 	const byName = new Map(runs.flatMap((r) => r.names.map((name, i) => [name, r.results[i]] as const)));
-	const run = { results: caseNames.map((name) => byName.get(name) as LintResult) };
+	const run = {
+		results: caseNames.map((name) => {
+			const result = byName.get(name);
+			if (result) return result;
+			// Name the lint run that should have produced it: an exit 2 (a shallow
+			// clone, a missing ref) returns no results, and its stderr says why.
+			const from = runs.find((r) => r.names.includes(name));
+			throw new Error(
+				`no lint result for case ${name} (ref ${refOf(name)}, spec-lint exit ${from?.status}): ${from?.stderr.trim() || "no stderr"}`,
+			);
+		}),
+	};
 
 	it("runs to a verdict rather than giving up (exit 0 or 1, never 2)", () => {
 		for (const r of runs) {
@@ -82,7 +93,7 @@ describe("spec-lint on the calibration set (spec-review/calibration)", () => {
 			expect([0, 1]).toContain(r.status);
 			expect(r.results.map((x) => x.spec)).toEqual(r.names.map((name) => `spec-review/calibration/cases/${name}.md`));
 		}
-		expect(run.results.map((r) => r?.spec)).toEqual(files);
+		expect(run.results.map((r) => r.spec)).toEqual(files);
 	});
 
 	it("expected.json and cases/ name the same cases", () => {
