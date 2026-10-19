@@ -289,6 +289,39 @@ describe("score.mjs enforces shipBar.blobs", () => {
 		}
 	});
 
+	// Without this a run whose RUN.json names a case the key no longer has is scored
+	// on fewer cases than it claims, with nothing saying which went missing. The blob
+	// check refuses the run either way; a quietly smaller scored set is the direction
+	// that hides a miss, so the name has to be printed.
+	it("names a case the run listed that is no case in the key", () => {
+		const f = fixture();
+		const against = f.honest() as { cases: Record<string, string> };
+		against.cases.f0_renamed = "0".repeat(40);
+		f.writeRun(against, true);
+		const r = f.score();
+		expect(r.out).toContain("listed by this run but no case here: f0_renamed");
+		// f1 is still scored: the unknown name must not take the real case with it.
+		expect(r.out).toMatch(/f1: pass/);
+		expect(r.exitCode, r.out).toBe(1);
+	});
+
+	// c7 and c8 were added to the set after all five runs, so every one of them is
+	// short of the set. This pins the diagnostic, which is the reachable half of the
+	// absent-case rule: the exit term itself is subsumed by the blob check, because
+	// a case missing from scoredAgainst.cases has no blob recorded either.
+	it("names the cases a run did not review, rather than counting run-case pairs", () => {
+		const runs = join(root, "spec-review", "calibration", "runs");
+		const r = runScorer(realScorer, [
+			join(runs, "2026-10-17-r1-other-claude-opus-5-5"),
+			join(runs, "2026-10-17-r1-other-gpt-6-astra"),
+		]);
+		expect(r.out).toContain("not in this run (added to the set after it): c7, c8");
+		expect(r.out).toContain("cases not reviewed: c7, c8 (in 2 of 2 run(s)");
+		// Two runs each missing the same two cases is two cases, not four.
+		expect(r.out, "the line must not report run-case pairs as cases").not.toContain("cases not reviewed: 4");
+		expect(r.exitCode, r.out).toBe(1);
+	});
+
 	it("fails the withdrawn pass-8 pair, which reaches 30/30 and no miss", () => {
 		const runs = join(root, "spec-review", "calibration", "runs");
 		const r = runScorer(realScorer, [

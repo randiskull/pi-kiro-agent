@@ -20,6 +20,15 @@ check existed, on `30/30` with no miss, which is the withdrawn result this file
 opens by retracting: the retraction was prose, and the scorer disagreed with it.
 It no longer does.
 
+`score.mjs` scores a run on the cases its `RUN.json` lists. Both runs below
+predate c7 and c8, so re-running the command above prints one more line per run,
+`not in this run (added to the set after it): c7, c8`, and a closing
+`cases not reviewed: c7, c8 (in 2 of 2 run(s); ...)` line, because a run that did
+not review every case has not met the set. That is a second reason the exit is 1;
+the blob check above is the first, and it subsumes this one, since a case left out
+of `scoredAgainst.cases` has no blob recorded either. Every other line is
+unchanged.
+
 ```
 === run A (2026-10-17-r1-other-claude-opus-5-5)
   c1: reject  gates FPPPP D14 D22 D31 D43 D53 D63  OK
@@ -65,8 +74,9 @@ Pass 8's 30/30 does not hold for a reviewer the set was not tuned on.
 Two of the three misses were wording defects and are now fixed in the rubric:
 `reject` outranks `revise` (c1), and G5 judges an out-of-scope item's sentence
 rather than whether its named target resolves (c5). The third, c2 G3 and G4, is a
-pair of judgement labels awaiting the maintainer's ratification and was left
-alone (`expected.json` `labelledBy`).
+pair of judgement labels, left alone and since ratified as `fail` on 2026-10-19:
+this run's findings were on D2, D3 and D5, so it argued against neither
+(`expected.json` `labelledBy`).
 
 # Held-out pair, after the review fixes (rubric 1 at `f64d2eb`)
 

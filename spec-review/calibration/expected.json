@@ -4,7 +4,7 @@
 	"aliases": {
 		"docs/specs/dual-host-pi-gsd.md": "spec-review/calibration/cases/c2.md"
 	},
-	"labelledBy": "Claude Opus 5.5 (harness: other), 2026-10-17. c2 G2 and G3 relabelled to fail after the first pass, and G5 after the seventh (both reviewers failed G3 with the same argument; the G2 meaning was settled by a rubric wording fix, not by either run). For Rubric 2 the c2 G2 and G5 REASONS were corrected (one too narrow, one overstated) and no c2 LABEL changed. Ratification by the maintainer is PENDING and no run counts until it is given: the c2 labels are judgement, not construction. Open for ratification, raised by the held-out run (runs/2026-10-17-r1-kiro-cli-claude-sonnet-5): it passed c2 G3 and G4 where this key fails them. Those two labels were set by reading c2, not by an edit to it, so they are exactly the kind this file flags as judgement. Both were left as they stand, and the maintainer decides; changing either is a key change, which re-runs both passes under shipBar rule 4.",
+	"labelledBy": "Claude Opus 5.5 (harness: other), 2026-10-17. c2 G2 and G3 relabelled to fail after the first pass, and G5 after the seventh (both reviewers failed G3 with the same argument; the G2 meaning was settled by a rubric wording fix, not by either run). For Rubric 2 the c2 G2 and G5 REASONS were corrected (one too narrow, one overstated) and no c2 LABEL changed. Ratification by the maintainer is PENDING and no run counts until it is given: the c2 labels are judgement, not construction. Open for ratification, raised by the held-out run (runs/2026-10-17-r1-kiro-cli-claude-sonnet-5): it passed c2 G3 and G4 where this key fails them. Those two labels were set by reading c2, not by an edit to it, so they are exactly the kind this file flags as judgement. Both were left as they stand, and the maintainer decides; changing either is a key change, which re-runs both passes under shipBar rule 4. c7 and c8 (added for Rubric 2): c7's labels are judgement, set by reading it, exactly as c2's and c4's were, and need the same ratification; c8's follow from c7's and the mutation. RATIFIED 2026-10-19 by the maintainer. c2's G3 and G4 stand as fail: the held-out run passed them without arguing against the key (its findings were on D2, D3 and D5), and relabelling forbids a relabel that only a run asked for. c7's five gate labels and its D1 floor of 3 stand, on the same reading standard c2's and c4's were held to; c8's follow. NO label changed, so no pass is re-run and no run's blobs move on account of the labels. What this does not do is meet criterion 12, which still needs two runs; ratification was only a precondition.",
 	"cases": {
 		"c1": {
 			"source": "mutant of c4",
@@ -182,6 +182,71 @@
 					"The bridge probably holds the loop open."
 				]
 			}
+		},
+		"c7": {
+			"source": "authored for this set: R8 and R9 of docs/design/v3-engine.md written up as a feature spec by claude-opus-5-5 (harness claude-code) on 2026-10-17, measured at its ref against the reader and the design doc's recorded v3 payloads. Not built. The first feature-typed case, and the false-fail control for the feature column of D1, as c4 is for the defect column.",
+			"ref": "68ffb40",
+			"sha256": "f1f981bd434e1687a68c827d3ae9a22af588841ae342cecf7409e66f9cc78c34",
+			"lint": {
+				"fail": []
+			},
+			"review": {
+				"outcome": "pass",
+				"gates": {
+					"G1": "pass",
+					"G2": "pass",
+					"G3": "pass",
+					"G4": "pass",
+					"G5": "pass"
+				},
+				"dimensions": {
+					"D1": ">=3",
+					"D2": ">=3",
+					"D3": ">=3",
+					"D4": ">=3",
+					"D5": ">=3",
+					"D6": ">=3"
+				},
+				"why": {
+					"ref": "68ffb40 is the last commit on main before the calibration set merged (88d8586's first parent), so a clone checked out there and stripped of refs cannot reach this file, and docs/design/v3-engine.md (from #61), which the case cites by section, exists there. The defect cases stay at 61bb96f, where that design doc does not exist.",
+					"D1": "Feature anchor 3 at least: the current behaviour is measured with the commands and their output at the ref (the reader driven with the design doc's v3 payloads, and a jq count over every committed v2 capture), and each gap the spec closes is tied to the code that produces it (the tool_call case and KiroUpdate's declared fields for the internal row; the default branch of onUpdate for the three update kinds). The floor is 3, not 4, because this label is judgement: whether every gap is tied is for the maintainer to ratify.",
+					"G1": "Every case the spec names is decided: tool_call and tool_call_update, internal and not, an update after a hidden call (dropped before any lookup, whatever it carries), an update-only internal call, a toolOrigin of any value including empty, a non-string toolId. The predicate and the trace name are fixed. Nothing the change bypasses is relied on elsewhere: live rows are stripped from the done and error messages and reconcileToolCalls() runs only on the text format, both checked at 68ffb40.",
+					"G4": "Criterion 7 is a documentation criterion under Rubric 2's G4 (it names docs/design/v3-engine.md and CHANGELOG.md and says what each must contain), so it needs no Verification plan step. Criteria 1 to 6 each have a step.",
+					"G5": "Every out-of-scope item names a follow-up spec and an owner, or says unchanged with no follow-up from this spec and why (the ACP transport, owned by R-ACP).",
+					"D3": "The design's §5 heading says its spikes land before any implementation. The spec does not work around it: Approach step 5 renames the heading in the same PR and says why R8 and R9 depend on none of the spikes, which is proposing to supersede, not contradicting."
+				}
+			}
+		},
+		"c8": {
+			"source": "mutant of c7",
+			"ref": "68ffb40",
+			"sha256": "b6f97409ba86e37935bc06f9728cb01b1910c1a739142b0f39c8ea36d4c6c335",
+			"mutation": "Both measured subsections of the Problem - the reader script with its printed rows and events, and the jq count over the six v2 captures with its table - are replaced by the same findings stated as assertions, with no command, no output and no ref. The gaps are still tied to the same code. Two back-references ('measured above') become 'described above', so the spec stays consistent with itself. Nothing else changes: the Safety section's count of six v2 tool events is kept, because it is D2's argument, not the problem statement D1 grades.",
+			"lint": {
+				"fail": []
+			},
+			"review": {
+				"outcome": "revise",
+				"gates": {
+					"G1": "pass",
+					"G2": "pass",
+					"G3": "pass",
+					"G4": "pass",
+					"G5": "pass"
+				},
+				"dimensions": {
+					"D1": "<=2"
+				},
+				"mustQuoteOneOf": [
+					"What the reader does with v3's payloads today",
+					"The reader draws a row for v3's internal call",
+					"v2 identifies a call by `_meta.kiro.toolName` and does not send `toolId` or"
+				],
+				"why": {
+					"D1": "Feature anchor 2, 'current behaviour asserted, not measured', by construction: the mutation removes every command, output and ref from the Problem and changes nothing else. Not 1: there is a problem statement beyond the goal. Not 3: tying each gap to code is the second half of anchor 3, whose first half is 'Measured'. c7 and c8 differ only in the measurement, so a reviewer that scores them the same is not reading D1's feature column.",
+					"mustQuoteOneOf": "A finding about the missing measurement may quote the asserted subsection's heading (the rubric's rule for something missing) or either asserted paragraph."
+				}
+			}
 		}
 	},
 	"shipBar": {
@@ -189,7 +254,8 @@
 		"independence": "Each run is a fresh session per case. The two runs must differ in session; at least one must also differ in harness or model from the other.",
 		"blind": "Calibration reviewers do not see lint output, and review every case, including the ones lint fails. In production lint runs first and a lint failure is never reviewed; calibration measures the reviewer half on its own.",
 		"mustCatch": "Every case meets its outcome, every gate label, every dimension threshold, and its mustQuoteOneOf, in both runs. A revise on c4 is a false fail and counts as a miss.",
-		"agreement": "The two runs agree on every gate decision for every case (6 cases x 5 gates = 30 decisions). Any disagreement means the rubric wording is ambiguous: fix the wording and re-run both, do not pick a winner.",
+		"agreement": "The two runs agree on every gate decision for every case (8 cases x 5 gates = 40 decisions since Rubric 2; 30 before c7 and c8). Any disagreement means the rubric wording is ambiguous: fix the wording and re-run both, do not pick a winner. Gate agreement is not the whole bar: c7 and c8 are labelled pass on all five gates, so ten of the 40 decisions are ones a reviewer that passed everything would agree on. See featureColumn.",
+		"featureColumn": "The bar is not met unless both runs separate c7 from c8 on D1: c7 at 3 or more, c8 at 2 or less. mustCatch already requires this of each run; it is a rule of its own because the 40 gate decisions do not measure it. c7 and c8 are labelled pass on all five gates, so the pair widened the set by ten gate decisions and no fail, and the feature column is the only thing it discriminates. Without this rule a run could meet the stated bar having never read D1's feature column, which is the reason the pair exists. The two cases differ only in whether the current behaviour is measured, so a run that scores them the same on D1 has not read it.",
 		"relabelling": "A miss is fixed in the rubric's wording. The answer key may be relabelled only when the new label follows from how the case was BUILT - the mutation that was applied, or the text as frozen, checked against the code at ref - and never because a run said so. A relabel re-runs both passes; the runs that prompted it do not count towards the new key. Pass 8 broke this rule: c1's G1 was relabelled because both runs failed it, and the same two runs were then declared to meet the new key with nothing re-run. That result is withdrawn (see runs/SCORE.md).",
 		"blobs": "A run is tied to a rubric by blob, not by the Rubric: number, because a wording fix that keeps the meaning does not bump the number while 'Changing this rubric' still re-runs calibration. Every run directory carries RUN.json with the git blob sha of spec-review/rubric.md and of this file as they stood when it was scored, plus the case blobs. A run counts towards the ship bar only when both match the committed blobs at the merge commit. This is what makes a stale run visible instead of plausible.",
 		"capabilityMatched": "The two runs should be at a comparable capability level. The bar measures agreement between them, so pairing a strong reviewer with a weak one cannot distinguish an ambiguous rubric from a reviewer that could not do the task, which is the one thing rule 4 has to tell apart. A deliberately cheap model may be run as a non-gating robustness probe, recorded in the run's NOTES.md; a probe never amends the rubric on its own and never counts as one of the two runs.",
