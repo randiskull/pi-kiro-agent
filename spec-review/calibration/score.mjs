@@ -62,6 +62,22 @@ function meets(score, want) {
 }
 
 /**
+ * RUN.json as an object, tagged so a caller can tell "there is none" from "it does
+ * not parse". Both the blob check and the case list read it, and neither may throw:
+ * the exit code is what criterion 12 reads, so an unreadable RUN.json has to come
+ * back as a line.
+ */
+function readRunJson(dir) {
+	const path = join(dir, "RUN.json");
+	if (!existsSync(path)) return { present: false, run: null, error: null };
+	try {
+		return { present: true, run: JSON.parse(readFileSync(path, "utf8")), error: null };
+	} catch (e) {
+		return { present: true, run: null, error: e.message };
+	}
+}
+
+/**
  * The sha git would store for this file's current bytes, or null if it cannot be
  * read as a file at all. Every failure in this check has to come back as a line,
  * never as a stack trace, because the exit code is what criterion 12 reads.
@@ -92,14 +108,9 @@ const BARE_CASE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
  * the safe direction.
  */
 function checkBlobs(dir) {
-	const runJson = join(dir, "RUN.json");
-	if (!existsSync(runJson)) return { counted: false, line: "blobs: no RUN.json, so nothing is recorded and the run cannot count (shipBar.blobs)" };
-	let run;
-	try {
-		run = JSON.parse(readFileSync(runJson, "utf8"));
-	} catch (e) {
-		return { counted: false, line: `blobs: RUN.json is not valid JSON, so the run cannot count (shipBar.blobs): ${e.message}` };
-	}
+	const { present, run, error } = readRunJson(dir);
+	if (!present) return { counted: false, line: "blobs: no RUN.json, so nothing is recorded and the run cannot count (shipBar.blobs)" };
+	if (error) return { counted: false, line: `blobs: RUN.json is not valid JSON, so the run cannot count (shipBar.blobs): ${error}` };
 	const against = run.scoredAgainst;
 	if (!against || typeof against !== "object" || Array.isArray(against)) return { counted: false, line: "blobs: RUN.json has no scoredAgainst object, so the run cannot count (shipBar.blobs)" };
 	const problems = [];
@@ -134,10 +145,15 @@ function checkBlobs(dir) {
 	return { counted: true, line: "blobs: match the rubric, the key and every case here; the run counts" };
 }
 
+/**
+ * The cases a run is scored on. No RUN.json, one that does not parse, or one that
+ * lists nothing all fall back to the whole set: checkBlobs has already reported
+ * that run as non-counting, so the exit is 1 either way, and scoring the whole set
+ * is the reading that cannot understate what the run was asked to cover.
+ */
 function casesOf(dir) {
-	const runJson = join(dir, "RUN.json");
-	if (!existsSync(runJson)) return Object.keys(expected.cases);
-	const listed = Object.keys(JSON.parse(readFileSync(runJson, "utf8")).scoredAgainst?.cases ?? {});
+	const { run } = readRunJson(dir);
+	const listed = Object.keys(run?.scoredAgainst?.cases ?? {});
 	return listed.length ? Object.keys(expected.cases).filter((name) => listed.includes(name)) : Object.keys(expected.cases);
 }
 
@@ -168,7 +184,7 @@ function scoreRun(dir) {
 	}
 	const absent = Object.keys(expected.cases).filter((name) => !names.includes(name));
 	if (absent.length) lines.push(`  not in this run (added to the set after it): ${absent.join(", ")}`);
-	return { lines, decisions, missed, absent: absent.length };
+	return { lines, decisions, missed, absentNames: absent };
 }
 
 const dirs = process.argv.slice(2);
@@ -188,6 +204,15 @@ const missed = runs.reduce((n, r) => n + r.missed, 0);
 console.log(`cases with a miss: ${missed}`);
 const notCounted = runs.filter((r) => !r.blobs.counted);
 if (notCounted.length) console.log(`runs that do not count: ${notCounted.length}/${runs.length} (${notCounted.map((r) => basename(r.dir)).join(", ")}) - the ship bar asks for two that do`);
-const absent = runs.reduce((n, r) => n + r.absent, 0);
-if (absent) console.log(`cases not reviewed: ${absent} (a run must review every case to meet the set)`);
-process.exit(missed === 0 && notCounted.length === 0 && absent === 0 && disagreements.length === 0 ? 0 : 1);
+const absentNames = [...new Set(runs.flatMap((r) => r.absentNames))].sort();
+const runsShort = runs.filter((r) => r.absentNames.length).length;
+if (absentNames.length) {
+	console.log(`cases not reviewed: ${absentNames.join(", ")} (in ${runsShort} of ${runs.length} run(s); a run must review every case to meet the set)`);
+}
+// absentNames is subsumed by notCounted today: both read scoredAgainst.cases, and a
+// run that leaves a case out of that map has no blob recorded for it, so it already
+// fails the blob check. It is kept as its own term because it is a different claim
+// (the set was not covered, as against the blobs do not match), and the line above
+// is the only place that names which cases are missing. Removing this term changes
+// no exit code reachable today, so no test can hold it: see the note in SCORE.md.
+process.exit(missed === 0 && notCounted.length === 0 && absentNames.length === 0 && disagreements.length === 0 ? 0 : 1);

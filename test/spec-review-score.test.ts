@@ -289,6 +289,23 @@ describe("score.mjs enforces shipBar.blobs", () => {
 		}
 	});
 
+	// c7 and c8 were added to the set after all five runs, so every one of them is
+	// short of the set. This pins the diagnostic, which is the reachable half of the
+	// absent-case rule: the exit term itself is subsumed by the blob check, because
+	// a case missing from scoredAgainst.cases has no blob recorded either.
+	it("names the cases a run did not review, rather than counting run-case pairs", () => {
+		const runs = join(root, "spec-review", "calibration", "runs");
+		const r = runScorer(realScorer, [
+			join(runs, "2026-10-17-r1-other-claude-opus-5-5"),
+			join(runs, "2026-10-17-r1-other-gpt-6-astra"),
+		]);
+		expect(r.out).toContain("not in this run (added to the set after it): c7, c8");
+		expect(r.out).toContain("cases not reviewed: c7, c8 (in 2 of 2 run(s)");
+		// Two runs each missing the same two cases is two cases, not four.
+		expect(r.out, "the line must not report run-case pairs as cases").not.toContain("cases not reviewed: 4");
+		expect(r.exitCode, r.out).toBe(1);
+	});
+
 	it("fails the withdrawn pass-8 pair, which reaches 30/30 and no miss", () => {
 		const runs = join(root, "spec-review", "calibration", "runs");
 		const r = runScorer(realScorer, [
