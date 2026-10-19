@@ -128,8 +128,10 @@ Save each verdict as `runs/<run-id>/<case>.verdict.md`, where `<run-id>` is
 public names: this repository is public, so name a publicly available harness and
 model, or write the harness `other`. Where a model is reachable under both an
 internal alias and a public one, record the public identifier. Each run directory
-also carries `RUN.json` with the blobs it was scored against (ship bar rule 5).
-Commit both runs with their score.
+also carries `RUN.json` with the blobs it was scored against (ship bar rule 5),
+and its `scoredAgainst.cases` must list every case in the set: `score.mjs`
+scores a run on the cases listed there, names any case missing from it, and
+exits 1 if one is. Commit both runs with their score.
 
 ## Ship bar
 
@@ -316,15 +318,17 @@ under Rubric 1, and what changed is the text a reviewer reads to reach them.
 | G1 gains an **Also fails, with no choice offered** bullet, a **Not G1** bullet, and a line saying the list is the gate | c1 G1, both runs of the pair | every part of the opening sentence (trigger, each named case, errors, depended-on names) now has a bullet, and none needs the spec to offer a choice; a decided but unargued behaviour is D2, a contradiction D3 |
 | G2's example names instead of conditioning on existence | c2 G2's reason | an unnamed source fails on being unnamed, whether or not a similar document exists, and a reviewer does not repair the citation |
 | G4 splits **behaviour** and **documentation** criteria and says which sentence governs each | c3 G4 against c4 G4 on identical text | a documentation criterion needs the file named and its required content stated, and no Verification plan step |
-| G5 says what the word "dropped" or "unchanged" does, and that a descriptive word is a reason | c2 G5's reason, which counted an "unchanged" item as having no disposition | the word is the disposition; a word describing the item is not |
-| `Reviewer:` is written by the runner | the pair's six self-reported model ids | the runner gives the line or writes it; an unknown reviewer is `unknown, unknown` |
+| G5 says what the words "dropped", "unchanged" and "no follow-up" do, and that a descriptive word is a reason | c2 G5's reason, which counted an "unchanged" item as having no disposition | each of the three words is a disposition on its own, so c3 to c6's "No follow-up" item still passes; a word describing the item ("not needed") is a reason beside one, not a disposition |
+| `Reviewer:` is written by the runner | the pair's six self-reported model ids | the runner gives the line or writes it; an unknown reviewer is `unknown, unknown`. The spec's `## Attribution` line has the same limit and the same rule |
 
 Two reasons in `expected.json` were corrected with them, and no label: c2 G2 now
 fails on three unnamed sources rather than one, and c2 G5 on the transport item
 alone. c1's G1 reason now argues the label from the mutation and the code at
 `61bb96f` (`useResume` is decided before `resolveSession()` runs and still
 selects the delta prompt), which is what `shipBar.relabelling` asks of a label
-that a run has questioned. `shipBar.heldOut` names all six spent models, and
+that a run has questioned. c4, which had only a D5 reason, gained G1, G4 and G5
+reasons arguing its pass labels under Rubric 2's wider G1, its G4 split and its
+G5 wording, and they cover c3, c5 and c6 where the text is shared. `shipBar.heldOut` names all six spent models, and
 `shipBar.spent` lists them for a script to read.
 
 The two runs that measure Rubric 2 must come from models outside that list, and

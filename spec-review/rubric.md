@@ -65,11 +65,11 @@ or signature other code or users will depend on.
 - **Also fails, with no choice offered:** a behaviour the spec introduces whose
   trigger, whose effect in a case the spec names, or whose handling of an error
   the change can raise is decided nowhere; or a name, signature or format that
-  other code or users will depend on and that the spec does not fix. The spec need not present any of
-  these as open. If the change removes or bypasses something that existing code
-  relies on to handle a named case, and the spec neither says what replaces it
-  nor why the case cannot arise, the case is undecided, even though the code
-  would do something when run.
+  other code or users will depend on and that the spec does not fix. The spec
+  need not present any of these as open. If the change removes or bypasses
+  something that existing code relies on to handle a named case, and the spec
+  neither says what replaces it nor why the case cannot arise, the case is
+  undecided, even though the code would do something when run.
 - **Not G1:** a behaviour the spec does decide, but whose safety it does not
   argue, is a D2 finding; one that contradicts another part of the spec or a
   design decision is a D3 finding. A spec can fail G1 and lose D2 or D3 for the
@@ -148,14 +148,14 @@ Check: reviewer.
 
 `### In scope` and `### Out of scope` are both present, and each out-of-scope
 item says where it goes: a named spec, issue or owner, or that it is dropped
-or unchanged with no follow-up, with the reason. The word dropped or unchanged
-is itself the statement that nothing follows; it need not be repeated as "no
-follow-up". A word that describes the item instead of deciding about it (that
-it is not affected, not needed or not relevant) is a reason, not a
-disposition, so it passes only alongside one of the dispositions above. A
-reason alone is not a
-disposition: saying why the item is out of scope does not say whether anything
-follows it, and an item that gives only a reason fails.
+or unchanged with no follow-up, with the reason. Each of the words dropped,
+unchanged and "no follow-up" is on its own the statement that nothing follows,
+so an item needs one of them, not all three. A word that describes the item
+instead of deciding about it (that it is not affected, not needed or not
+relevant) is a reason, not a disposition: it passes beside one of the
+dispositions above, a bare "no follow-up" included, and fails on its own. A
+reason alone is not a disposition: saying why the item is out of scope does not
+say whether anything follows it, and an item that gives only a reason fails.
 
 G5 judges the sentence, not the citation. An item that names a spec, issue or
 owner has a disposition whether or not that target resolves from this
@@ -314,6 +314,11 @@ Outcome: pass
   was not given the line writes `Reviewer: unknown, unknown`, which is valid
   and which the independence flag cannot match. The line is a record made by
   the runner, so it is as trustworthy as the runner, and no more.
+- **The spec's `## Attribution` line has the same limit.** The authoring model
+  cannot see its own model id either, so whoever started the authoring session
+  writes or checks that line, and writes `unknown` for a model it does not
+  know. The flag compares two records; it is only as good as the less careful
+  of the two runners.
 
 ## Review procedure
 
