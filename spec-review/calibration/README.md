@@ -16,6 +16,12 @@ bar below. The set stays as a regression suite: every rubric edit re-runs it.
 > spec merged with its criterion 12 open, by maintainer decision: the four
 > misses are rubric-wording defects, they are listed in issue 67, and they are
 > deferred to Rubric 2.
+>
+> **Rubric 2 is the wording fix, and it has no run yet.** It changes G1, G2 and
+> G4 for the three wording misses, clarifies G5, and moves the verdict's `Reviewer:` line from
+> the reviewing model to whoever runs the review ("Rubric 2", below). Every run
+> committed here was scored against Rubric 1's blobs, so none of them says
+> anything about Rubric 2 either way.
 
 **Never give a reviewer this directory, and never give one a worktree of this
 branch.** The answers are in `expected.json`, and the cases are near-copies of
@@ -106,15 +112,26 @@ reviewer this prompt, working directory `../pk-cal`:
 > against. Where the spec cites `docs/specs/dual-host-pi-gsd.md`, read
 > ../pk-cal-input/c2.md. Write only the verdict file described in the rubric,
 > with the first line `spec-review verdict for spec.md blob <sha>`, where
-> `<sha>` is `git hash-object ../pk-cal-input/spec.md`.
+> `<sha>` is `git hash-object ../pk-cal-input/spec.md`, and with the line
+> `Reviewer: <harness>, <model>` copied exactly.
+
+Before sending it, replace `<harness>, <model>` in the prompt with the harness
+and the model id the session was launched with, the same values `RUN.json`
+records. The rubric makes the runner responsible for that line, because a model
+cannot see its own model id (Rubric 1's runs show what happens otherwise). After
+the session, check that the verdict's line is the one given; a verdict whose
+line differs is corrected from `RUN.json` and the correction noted in
+`NOTES.md`.
 
 Save each verdict as `runs/<run-id>/<case>.verdict.md`, where `<run-id>` is
 `<yyyy-mm-dd>-r<rubric>-<harness>-<model>`. `<harness>` and `<model>` are the
 public names: this repository is public, so name a publicly available harness and
 model, or write the harness `other`. Where a model is reachable under both an
 internal alias and a public one, record the public identifier. Each run directory
-also carries `RUN.json` with the blobs it was scored against (ship bar rule 5).
-Commit both runs with their score.
+also carries `RUN.json` with the blobs it was scored against (ship bar rule 5),
+and its `scoredAgainst.cases` must list every case in the set: `score.mjs`
+scores a run on the cases listed there, names any case missing from it, and
+exits 1 if one is. Commit both runs with their score.
 
 ## Ship bar
 
@@ -144,8 +161,8 @@ From `expected.json` `shipBar`, in short:
    a check on the number would let those edits through with stale runs. Each run
    directory's `RUN.json` records the git blob of `rubric.md`, of `expected.json`
    and of each case as they stood when it was scored, and a run counts only when
-   those match the committed blobs. The three runs here all record
-   pre-review blobs, so all three are visibly stale rather than plausibly current.
+   those match the committed blobs. Every run here records Rubric 1's blobs, so
+   all five are visibly stale against Rubric 2 rather than plausibly current.
 6. **The two runs are at a comparable capability level.** The bar measures
    agreement between them, so a strong-plus-weak pair cannot tell an ambiguous
    rubric from a reviewer that could not do the task, which is the distinction
@@ -289,6 +306,34 @@ and stales the two runs keyed to it, so `shipBar.heldOut` is brought up to date
 in the same commit as the wording fixes, and both are measured by the pair after
 that.
 
+## Rubric 2
+
+Rubric 2 changes four gates and one field, each for a miss or a key reason
+above, and nothing else. It was drafted by `claude-opus-5-5`, which was already excluded. The answer
+key's labels did not move: every case scores the same gates the same way as
+under Rubric 1, and what changed is the text a reviewer reads to reach them.
+
+| change | for | what it says now |
+| --- | --- | --- |
+| G1 gains an **Also fails, with no choice offered** bullet, a **Not G1** bullet, and a line saying the list is the gate | c1 G1, both runs of the pair | every part of the opening sentence (trigger, each named case, errors, depended-on names) now has a bullet, and none needs the spec to offer a choice; a decided but unargued behaviour is D2, a contradiction D3 |
+| G2's example names instead of conditioning on existence | c2 G2's reason | an unnamed source fails on being unnamed, whether or not a similar document exists, and a reviewer does not repair the citation |
+| G4 splits **behaviour** and **documentation** criteria and says which sentence governs each | c3 G4 against c4 G4 on identical text | a documentation criterion needs the file named and its required content stated, and no Verification plan step |
+| G5 says what the words "dropped", "unchanged" and "no follow-up" do, and that a descriptive word is a reason | c2 G5's reason, which counted an "unchanged" item as having no disposition | each of the three words is a disposition on its own, so c3 to c6's "No follow-up" item still passes; a word describing the item ("not needed") is a reason beside one, not a disposition |
+| `Reviewer:` is written by the runner | the pair's six self-reported model ids | the runner gives the line or writes it; an unknown reviewer is `unknown, unknown`. The spec's `## Attribution` line has the same limit and the same rule |
+
+Two reasons in `expected.json` were corrected with them, and no label: c2 G2 now
+fails on three unnamed sources rather than one, and c2 G5 on the transport item
+alone. c1's G1 reason now argues the label from the mutation and the code at
+`61bb96f` (`useResume` is decided before `resolveSession()` runs and still
+selects the delta prompt), which is what `shipBar.relabelling` asks of a label
+that a run has questioned. c4, which had only a D5 reason, gained G1, G4 and G5
+reasons arguing its pass labels under Rubric 2's wider G1, its G4 split and its
+G5 wording, and they cover c3, c5 and c6 where the text is shared. `shipBar.heldOut` names all six spent models, and
+`shipBar.spent` lists them for a script to read.
+
+The two runs that measure Rubric 2 must come from models outside that list, and
+they spend two more.
+
 ## Known limits of Rubric 1's set
 
 - **All six are defect specs.** No feature spec is calibrated, so the feature
@@ -301,15 +346,13 @@ that.
   ratifies them before the first run counts (`expected.json` `labelledBy`), and
   the held-out run put G3 and G4 specifically in question.
 - **The eligible model pool is shrinking.** Every pass spends its models: six
-  are now excluded. `expected.json` `shipBar.heldOut` still names the first
-  four, because adding the newest two would change that file's blob and stale
-  the two runs keyed to it; it is updated in the same commit as the rubric fixes
-  those runs call for. A set that can only be
+  are now excluded, all named in `expected.json` `shipBar.heldOut` since
+  Rubric 2. A set that can only be
   validated by models it has never seen is a set that gets harder to validate
   each time it is corrected. Rubric 2 should add cases rather than keep
   re-tuning these six, so that a model's exclusion costs less.
-- **The rubric asks the reviewer for a field it cannot know.** A verdict's
-  `Reviewer: <harness>, <model>` line is self-reported, and the six sessions of
+- **Rubric 1 asked the reviewer for a field it cannot know.** A verdict's
+  `Reviewer: <harness>, <model>` line was self-reported, and the six sessions of
   one run guessed their own model six different ways, once naming a model that
-  was not used. `RUN.json` is the record to trust; Rubric 2 should have the
-  harness write that line or drop it.
+  was not used. Rubric 2 has the runner write it. The line is still only as
+  honest as the runner, and `RUN.json` stays the record to trust.

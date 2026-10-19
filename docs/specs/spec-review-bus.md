@@ -1,13 +1,14 @@
 # Implementation Spec: every spec gets an independent, rubric-scored verdict before it is built
 
 - Status: Draft. On this branch already: the rubric, the calibration set with
-  the two specs it was built from, three runs (none of which counts: see below),
+  the two specs it was built from, five runs (none of which counts: see below),
   an interim scorer, the linter and its test, and the anchor-leak test. Not built
   yet: the queue, verdict validation, the two CI jobs and the restricted review
   agent. **Rubric 1 has no measured result.** Pass 8's 30/30 is withdrawn - the
   answer key was relabelled to match those runs and the same runs were then
   scored against it - and the held-out run that was scored against the key
-  unchanged missed three of six cases. Criteria 7 and the c2 ratification are
+  unchanged missed three of six cases. Rubric 2 fixes the wording the later
+  misses found and has no run yet. Criterion 12 and the c2 ratification are
   open, so this spec is not ready to merge on its own terms.
 - Area: contributor workflow / CI
 - Target release: none. No code or behaviour in the published package
@@ -69,7 +70,7 @@ citations are classified (Approach, step 3) instead.
 
 ### In scope
 
-- `spec-review/rubric.md`, Rubric 1. **Done on this branch.**
+- `spec-review/rubric.md`, Rubric 2. **Done on this branch.**
 - `spec-review/calibration/`: six cases, `expected.json`, the run protocol and
   ship bar, and `originals/` (the two real specs two cases were frozen from, with
   the one local path in them scrubbed). **Done on this branch.**
@@ -307,9 +308,12 @@ Its own workflow, because `kiro-code-review.yml` ignores `*.md`. On
 ### 6. Reviewer independence: recorded, not enforced
 
 The rubric's "Reviewer independence" section is the contract: the session that
-wrote a spec never reviews it, and the verdict records harness and model. The
-queue's `same-author-model` flag makes the obvious case visible, with both sides
-normalised so it actually fires (step 4).
+wrote a spec never reviews it, and the verdict records harness and model. Both
+records are written by whoever started the session, never by the model, which
+cannot see its own model id: the runner writes the verdict's `Reviewer:` line,
+and the author's `## Attribution` line. The queue's `same-author-model` flag
+makes the obvious case visible, with both sides normalised so it actually fires
+(step 4), and it is only as good as those two records (criterion 7).
 
 **The gate cannot prove independence, and this spec does not claim it does.** A
 spec's author can write a passing verdict with any `Reviewer:` line they like,
@@ -335,11 +339,12 @@ Risks says so in those words.
 the ship bar. In short: two runs at a comparable capability level, by models that
 took part in no earlier pass and in no wording fix, each case in a fresh session
 from a clone that cannot reach the answer key, every expectation met in both, and
-agreement on all 30 gate decisions. A miss or a disagreement is fixed in the
-rubric's wording, never by choosing a run; the key may be relabelled only when
-the new label follows from how the case was built, and a relabel re-runs both
-passes. The lint half runs in CI on every push (`test/spec-lint.test.ts`), and
-`test/rubric-anchors.test.ts` holds that no anchor quotes a case.
+agreement on all 30 gate decisions (6 cases x 5 gates). A miss or a
+disagreement is fixed in the rubric's wording, never by choosing a run; the key
+may be relabelled only when the new label follows from how the case was built,
+and a relabel re-runs both passes. The lint half runs in CI on every push
+(`test/spec-lint.test.ts`), and `test/rubric-anchors.test.ts` holds that no
+anchor quotes a case.
 
 A clone, not a worktree: `git worktree add` shares the object database, so a
 reviewer in a worktree of this branch can read `expected.json` with one `git
@@ -375,7 +380,8 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
    `Reviewer: other, claude-opus-5-5` against an attribution reading `Spec:
    other, Claude Opus 5.5` carries `same-author-model`. Evidence:
    `test/spec-review.test.ts`. This is the pair that did not match before
-   normalising.
+   normalising. The flag compares two lines written by whoever ran each session
+   (§6), so it fires on what they recorded, not on what ran.
 8. **A rubric edit cannot merge on stale runs.** With `rubric.md` edited and no
    run's `RUN.json` matching the new blob, `spec-review / calibration` fails; it
    passes once two runs recorded against the new blobs are committed. Evidence:
@@ -391,7 +397,7 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
     the job's command names `.kiro/agents/spec-reviewer.json`, whose tool list is
     `read`, `grep`, `glob` and nothing else. Evidence: the PR's comment and the
     workflow file.
-12. **Rubric 1 meets its ship bar.** Two runs as the calibration README
+12. **The current rubric meets its ship bar.** Two runs as the calibration README
     specifies - comparable capability, neither model in the tuning loop, each
     from a clone that cannot reach the key, each with a `RUN.json` matching the
     committed blobs - scored by `spec-review.mjs score` with exit 0. Evidence:
@@ -407,7 +413,9 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
     current blobs, so it is not stale: it simply misses. The four misses are
     rubric-wording defects, not defects in anything this spec builds; they are
     listed in issue 67 and summarised in the Risks below. The c2 label
-    ratification is a precondition and is also open.
+    ratification is a precondition and is also open. Rubric 2 fixes the
+    wording those misses found and has no run yet, so this criterion now waits
+    on two runs against Rubric 2's blobs.
 13. **Only specs are added to the tarball.** `npm pack --dry-run` lists no
     path under `spec-review/` (including `originals/`) or `scripts/`, and differs
     from `main`'s tracked list only by `docs/specs/*.md`. Evidence: both
@@ -471,32 +479,35 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
 - **The c2 labels are judgement.** The maintainer ratifies them before
   criterion 12 counts as met. The held-out run passed c2 G3 and G4 where the key
   fails them, which puts those two labels specifically in question.
-- **Three gate-wording defects are known and unfixed**, found by the held-out
-  pair and deferred to Rubric 2 so that this mechanism can land first (issue
-  67). They are worth stating here because each is a way a rubric can read as
-  unambiguous and not be:
+- **Three gate-wording defects were found by the held-out pair**, deferred so
+  that this mechanism could land first (issue 67), and fixed in Rubric 2, which
+  is not yet measured. They are worth keeping here because each is a way a
+  rubric can read as unambiguous and not be:
   - **A gate's preamble can be broader than its `Fails` list, and a grader
     applies the list.** G1 opens with "what it does in each case the spec
     names", which reaches a spec that silently leaves a named case undecided;
-    its `Fails` list names only specs that offer a choice. Both runs of the pair
-    passed c1's G1 for that reason, having found the defect and filed it under
-    D2 and D3.
+    Rubric 1's `Fails` list named only specs that offer a choice. Both runs of
+    the pair passed c1's G1 for that reason, having found the defect and filed
+    it under D2 and D3.
   - **Two sentences of one gate can govern the same criterion and not say which
-    wins.** G4 requires that "at least one Verification plan step produces that
-    evidence" and also exempts a documentation criterion, whose "evidence is the
-    named file". One run applied the exemption to c4 and the requirement to c3,
-    on text that is byte-identical between the two.
+    wins.** Rubric 1's G4 required that "at least one Verification plan step
+    produces that evidence" and also exempted a documentation criterion, whose
+    "evidence is the named file". One run applied the exemption to c4 and the
+    requirement to c3, on text that is byte-identical between the two.
   - **A gate's example can condition on the wrong thing.** G2 asks that a source
-    be "named precisely enough to open", but illustrates the failure as
-    `"Per the repo rule"` *"with no rule in the repo"*, which tests existence
+    be "named precisely enough to open", but Rubric 1 illustrated the failure
+    as `"Per the repo rule"` *"with no rule in the repo"*, which tests existence
     rather than naming. Both runs failed c2 on an unnamed rule, one of them
     after reading the file that does state the procedure, and both were right.
-- **A verdict's `Reviewer:` line is self-reported, and a model cannot see its
-  own model id.** The six sessions of one run, all on the same model, wrote six
-  different answers for it, one of them naming a model that was not used. The
-  independence check in criterion 7 is therefore keyed on a field no one can
-  verify from the verdict alone; `RUN.json` is the record to trust, and Rubric 2
-  should have the harness write that line or drop it (issue 67).
+- **A verdict's `Reviewer:` line is written by whoever ran the review, and
+  nothing checks it.** Under Rubric 1 the reviewing model wrote it, and a model
+  cannot see its own model id: the six sessions of one run, all on the same
+  model, wrote six different answers, one of them naming a model that was not
+  used. Rubric 2 moves the line to the runner, which knows what it launched, and
+  a reviewer that was not told writes `unknown, unknown`. That makes the line
+  honest when the runner is, and no more: the independence check in criterion 7
+  is keyed on a field the verdict alone cannot verify, and in calibration
+  `RUN.json` is the record to trust.
 - **Independence is recorded, not enforced.** The gate asks for a valid `pass`
   verdict for the spec's current blob. A spec's author can write one, under any
   `Reviewer:` line, and the gate cannot tell. What the repository enforces is
