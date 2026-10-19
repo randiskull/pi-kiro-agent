@@ -95,12 +95,17 @@ function git(args, { allowFail = false, env } = {}) {
  * True when a component of `path` under the repository root is a symlink. git
  * declines every question about such a path ("beyond a symbolic link"), so the
  * answer is read off the filesystem instead of off git's message, which is not
- * stable across versions. A component that does not exist is not a symlink.
+ * stable across versions. A component that does not exist is not a symlink, and
+ * neither is a path that climbs out of the repository.
  */
 function underSymlink(path) {
 	let at = root();
 	for (const part of path.split("/")) {
 		if (!part || part === ".") continue;
+		// A path that climbs out of the repository is not this case, whatever sits
+		// above the root: git declines it for being outside the repository, and that
+		// falls through to an `external` note, which is the right answer for it.
+		if (part === "..") return false;
 		at = join(at, part);
 		try {
 			if (lstatSync(at).isSymbolicLink()) return true;

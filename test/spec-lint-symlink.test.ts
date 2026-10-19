@@ -31,6 +31,13 @@ interface LintResult {
 	notes: Record<string, string[]>;
 }
 
+/**
+ * What the assertions read when the linter could not verify (exit 2). Empty
+ * rather than undefined, so a fatal fails the first test below on its status
+ * and stderr instead of failing all three on a property of undefined.
+ */
+const UNVERIFIED: LintResult = { pass: false, checks: [], notes: { local: [], external: [] } };
+
 /** A spec of the shape spec-lint expects, citing `cites` in its goal. */
 function spec(cites: string): string {
 	return [
@@ -113,7 +120,7 @@ describe("spec-lint on a citation below a symlink", () => {
 		mkdirSync(join(repo, "docs", "specs"), { recursive: true });
 		writeFileSync(
 			join(repo, "docs", "specs", "sym.md"),
-			spec("Reads `linked/research/note.md`, `plain/research/note.md` and `src/nope.ts`."),
+			spec("Reads `linked/research/note.md`, `plain/research/note.md`, `../outside/research/note.md` and `src/nope.ts`."),
 		);
 
 		const run = spawnSync(process.execPath, [linter, "--json", "--ref", "HEAD", "docs/specs/sym.md"], {
@@ -122,20 +129,28 @@ describe("spec-lint on a citation below a symlink", () => {
 		});
 		status = run.status;
 		stderr = run.stderr;
-		result = status === 2 ? ({} as LintResult) : (JSON.parse(run.stdout) as LintResult[])[0];
+		result = status === 2 ? UNVERIFIED : ((JSON.parse(run.stdout) as LintResult[])[0] ?? UNVERIFIED);
 	});
 
 	afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 	it("runs to a verdict rather than giving up (exit 0 or 1, never 2)", () => {
-		expect(stderr).toBe("");
-		expect([0, 1]).toContain(status);
+		expect(stderr, "spec-lint could not verify the fixture repository").toBe("");
+		expect([0, 1], stderr).toContain(status);
 	});
 
 	it("lists the path below the symlink as local, and does not fail on it", () => {
 		expect(result.notes.local).toContain("linked/research/note.md");
 		expect(result.notes.external).not.toContain("linked/research/note.md");
 		expect(result.checks.find((c) => c.id === "G2")?.findings.join("\n")).not.toContain("linked/");
+	});
+
+	// A path that climbs out of the repository reaches the same code and is not
+	// this case: whatever sits above the repository root, it is not the author's
+	// tree inside it.
+	it("does not call a path above the repository root local", () => {
+		expect(result.notes.local).not.toContain("../outside/research/note.md");
+		expect(result.notes.external).toContain("../outside/research/note.md");
 	});
 
 	// Without this, "every path is local" would pass the assertion above.
