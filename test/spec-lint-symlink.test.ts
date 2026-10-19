@@ -90,13 +90,24 @@ function spec(cites: string): string {
 	].join("\n");
 }
 
+/**
+ * The environment for anything run against a fixture repository: this one
+ * without git's GIT_* variables. A git hook (this repository's pre-push runs the
+ * suite) exports GIT_DIR, and git obeys it over the working directory, so an
+ * inherited GIT_DIR sent the fixture's `git init`, `add` and `commit` into the
+ * repository being pushed, committing the fixture's files over its own.
+ */
+function fixtureEnv(): NodeJS.ProcessEnv {
+	return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+}
+
 /** A git repository at `repo` with `src/bridge.ts` and `package.json` committed. */
 function fixtureRepo(repo: string): void {
 	mkdirSync(join(repo, "src"), { recursive: true });
 	writeFileSync(join(repo, "src", "bridge.ts"), "export function serveBridgeHttp(): void {}\n");
 	writeFileSync(join(repo, "package.json"), `${JSON.stringify({ name: "fixture", scripts: { verify: "true" } }, null, 2)}\n`);
 	const git = (...args: string[]) => {
-		const run = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+		const run = spawnSync("git", args, { cwd: repo, encoding: "utf8", env: fixtureEnv() });
 		if (run.status !== 0) throw new Error(`git ${args.join(" ")}: ${run.stderr}`);
 	};
 	git("init", "-q", "-b", "main");
@@ -111,6 +122,7 @@ function lintFixture(repo: string, cites: string): { status: number | null; stde
 	const run = spawnSync(process.execPath, [linter, "--json", "--ref", "HEAD", "docs/specs/sym.md"], {
 		cwd: repo,
 		encoding: "utf8",
+		env: fixtureEnv(),
 	});
 	const result = run.status === 2 ? UNVERIFIED : ((JSON.parse(run.stdout) as LintResult[])[0] ?? UNVERIFIED);
 	return { status: run.status, stderr: run.stderr, result };
@@ -214,5 +226,49 @@ describe.skipIf(!canLock)("spec-lint on a citation it cannot look below", () => 
 		expect(run.status).toBe(2);
 		expect(run.stderr).toContain("locked/inner/note.md");
 		expect(run.stderr).toContain("EACCES");
+	});
+});
+
+// Run under a git hook, GIT_DIR names the repository being pushed. Before the
+// fixture dropped it, this suite committed its fixture over that repository's
+// src/bridge.ts and package.json, and passed.
+describe("spec-lint fixtures ignore an inherited GIT_DIR", () => {
+	const scratch = mkdtempSync(join(tmpdir(), "spec-lint-gitdir-"));
+	const decoy = join(scratch, "decoy");
+	const head = () => spawnSync("git", ["rev-parse", "HEAD"], { cwd: decoy, encoding: "utf8", env: fixtureEnv() }).stdout.trim();
+	let before: string;
+	let after: string;
+	let run: ReturnType<typeof lintFixture>;
+
+	beforeAll(() => {
+		fixtureRepo(decoy);
+		// Unlike the fixture's, so a leaked `add` and `commit` would succeed and
+		// move HEAD, rather than find nothing to commit and fail on that instead.
+		writeFileSync(join(decoy, "src", "bridge.ts"), "// the decoy's own file\n");
+		const env = fixtureEnv();
+		spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-qam", "decoy"], { cwd: decoy, env });
+		before = head();
+		const saved = process.env.GIT_DIR;
+		process.env.GIT_DIR = join(decoy, ".git");
+		try {
+			const repo = join(scratch, "repo");
+			fixtureRepo(repo);
+			run = lintFixture(repo, "Reads `src/nope.ts`.");
+		} finally {
+			if (saved === undefined) delete process.env.GIT_DIR;
+			else process.env.GIT_DIR = saved;
+		}
+		after = head();
+	});
+
+	afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+	it("commits nothing to the repository GIT_DIR names", () => {
+		expect(after).toBe(before);
+	});
+
+	it("lints the fixture, not the repository GIT_DIR names", () => {
+		expect([0, 1], run.stderr).toContain(run.status);
+		expect(run.result.checks.find((c) => c.id === "G2")?.findings.join("\n")).toContain("src/nope.ts");
 	});
 });
