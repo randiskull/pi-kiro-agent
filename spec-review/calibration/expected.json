@@ -186,7 +186,7 @@
 		"c7": {
 			"source": "authored for this set: R8 and R9 of docs/design/v3-engine.md written up as a feature spec by claude-opus-5-5 (harness claude-code) on 2026-10-17, measured at its ref against the reader and the design doc's recorded v3 payloads. Not built. The first feature-typed case, and the false-fail control for the feature column of D1, as c4 is for the defect column.",
 			"ref": "68ffb40",
-			"sha256": "2085d89bd01dcfedaa2a8a17b7fd33df549d22c3c4347ff56526aecfe8c2ef2f",
+			"sha256": "f1f981bd434e1687a68c827d3ae9a22af588841ae342cecf7409e66f9cc78c34",
 			"lint": {
 				"fail": []
 			},
@@ -220,7 +220,7 @@
 		"c8": {
 			"source": "mutant of c7",
 			"ref": "68ffb40",
-			"sha256": "24a98b0ad4a6a9423349e7f67385ac616208d91eb2c9ea82392dec5a3e058242",
+			"sha256": "b6f97409ba86e37935bc06f9728cb01b1910c1a739142b0f39c8ea36d4c6c335",
 			"mutation": "Both measured subsections of the Problem - the reader script with its printed rows and events, and the jq count over the six v2 captures with its table - are replaced by the same findings stated as assertions, with no command, no output and no ref. The gaps are still tied to the same code. Two back-references ('measured above') become 'described above', so the spec stays consistent with itself. Nothing else changes: the Safety section's count of six v2 tool events is kept, because it is D2's argument, not the problem statement D1 grades.",
 			"lint": {
 				"fail": []
