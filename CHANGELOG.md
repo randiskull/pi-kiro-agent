@@ -44,6 +44,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A cited path below a symlink was reported as a broken citation.** `scripts/spec-lint.mjs` asks
+  `git check-ignore` whether a cited path is a local, gitignored file, and read any non-zero exit as
+  "not ignored". git answers a path below a symlink with a fatal ("beyond a symbolic link"), whose
+  exit status is non-zero in exactly the same way, so for a developer who links a working directory
+  into the repo (`.gsd` -> a project directory elsewhere) real files were noted `external` rather than
+  `local`, and the calibration assertion about the exemplar's investigation note failed on that
+  machine while CI, which has no such link, stayed green. The linter now settles that case from the
+  filesystem before git is asked, rather than from git's message, which is not stable across git
+  versions. Contributor tooling only: nothing under `scripts/` is in the published package.
+  Test: `test/spec-lint-symlink.test.ts`, which builds its own throwaway repository because the
+  condition cannot exist in this repository's CI checkout: the classification fails with the check
+  reverted, and its negative control fails if the check is made unconditional.
+
 - **The calibration scorer ignored the blobs the ship bar is keyed to (#67).** `expected.json`
   `shipBar.blobs` says a run "counts towards the ship bar only when both match the committed
   blobs", and criterion 12 of `docs/specs/spec-review-bus.md` is `score.mjs`'s exit code. The

@@ -55,7 +55,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -89,6 +89,26 @@ function git(args, { allowFail = false, env } = {}) {
 		throw new Unverifiable(`git ${args.join(" ")} failed: ${(result.stderr ?? "").trim()}`);
 	}
 	return result.stdout;
+}
+
+/**
+ * True when a component of `path` under the repository root is a symlink. git
+ * declines every question about such a path ("beyond a symbolic link"), so the
+ * answer is read off the filesystem instead of off git's message, which is not
+ * stable across versions. A component that does not exist is not a symlink.
+ */
+function underSymlink(path) {
+	let at = root();
+	for (const part of path.split("/")) {
+		if (!part || part === ".") continue;
+		at = join(at, part);
+		try {
+			if (lstatSync(at).isSymbolicLink()) return true;
+		} catch {
+			return false; // nothing there to be a link
+		}
+	}
+	return false;
 }
 
 /** git's exit status alone, for commands whose answer is the status. */
@@ -562,10 +582,21 @@ function resolvePath(path, token, at, tree, aliases, failures, note) {
 	}
 	if (tree.fileSet.has(path) || tree.dirSet.has(path)) return;
 	if (/^docs\/specs\/[^/]+\.md$/.test(path) && existsSync(join(root(), path))) return; // a sibling in the same change
+	// A path below a symlink is the author's own tree, not repo content: a
+	// developer who links a working directory into the repo (`.gsd` -> a project
+	// directory elsewhere) cites real files git will not resolve at all. Decided
+	// before git is asked, because git answers such a path with a fatal, and a
+	// fatal is indistinguishable from "not ignored" by exit status alone.
+	if (underSymlink(path)) {
+		note("local", path);
+		return;
+	}
 	// Before the top-level check: a gitignored file under a tracked directory (a
 	// local log, a tfvars) is provenance on the author's machine, not a broken path.
 	// The user's own excludes file is switched off, so the answer does not depend
 	// on who runs the linter; `--` keeps a path shaped like an option a path.
+	// Non-zero is "not ignored" or git declining (a path outside the repository):
+	// both fall through to the checks below, which end at an `external` note.
 	const ignored = git(["-c", "core.excludesFile=/dev/null", "check-ignore", "--no-index", "-q", "--", path], {
 		allowFail: true,
 		env: { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
