@@ -77,6 +77,17 @@ function root() {
 	return repoRoot;
 }
 
+/**
+ * git, at the repository root, with the caller's `env` keys winning.
+ *
+ * The ambient `GIT_*` variables are passed through on purpose. This is a git
+ * tool: `root()`, `loadTree()` and `check-ignore` have to resolve the same
+ * repository git itself would, so under a hook (which exports `GIT_DIR`) or a
+ * `--git-dir` invocation all three follow it together. Stripping them for the
+ * one call that passes an `env` would point that call at a different repository
+ * than the ref the others read. A caller that must not inherit them cleans the
+ * env of the process it spawns, which is what the test fixtures do.
+ */
 function git(args, { allowFail = false, env } = {}) {
 	const result = spawnSync("git", args, {
 		cwd: root(),
