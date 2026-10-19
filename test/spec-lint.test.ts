@@ -359,9 +359,11 @@ describe("spec-lint per citation class (synthetic spec)", () => {
 		const git = (args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8" }).stdout.trim();
 		const later = git(["rev-parse", "--short=10", "HEAD"]); // never an ancestor of the calibration ref
 		const tree = git(["rev-parse", "--short=10", "HEAD^{tree}"]);
+		// In backticks: lint skips a bare all-digit run as a number, and about one
+		// commit in a hundred has a 10-character prefix with no letter in it.
 		const { results } = lint([
-			write("not-ancestor", syntheticSpec(CLEAN.replace("6ea0510", later))),
-			write("tree-object", syntheticSpec(CLEAN.replace("6ea0510", tree))),
+			write("not-ancestor", syntheticSpec(CLEAN.replace("6ea0510", `\`${later}\``))),
+			write("tree-object", syntheticSpec(CLEAN.replace("6ea0510", `\`${tree}\``))),
 		]);
 		expect(findings(results[0], "G2").join("\n")).toContain(`${later} is not an ancestor of ${expected.ref}`);
 		expect(findings(results[1], "G2").join("\n")).toContain(`${tree} names an object that is not a commit`);
