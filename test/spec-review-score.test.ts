@@ -209,13 +209,26 @@ describe("score.mjs enforces shipBar.blobs", () => {
 		noneRecorded.writeRun(undefined, true);
 		const a = noneRecorded.score();
 		expect(a.exitCode, a.out).toBe(1);
-		expect(a.out).toContain("no scoredAgainst");
+		expect(a.out).toContain("no scoredAgainst object");
 
 		const noRunJson = fixture();
 		rmSync(join(noRunJson.calib, "runs", "r1", "RUN.json"), { force: true });
 		const b = noRunJson.score();
 		expect(b.exitCode, b.out).toBe(1);
 		expect(b.out).toContain("no RUN.json");
+	});
+
+	// typeof [] === "object", so an array reached the per-field loop and was refused
+	// one case at a time instead of on its shape. The exit was already 1; the reason
+	// it gave was the wrong one, and a check that exists to diagnose staleness has to
+	// diagnose accurately. Review bot, second pass.
+	it("refuses an array scoredAgainst on its shape, not one missing case at a time", () => {
+		const f = fixture();
+		f.writeRunRaw(`${JSON.stringify({ runId: "r1", scoredAgainst: ["a", "b"], countsTowardsShipBar: true }, null, "\t")}\n`);
+		const r = f.score();
+		expect(r.exitCode, r.out).toBe(1);
+		expect(r.out).toContain("no scoredAgainst object");
+		expect(r.out, "an array is not a key-value record; it should not be read as one").not.toContain("no blob recorded for f1");
 	});
 
 	// Found by the repository's own review bot on the PR that added this check.

@@ -93,7 +93,7 @@ function checkBlobs(dir) {
 		return { counted: false, line: `blobs: RUN.json is not valid JSON, so the run cannot count (shipBar.blobs): ${e.message}` };
 	}
 	const against = run.scoredAgainst;
-	if (!against || typeof against !== "object") return { counted: false, line: "blobs: RUN.json has no scoredAgainst, so the run cannot count (shipBar.blobs)" };
+	if (!against || typeof against !== "object" || Array.isArray(against)) return { counted: false, line: "blobs: RUN.json has no scoredAgainst object, so the run cannot count (shipBar.blobs)" };
 	const problems = [];
 	const cases = Object.entries(against.cases ?? {});
 	const named = cases.filter(([name]) => BARE_CASE_NAME.test(name));
