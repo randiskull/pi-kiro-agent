@@ -25,13 +25,16 @@
  *
  * A run is scored on the cases its RUN.json says it reviewed (scoredAgainst.cases),
  * or on every case when it has no RUN.json. A case added to the set after a run was
- * made is named on a line of its own and not scored: that run predates it, and its
- * blobs already say it cannot count. Gate agreement is over the cases every run has.
+ * made is named on a line of its own and not scored, so an older run still prints
+ * its original lines; but a run that did not review every case has not met the set,
+ * so any absent case also makes the exit 1. Gate agreement is over the cases every
+ * run has.
  *
- * Exit 0 only when every run counts, every case meets every expectation in every
- * run and, with two or more runs, all gate decisions agree. Criterion 12 of
- * docs/specs/spec-review-bus.md is this exit code, so a stale or self-declared
- * non-counting run cannot produce it.
+ * Exit 0 only when every run counts, no case is absent from any run, every case
+ * meets every expectation in every run and, with two or more runs, all gate
+ * decisions agree. Criterion 12 of docs/specs/spec-review-bus.md is this exit
+ * code, so a stale run, a self-declared non-counting one and one that skipped a
+ * case all cannot produce it.
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -165,7 +168,7 @@ function scoreRun(dir) {
 	}
 	const absent = Object.keys(expected.cases).filter((name) => !names.includes(name));
 	if (absent.length) lines.push(`  not in this run (added to the set after it): ${absent.join(", ")}`);
-	return { lines, decisions, missed };
+	return { lines, decisions, missed, absent: absent.length };
 }
 
 const dirs = process.argv.slice(2);
@@ -185,4 +188,6 @@ const missed = runs.reduce((n, r) => n + r.missed, 0);
 console.log(`cases with a miss: ${missed}`);
 const notCounted = runs.filter((r) => !r.blobs.counted);
 if (notCounted.length) console.log(`runs that do not count: ${notCounted.length}/${runs.length} (${notCounted.map((r) => basename(r.dir)).join(", ")}) - the ship bar asks for two that do`);
-process.exit(missed === 0 && notCounted.length === 0 && disagreements.length === 0 ? 0 : 1);
+const absent = runs.reduce((n, r) => n + r.absent, 0);
+if (absent) console.log(`cases not reviewed: ${absent} (a run must review every case to meet the set)`);
+process.exit(missed === 0 && notCounted.length === 0 && absent === 0 && disagreements.length === 0 ? 0 : 1);

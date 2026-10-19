@@ -22,8 +22,9 @@ It no longer does.
 
 `score.mjs` scores a run on the cases its `RUN.json` lists. Every run below
 predates c7 and c8, so re-running the scorer on it prints one more line per run,
-`not in this run (added to the set after it): c7, c8`; every other line is
-unchanged.
+`not in this run (added to the set after it): c7, c8`, and a closing
+`cases not reviewed: 4` line, and it exits 1, because a run that did not review
+every case has not met the set. Every other line is unchanged.
 
 ```
 === run A (2026-10-17-r1-other-claude-opus-5-5)
