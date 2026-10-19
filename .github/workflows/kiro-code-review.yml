@@ -53,12 +53,17 @@ jobs:
           # so a branch named to look like a flag can't be misparsed. package-lock.json
           # is excluded as large/low-signal; .agents/, .kiro/ and .github/ are NOT
           # excluded (they are prompt-injection / config surface that must be reviewed).
-          # spec-review/calibration/ is excluded and then deleted from the checkout: it
-          # holds the spec-review answer key, and a model that reads it can no longer
-          # be a calibration reviewer. This job does not pin or record its model, so
-          # nobody could tell which model to exclude (shipBar.heldOut in expected.json).
+          # spec-review/calibration/ holds the spec-review answer key, and a model that
+          # reads it can no longer be a calibration reviewer. This job does not pin or
+          # record its model, so nobody could tell which model to exclude
+          # (shipBar.heldOut in expected.json). Everything there except its scripts is
+          # left out of the diff and deleted from the checkout. The scripts (*.mjs, such
+          # as score.mjs) are code CI runs and hold no label, so they are still reviewed;
+          # git pathspecs cannot re-include under an excluded directory, hence the
+          # second diff.
           git diff --unified=3 "${BASE_SHA}...${HEAD_SHA}" -- . ':(exclude)package-lock.json' ':(exclude)spec-review/calibration' > pr.diff
-          rm -rf spec-review/calibration
+          git diff --unified=3 "${BASE_SHA}...${HEAD_SHA}" -- ':(glob)spec-review/calibration/**/*.mjs' >> pr.diff
+          find spec-review/calibration -type f ! -name '*.mjs' -delete
           SIZE=$(wc -c < pr.diff)
           echo "size=$SIZE" >> "$GITHUB_OUTPUT"
           # Cap by byte size; skip (do NOT truncate) above the cap. Truncating a diff can
