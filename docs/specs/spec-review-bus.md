@@ -42,8 +42,8 @@ done. After this change:
    changes, only when two independent reviewer runs over that set meet its ship
    bar, and a CI job refuses a rubric or key edit that no current pair of runs
    covers. What that measures is agreement between two reviewers on an
-   eight-case set built from three specs, which is weaker than "known answers"
-   and is recorded as such under Risks.
+   eight-case set built from two real specs and one written for the set, which
+   is weaker than "known answers" and is recorded as such under Risks.
 
 ## Problem
 
@@ -471,14 +471,16 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
 - **Lint presence is not substance.** An author can write a
   `- **Negative control` bullet that is not one. Lint only stops the omission;
   the reviewer judges the content, and c3 tests that the reviewer does.
-- **Eight cases from three specs, six of them from two exemplars.** Rubric 2
+- **Eight cases from two real specs and one written for the set, six of them
+  from two exemplars.** Rubric 2
   added the first feature-typed pair (c7, c8), so D1's feature column has an
   expectation, on one spec's shape. The set can still over-fit its exemplars.
 - **The eligible model pool shrinks with every pass.** A model that took part in
   a pass, or in a wording fix made in response to one, cannot be one of the two
   runs. Six are now spent, and the fixes the last pair calls for will spend the
-  next two. That cost is the reason Rubric 2 should widen the set rather than
-  keep re-tuning these six: a wider set makes each exclusion cheaper.
+  next two. That cost is the reason Rubric 2 widens the set with c7 and c8
+  rather than re-tuning the original six: a wider set makes each exclusion
+  cheaper.
 - **The c2 and c7 labels are judgement.** The maintainer ratifies them before
   criterion 12 counts as met. The held-out run passed c2 G3 and G4 where the key
   fails them, which puts those two labels specifically in question.
@@ -525,7 +527,8 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
   reject is one reviewer's judgement, blocking the gate, with nothing to appeal
   to but the finding.
 - **The ship bar measures agreement, not correctness.** Two reviewers agreeing
-  on 40 gate decisions over eight cases built from three specs is evidence the
+  on 40 gate decisions over eight cases built from two real specs and one
+  written for the set is evidence the
   wording is unambiguous, not evidence the rubric asks for the right things. The
   key itself was written by reading the cases, and pass 8 showed how easily a key
   bends towards the runs. Rule 4's relabelling clause and the blob keying make
@@ -534,7 +537,7 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
   set, or whose miss drove a wording fix, is in the tuning loop and is spent:
   four are already excluded. A set that only models it has never seen can
   validate gets harder to validate each time it is corrected. Rubric 2 should
-  grow the set rather than keep re-tuning these six.
+  grow the set rather than keep re-tuning the original six.
 - **Prompt injection.** A spec in a PR is untrusted input to `draft-review`. It
   gets the same rails as `kiro-code-review.yml`: no write-scoped token in
   `.git/config`, read-only contents, output only through the extracted block.

@@ -383,8 +383,8 @@ code at `68ffb40` the way c4's corrections were.
   are now excluded, all named in `expected.json` `shipBar.heldOut` since
   Rubric 2. A set that can only be
   validated by models it has never seen is a set that gets harder to validate
-  each time it is corrected. Rubric 2 should add cases rather than keep
-  re-tuning these six, so that a model's exclusion costs less.
+  each time it is corrected. Rubric 2 adds c7 and c8 rather than re-tuning the
+  original six, so that a model's exclusion costs less.
 - **Rubric 1 asked the reviewer for a field it cannot know.** A verdict's
   `Reviewer: <harness>, <model>` line was self-reported, and the six sessions of
   one run guessed their own model six different ways, once naming a model that
