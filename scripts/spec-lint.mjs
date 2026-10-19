@@ -96,8 +96,11 @@ function git(args, { allowFail = false, env } = {}) {
  * declines every question about such a path ("beyond a symbolic link"), so the
  * answer is read off the filesystem instead of off git's message, which is not
  * stable across versions. A component that does not exist is not a symlink, and
- * neither is a path that climbs out of the repository.
+ * neither is a path that climbs out of the repository. A component the linter
+ * cannot look at (a directory it may not search) is neither answer, so it is
+ * unverifiable rather than a guess.
  */
+const ABSENT = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG"]);
 function underSymlink(path) {
 	let at = root();
 	for (const part of path.split("/")) {
@@ -109,8 +112,12 @@ function underSymlink(path) {
 		at = join(at, part);
 		try {
 			if (lstatSync(at).isSymbolicLink()) return true;
-		} catch {
-			return false; // nothing there to be a link
+		} catch (error) {
+			// Nothing there, or nothing that could be there (a file used as a
+			// directory, a name too long to exist): not a link. A cited path that is
+			// merely odd must still reach its G2 finding, not stop the whole spec.
+			if (ABSENT.has(error.code)) return false;
+			throw new Unverifiable(`cannot tell whether \`${path}\` is below a symlink: ${error.code ?? error.message} at ${at}`);
 		}
 	}
 	return false;

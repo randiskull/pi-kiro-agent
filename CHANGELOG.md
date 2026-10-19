@@ -53,11 +53,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   machine while CI, which has no such link, stayed green. The linter now settles that case from the
   filesystem before git is asked, rather than from git's message, which is not stable across git
   versions. A cited path that climbs out of the repository (`../x/y.ts`) is not that case and still
-  ends at an `external` note, which is why a fatal is not read as unverifiable instead. Contributor
-  tooling only: nothing under `scripts/` is in the published package.
+  ends at an `external` note, which is why a fatal is not read as unverifiable instead. A component
+  the linter cannot look at (a directory it may not search) is neither answer, so it stops the spec as
+  unverifiable (exit 2), naming the path; one that cannot exist (a name too long for the filesystem)
+  is absent, so an odd citation still gets its ordinary finding. Contributor tooling only: nothing
+  under `scripts/` is in the published package.
   Test: `test/spec-lint-symlink.test.ts`, which builds its own throwaway repository because the
   condition cannot exist in this repository's CI checkout: the classification fails with the check
-  reverted, and its negative control fails if the check is made unconditional.
+  reverted, its negative control fails if the check is made unconditional, and the unsearchable and
+  too-long cases each fail if their error is read the other way.
 
 - **The calibration scorer ignored the blobs the ship bar is keyed to (#67).** `expected.json`
   `shipBar.blobs` says a run "counts towards the ship bar only when both match the committed
