@@ -62,12 +62,12 @@ That spawns your authenticated kiro-cli against the real thing:
 | File | Covers | Model turns |
 | --- | --- | --- |
 | `command-coverage-live.test.ts` | `/kiro` and `/kiro-subagents` through the registered handlers, against a real readiness and model-list probe | 0 |
-| `acp-transport-live.test.ts` | the ACP transport: one persistent child, one reused ACP session across turns | 2 |
-| `bridge-live.test.ts` | the MCP bridge: your installed rpiv/pi-subagents packages found through pi's registry, authenticated loopback MCP listed and called by a real MCP client, and a delegated turn calling a bridged tool back into the process | 1 |
+| `acp-transport-live.test.ts` | the ACP transport: one persistent child, one reused ACP session across turns, and a lean-agent turn that stays under 8% of the model's context window | 2 |
+| `bridge-live.test.ts` | the MCP bridge: your installed rpiv/pi-subagents packages found through pi's registry, authenticated loopback MCP listed and called by a real MCP client, and a delegated turn, on each transport, calling a bridged tool back into the process | 2 |
 | `workflow-mcp-live.test.ts` | GSD's workflow MCP: `.mcp.json` discovery, a real `gsd-workflow` server, and its calls recovered as pi `ToolCall` blocks | 1 |
 | `stream-adapter-live.test.ts` | the default chat transport: session resume across turns | 2 |
 
-Six real turns, billed to your seat, with real session history written under your
+Seven real turns, billed to your seat, with real session history written under your
 home directory. Two of them assert that the model *chose* to call a tool, so an
 occasional flake there is model behaviour, not a broken bridge; the plumbing
 assertions in the same files are deterministic and should never flake.

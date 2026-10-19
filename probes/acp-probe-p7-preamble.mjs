@@ -188,7 +188,7 @@ const summary = {
 				label,
 				{
 					medianContextPercent: ctx,
-					approxTokens: ctx === undefined ? undefined : Math.round((ctx / 100) * WINDOW_TOKENS),
+					approxTokensIf1MWindow: ctx === undefined ? undefined : Math.round((ctx / 100) * WINDOW_TOKENS),
 					medianCredits: median(runs.map((x) => x.credits)),
 					runs,
 				},

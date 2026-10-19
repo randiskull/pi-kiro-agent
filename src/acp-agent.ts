@@ -18,24 +18,21 @@
  * reaches.
  *
  * So by default each child runs a pi-owned agent with the five native tools a
- * coding delegate needs. Its profile lives in a private directory handed to
- * kiro as KIRO_AGENT_CONFIG_DIR rather than in ~/.kiro/agents, so the user's
- * agent list never sees it and a crash leaves nothing there. MCP servers
- * mounted through session/new (the pi bridge, gsd-workflow) are offered to
- * the model whether or not `tools` names them (probes/acp-probe-p8-lean-agent.mjs).
+ * coding delegate needs, written by the same writer as the chat transport's
+ * profile and under the same pid-tagged name, so the activation sweep removes
+ * it if pi dies before the child is torn down. It carries no bridge token: MCP
+ * servers mounted through session/new (the pi bridge, gsd-workflow) are
+ * offered to the model whether or not `tools` names them
+ * (probes/acp-probe-p8-lean-agent.mjs).
  *
  * PI_KIRO_ACP_AGENT selects otherwise:
  *   unset, "" or "lean"  the lean agent (default)
  *   "default"            no --agent: the user's default agent
  *   any other value      that agent, from the user's own kiro config
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { writeAgentProfile } from "./kiro-bridge.js";
 
 export const ACP_NATIVE_TOOLS = ["fs_read", "fs_write", "execute_bash", "grep", "glob"] as const;
-
-const LEAN_AGENT_NAME = "pi-kiro-acp";
 
 export type AcpAgentChoice = { kind: "lean" } | { kind: "default" } | { kind: "named"; name: string };
 
@@ -49,37 +46,35 @@ export function acpAgentChoice(env: NodeJS.ProcessEnv = process.env): AcpAgentCh
 export interface AcpAgentLaunch {
 	/** Extra argv for `kiro-cli acp`. */
 	args: string[];
-	/** Environment for the child. */
-	env: NodeJS.ProcessEnv;
 	/**
-	 * Whether session/new should run with inherited resources disabled. Only for
+	 * Whether the child should start with inherited resources disabled. Only for
 	 * the lean agent: built-in agents ignore the setting, and a user's own agent
 	 * may rely on what it inherits.
 	 */
 	disableInheritance: boolean;
-	/** Remove anything written for this launch. Idempotent. */
+	/** Remove anything written for this launch. Idempotent, never throws. */
 	cleanup: () => void;
 }
 
 export function prepareAcpAgent(choice: AcpAgentChoice = acpAgentChoice()): AcpAgentLaunch {
-	if (choice.kind === "default") return { args: [], env: process.env, disableInheritance: false, cleanup: () => undefined };
+	if (choice.kind === "default") return { args: [], disableInheritance: false, cleanup: () => undefined };
 	if (choice.kind === "named") {
-		return { args: ["--agent", choice.name], env: process.env, disableInheritance: false, cleanup: () => undefined };
+		return { args: ["--agent", choice.name], disableInheritance: false, cleanup: () => undefined };
 	}
-	const dir = mkdtempSync(join(tmpdir(), "pi-kiro-acp-agent-"));
-	const profile = {
-		name: LEAN_AGENT_NAME,
-		description: "pi-kiro-agent ACP delegate: native coding tools only, no inherited resources (auto-generated, safe to delete).",
-		tools: [...ACP_NATIVE_TOOLS],
-		allowedTools: [...ACP_NATIVE_TOOLS],
-		resources: [] as string[],
-		mcpServers: {},
-	};
-	writeFileSync(join(dir, `${LEAN_AGENT_NAME}.json`), `${JSON.stringify(profile, null, "\t")}\n`, { encoding: "utf8", mode: 0o600 });
+	const profile = writeAgentProfile(undefined, undefined, {
+		tools: ACP_NATIVE_TOOLS,
+		description:
+			"Throwaway pi-kiro-agent ACP delegate (auto-generated per child; safe to delete): native coding tools only, nothing inherited.",
+	});
 	return {
-		args: ["--agent", LEAN_AGENT_NAME],
-		env: { ...process.env, KIRO_AGENT_CONFIG_DIR: dir },
+		args: ["--agent", profile.name],
 		disableInheritance: true,
-		cleanup: () => rmSync(dir, { recursive: true, force: true }),
+		cleanup: () => {
+			try {
+				profile.remove();
+			} catch {
+				// a leftover is swept at the next activation
+			}
+		},
 	};
 }

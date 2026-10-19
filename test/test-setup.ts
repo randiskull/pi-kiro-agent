@@ -34,6 +34,12 @@ process.env.USERPROFILE = TEST_HOME;
 // beforeEach and drives discovery against explicit fixture directories.
 process.env.PI_KIRO_WORKFLOW_MCP = "off";
 
+// Same reason again: with it on, every ACP child a test spawns writes
+// <cwd>/.kiro/settings/cli.json, and the cwd is this checkout. A test that times
+// out before the restore leaves the key in the developer's own project. Tests of
+// the mechanism delete this and point it at scratch directories.
+process.env.PI_KIRO_WORKSPACE_SETTINGS = "off";
+
 // index.ts reads PI_KIRO_TRANSPORT directly ('src/index.ts:139') to choose
 // makeStreamViaKiro vs makeStreamViaAcp, so a test process launched from a shell
 // that exports PI_KIRO_TRANSPORT=acp -- for example, a GSD auto-mode run started

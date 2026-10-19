@@ -11,7 +11,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +21,7 @@ import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-w
 import { normalizeContext } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ACP_NATIVE_TOOLS } from "../src/acp-agent.js";
+import { agentProfilesDir } from "../src/kiro-bridge.js";
 import { readMeteringDiagnostic } from "../src/metering.js";
 import { _resetAcpSessions, _acpSessionCount } from "../src/acp-session.js";
 import { _getAcpChildRegistry, _resetAcpChildren, _acpRegistryKey, buildInitializeParams, isUnadvertisedClientMethod, makeStreamViaAcp } from "../src/acp-transport.js";
@@ -2591,6 +2592,8 @@ describe("ACP model selection (P2: kiro v2 ignores model on session/prompt)", ()
  */
 async function driveAgentTurn(opts: {
 	onSpawn?: (args: string[], env: NodeJS.ProcessEnv) => void;
+	/** Runs before initialize is answered; may delay the answer. */
+	onInit?: () => Promise<void> | void;
 	onSessionNew?: () => void;
 	onPrompt?: () => void;
 } = {}): Promise<{ events: AssistantMessageEvent[]; child: AcpScriptChild }> {
@@ -2602,6 +2605,7 @@ async function driveAgentTurn(opts: {
 	const sessionId = "sess-agent";
 	void (async () => {
 		const initReq = (await child.awaitLine()) as { id: number };
+		await opts.onInit?.();
 		child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: INIT_RESULT });
 		const sessionReq = (await child.awaitLine()) as { id: number };
 		opts.onSessionNew?.();
@@ -2632,30 +2636,34 @@ describe("ACP agent selection", () => {
 		_resetAcpSessions();
 		_resetAcpChildren();
 		delete process.env[agentEnv];
-		// Keep the default-agent tests from writing settings into the repo the
-		// suite runs in; the settings test below points cwd at a scratch dir.
+		// test-setup.ts already does this; the settings tests below undo it and
+		// point cwd at a scratch dir.
 		process.env[settingsEnv] = "off";
 	});
 
-	it("runs a lean pi-owned agent from a private config dir by default", async () => {
+	const ownProfiles = () =>
+		existsSync(agentProfilesDir())
+			? readdirSync(agentProfilesDir()).filter((f) => f.startsWith(`pi-kiro-bridge-${process.pid}-`))
+			: [];
+
+	it("runs a lean pi-owned agent by default", async () => {
 		let args: string[] = [];
-		let configDir: string | undefined;
+		let env: NodeJS.ProcessEnv = {};
 		let profile: { name?: string; tools?: unknown; allowedTools?: unknown; resources?: unknown; mcpServers?: unknown; description?: string } = {};
 		let mode = 0;
 		await driveAgentTurn({
-			onSpawn: (a, env) => {
+			onSpawn: (a, e) => {
 				args = a;
-				configDir = env.KIRO_AGENT_CONFIG_DIR;
-				const name = a[a.indexOf("--agent") + 1];
-				const path = join(configDir ?? "", `${name}.json`);
+				env = e;
+				const path = join(agentProfilesDir(), `${a[a.indexOf("--agent") + 1]}.json`);
 				profile = JSON.parse(readFileSync(path, "utf8"));
 				mode = statSync(path).mode & 0o777;
 			},
 		});
 		const i = args.indexOf("--agent");
 		expect(i).toBeGreaterThan(-1);
-		expect(configDir).toBeDefined();
-		expect(configDir?.startsWith(tmpdir())).toBe(true);
+		// The name the activation sweep recognizes, so a crash leaves nothing for long.
+		expect(args[i + 1]).toMatch(new RegExp(`^pi-kiro-bridge-${process.pid}-\\d+$`));
 		expect(profile.name).toBe(args[i + 1]);
 		expect(profile.tools).toEqual([...ACP_NATIVE_TOOLS]);
 		expect(profile.allowedTools).toEqual([...ACP_NATIVE_TOOLS]);
@@ -2663,31 +2671,34 @@ describe("ACP agent selection", () => {
 		expect(profile.mcpServers).toEqual({});
 		expect(profile.description).toMatch(/^[\x20-\x7e]+$/);
 		if (process.platform !== "win32") expect(mode).toBe(0o600);
+		// kiro's agent lookup is left alone, so anything kiro itself spawns (a
+		// nested kiro-cli, an MCP server) still sees the user's agents.
+		expect(env.KIRO_AGENT_CONFIG_DIR).toBe(process.env.KIRO_AGENT_CONFIG_DIR);
 	});
 
-	it("removes the private agent dir when the child goes away", async () => {
-		let configDir: string | undefined;
-		await driveAgentTurn({ onSpawn: (_a, env) => (configDir = env.KIRO_AGENT_CONFIG_DIR) });
-		expect(configDir).toBeDefined();
-		expect(existsSync(configDir ?? "")).toBe(false);
+	it("removes the lean profile when the child goes away", async () => {
+		let during: string[] = [];
+		await driveAgentTurn({ onSpawn: () => (during = ownProfiles()) });
+		expect(during).toHaveLength(1);
+		expect(ownProfiles()).toEqual([]);
 	});
 
 	it("PI_KIRO_ACP_AGENT=default runs the user's default agent, as before", async () => {
 		process.env[agentEnv] = "default";
 		let args: string[] = [];
-		let env: NodeJS.ProcessEnv = {};
-		await driveAgentTurn({ onSpawn: (a, e) => ((args = a), (env = e)) });
+		let during: string[] = ["unset"];
+		await driveAgentTurn({ onSpawn: (a) => ((args = a), (during = ownProfiles())) });
 		expect(args).not.toContain("--agent");
-		expect(env.KIRO_AGENT_CONFIG_DIR).toBe(process.env.KIRO_AGENT_CONFIG_DIR);
+		expect(during).toEqual([]);
 	});
 
 	it("PI_KIRO_ACP_AGENT=<name> runs that agent from the user's own config", async () => {
 		process.env[agentEnv] = "my-reviewer";
 		let args: string[] = [];
-		let env: NodeJS.ProcessEnv = {};
-		await driveAgentTurn({ onSpawn: (a, e) => ((args = a), (env = e)) });
+		let during: string[] = ["unset"];
+		await driveAgentTurn({ onSpawn: (a) => ((args = a), (during = ownProfiles())) });
 		expect(args[args.indexOf("--agent") + 1]).toBe("my-reviewer");
-		expect(env.KIRO_AGENT_CONFIG_DIR).toBe(process.env.KIRO_AGENT_CONFIG_DIR);
+		expect(during).toEqual([]);
 	});
 
 	// kiro reads the setting once, at process start: present only at spawn the
@@ -2720,6 +2731,32 @@ describe("ACP agent selection", () => {
 		const events = await collect({ messages: [user("hello")] });
 		expect(events.some((e) => e.type === "error")).toBe(true);
 		expect(existsSync(join(ws, ".kiro"))).toBe(false);
+		expect(ownProfiles()).toEqual([]);
+	});
+
+	// A kiro-cli that never answers initialize (stuck on auth, wedged) must not
+	// keep the user's project without steering for as long as the turn hangs.
+	it("stops holding the setting after PI_KIRO_ACP_SETTINGS_HOLD_MS even if initialize never answers", async () => {
+		delete process.env[settingsEnv];
+		process.env.PI_KIRO_ACP_SETTINGS_HOLD_MS = "20";
+		const ws = mkdtempSync(join(tmpdir(), "pi-kiro-acp-ws-"));
+		vi.spyOn(process, "cwd").mockReturnValue(ws);
+		const settings = join(ws, ".kiro", "settings", "cli.json");
+		let atSpawn = false;
+		let beforeInitAnswer = true;
+		try {
+			await driveAgentTurn({
+				onSpawn: () => (atSpawn = existsSync(settings)),
+				onInit: async () => {
+					await new Promise((r) => setTimeout(r, 80));
+					beforeInitAnswer = existsSync(settings);
+				},
+			});
+		} finally {
+			delete process.env.PI_KIRO_ACP_SETTINGS_HOLD_MS;
+		}
+		expect(atSpawn).toBe(true);
+		expect(beforeInitAnswer).toBe(false);
 	});
 
 	it("leaves workspace settings alone for the user's own agents", async () => {

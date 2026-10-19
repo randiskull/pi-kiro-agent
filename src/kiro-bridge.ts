@@ -16,7 +16,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { HttpBridgeHandle } from "./bridge.js";
 import { BRIDGE_MCP_SERVER_KEY } from "./tool-names.js";
 import { envMs } from "./transport-utils.js";
@@ -132,7 +132,9 @@ export function sweepStaleAgentProfiles(dir: string = agentProfilesDir()): numbe
 export function writeAgentProfile(
 	handle?: HttpBridgeHandle,
 	extraMcpServers?: Record<string, unknown>,
+	options: { tools?: readonly string[]; description?: string } = {},
 ): KiroAgentProfile {
+	const tools = options.tools ? [...options.tools] : ["*"];
 	const dir = agentProfilesDir();
 	mkdirSync(dir, { recursive: true });
 	profileCounter += 1;
@@ -143,13 +145,14 @@ export function writeAgentProfile(
 		// kiro silently fall back to the default agent (no bridge, no error).
 		name,
 		description:
+			options.description ??
 			"Throwaway pi-kiro-agent delegation profile (auto-generated per turn; safe to delete). Exposes the calling Pi session's tools over a loopback MCP bridge and/or the project's gsd-workflow MCP server.",
 		mcpServers: {
 			...(extraMcpServers ?? {}),
 			...(handle ? { [BRIDGE_MCP_SERVER_KEY]: { type: "http", url: handle.urlWithToken } } : {}),
 		},
-		tools: ["*"],
-		allowedTools: ["*"],
+		tools,
+		allowedTools: tools,
 		// Declared intent, not a working opt-out on 2.32.0 -- see the doc
 		// comment. `disableInheritedResources()` is what actually saves the ~30k.
 		resources: [] as string[],
@@ -182,8 +185,11 @@ interface RestoreRecord {
 	written?: string;
 }
 
-/** Settings dirs this process changed and has not restored yet: their sentinels are live. */
-const activeDirs = new Set<string>();
+/**
+ * Settings dirs this process changed and has not restored yet (their sentinels
+ * are live), with how many holders share each change.
+ */
+const activeDirs = new Map<string, { holders: number; record: RestoreRecord }>();
 
 /**
  * Age past which a sentinel (or a leftover agent profile) is stale even if its
@@ -352,6 +358,12 @@ function reapStaleRestore(dir: string): void {
  * than the throwaway agent profile, so it is deliberately conservative:
  *
  *  - a user who has ANY explicit value for the key keeps it, even `false`;
+ *  - concurrent holders in one dir share one change, and the last release
+ *    restores it, so our own key is never mistaken for the user's;
+ *  - the home directory is skipped: <home>/.kiro/settings/cli.json is kiro's
+ *    GLOBAL settings file;
+ *  - a filesystem error returns undefined with a warning rather than failing
+ *    the turn;
  *  - a settings file that does not parse is never rewritten;
  *  - the original bytes (or the file's absence) are restored in the caller's
  *    `finally`, and recovered from a sentinel if that never runs;
@@ -361,36 +373,67 @@ function reapStaleRestore(dir: string): void {
  */
 export function disableInheritedResources(cwd: string): WorkspaceSettingsHandle | undefined {
 	if (process.env.PI_KIRO_WORKSPACE_SETTINGS === "off") return undefined;
+	// <home>/.kiro/settings/cli.json is kiro's GLOBAL settings file.
+	if (resolve(cwd) === resolve(homedir())) return undefined;
 	const path = workspaceSettingsPath(cwd);
 	const dir = dirname(path);
-	if (existsSync(dir)) reapStaleRestore(dir);
 
-	const original = readIfPresent(path);
-	let parsed: Record<string, unknown> = {};
-	if (original !== undefined) {
-		try {
-			parsed = JSON.parse(original) as Record<string, unknown>;
-		} catch {
-			return undefined;
-		}
-		if (INHERIT_KEY in parsed) return undefined;
+	const held = activeDirs.get(dir);
+	if (held) {
+		held.holders += 1;
+		return holdHandle(path, dir);
 	}
 
-	const written = `${JSON.stringify({ ...parsed, [INHERIT_KEY]: true }, null, "\t")}\n`;
-	const record: RestoreRecord = { pid: process.pid, ts: Date.now(), original: original ?? null, written };
-	mkdirSync(dir, { recursive: true });
-	writeSentinel(dir, record);
-	writeFileSync(path, written, "utf8");
-	activeDirs.add(dir);
+	try {
+		if (existsSync(dir)) reapStaleRestore(dir);
 
+		const original = readIfPresent(path);
+		let parsed: Record<string, unknown> = {};
+		if (original !== undefined) {
+			try {
+				parsed = JSON.parse(original) as Record<string, unknown>;
+			} catch {
+				return undefined;
+			}
+			if (INHERIT_KEY in parsed) return undefined;
+		}
+
+		const written = `${JSON.stringify({ ...parsed, [INHERIT_KEY]: true }, null, "\t")}\n`;
+		const record: RestoreRecord = { pid: process.pid, ts: Date.now(), original: original ?? null, written };
+		mkdirSync(dir, { recursive: true });
+		writeSentinel(dir, record);
+		writeFileSync(path, written, "utf8");
+		activeDirs.set(dir, { holders: 1, record });
+	} catch (error) {
+		// Losing the saving must not cost the turn: a read-only checkout, or a
+		// `.kiro` that is a file, still delegates, just with inheritance on.
+		try {
+			rmSync(join(dir, RESTORE_SENTINEL), { force: true });
+		} catch {
+			// the directory never came to exist
+		}
+		console.error(
+			`[pi-kiro] could not write ${path} (${error instanceof Error ? error.message : String(error)}); delegated turns here run with kiro's inherited steering and skills. Set PI_KIRO_WORKSPACE_SETTINGS=off to stop trying.`,
+		);
+		return undefined;
+	}
+	return holdHandle(path, dir);
+}
+
+/** One holder's share of a change; the last release restores the file. */
+function holdHandle(path: string, dir: string): WorkspaceSettingsHandle {
 	let done = false;
 	return {
 		path,
 		restore: () => {
 			if (done) return;
 			done = true;
+			const held = activeDirs.get(dir);
+			if (!held) return;
+			held.holders -= 1;
+			if (held.holders > 0) return;
 			activeDirs.delete(dir);
-			finishRestore(dir, record);
+			finishRestore(dir, held.record);
 		},
 	};
 }

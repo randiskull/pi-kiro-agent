@@ -14,7 +14,7 @@
  * The two turns are one test, not two: turn 2 asserts session REUSE, which only
  * means anything if turn 1 ran in the same process moments earlier.
  */
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { _acpRegistryKey, _getAcpChildRegistry, _resetAcpChildren, makeStreamViaAcp } from "../src/acp-transport.js";
 import { readMeteringDiagnostic } from "../src/metering.js";
 import { assistant, ctx, drainTurn, LIVE, LIVE_MODEL, LIVE_TIMEOUT_MS, user, withRealHome } from "./live-support.js";
@@ -23,6 +23,16 @@ const streamViaAcp = makeStreamViaAcp({ binaryPath: "kiro-cli" });
 
 describe.skipIf(!LIVE)("live kiro ACP transport", () => {
 	withRealHome();
+	// test-setup.ts turns workspace settings off suite-wide; this file measures
+	// the real default, which has them on.
+	const savedWorkspaceSettings = process.env.PI_KIRO_WORKSPACE_SETTINGS;
+	beforeAll(() => {
+		delete process.env.PI_KIRO_WORKSPACE_SETTINGS;
+	});
+	afterAll(() => {
+		if (savedWorkspaceSettings === undefined) delete process.env.PI_KIRO_WORKSPACE_SETTINGS;
+		else process.env.PI_KIRO_WORKSPACE_SETTINGS = savedWorkspaceSettings;
+	});
 	// Kills the persistent child; without it the worker hangs on its idle timer.
 	afterAll(() => {
 		_resetAcpChildren();

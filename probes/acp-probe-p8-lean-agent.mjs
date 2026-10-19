@@ -21,8 +21,9 @@
  *                  values and the size of what kiro-cli actually sends.
  *
  * Usage: node probes/acp-probe-p8-lean-agent.mjs [--model claude-opus-5.5] [--only a,b] [--cwd dir]
- *   --cwd runs every case in that directory instead of a fresh empty one; the
- *   cases write and remove <dir>/.kiro/settings/cli.json, so use a scratch checkout.
+ *   --cwd runs every case in that directory instead of a fresh empty one. The
+ *   cases add the inheritance key to <dir>/.kiro/settings/cli.json and put the
+ *   file back as they found it (absent, or its original bytes) after each case.
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -68,12 +69,23 @@ function writeAgent(dir, name, tools) {
 function settingsPath(cwd) {
 	return join(cwd, ".kiro", "settings", "cli.json");
 }
+/** The settings file each cwd held before the probe touched it (null: absent). */
+const originalSettings = new Map();
 function setInheritDisabled(cwd, on) {
 	const p = settingsPath(cwd);
+	if (!originalSettings.has(cwd)) originalSettings.set(cwd, existsSync(p) ? readFileSync(p, "utf8") : null);
+	const original = originalSettings.get(cwd);
 	if (on) {
+		let base = {};
+		try {
+			base = original === null ? {} : JSON.parse(original);
+		} catch {
+			throw new Error(`${p} is not JSON; refusing to rewrite it`);
+		}
 		mkdirSync(join(cwd, ".kiro", "settings"), { recursive: true });
-		writeFileSync(p, `${JSON.stringify({ "chat.disableInheritingDefaultResources": true })}\n`);
-	} else rmSync(p, { force: true });
+		writeFileSync(p, `${JSON.stringify({ ...base, "chat.disableInheritingDefaultResources": true })}\n`);
+	} else if (original === null) rmSync(p, { force: true });
+	else writeFileSync(p, original);
 }
 
 async function runCase({ agent, env = {}, mcp = false, prompt, settingAtSpawn = true, settingAtNew = true, settingAtPrompt = true, sessions = 1 }) {
@@ -154,7 +166,7 @@ async function runCase({ agent, env = {}, mcp = false, prompt, settingAtSpawn = 
 		}
 		return {
 			context,
-			approxTokens: context === undefined ? undefined : Math.round(context * 10_000),
+			approxTokensIf1MWindow: context === undefined ? undefined : Math.round(context * 10_000),
 			credits,
 			toolCalls,
 			serversReady,

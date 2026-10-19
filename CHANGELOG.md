@@ -62,18 +62,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uses. Measured on kiro-cli 2.32.0, Opus 5.5, a one-line prompt: ~101,600 tokens and 1.25 credits a
   turn on a developer machine's default agent, ~10,500 tokens and 0.046 credits on the lean agent.
   The agent carries kiro's five native coding tools (`fs_read`, `fs_write`, `execute_bash`, `grep`,
-  `glob`); its profile lives in a private temp directory passed as `KIRO_AGENT_CONFIG_DIR`, never in
-  `~/.kiro/agents`, and is removed with the child. The pi bridge and the GSD workflow server still
-  mount through `session/new`, which kiro honours for any agent. Inherited resources are disabled for
-  the child through the same workspace setting the chat transport uses, held only from just before
-  spawn until `initialize` answers, because kiro reads it once at startup: written only at
-  `session/new` it has no effect (20.7% of Haiku 4.5's window against 3.6%). `PI_KIRO_ACP_AGENT=default`
+  `glob`). Its profile comes from the chat transport's profile writer, under the same pid-tagged
+  name, so it carries no token, is removed with the child, and is swept at the next activation if
+  pi exits without tearing its children down. The pi bridge and the GSD workflow server still mount
+  through `session/new`, which kiro honours for any agent. Inherited resources are disabled for the
+  child through the same workspace setting the chat transport uses, held only from just before spawn
+  until `initialize` answers (at most `PI_KIRO_ACP_SETTINGS_HOLD_MS`, 30 s), because kiro reads it
+  once at startup: written only at `session/new` it has no effect (20.7% of Haiku 4.5's window
+  against 3.6%). `PI_KIRO_ACP_AGENT=default`
   restores the old behaviour and `PI_KIRO_ACP_AGENT=<name>` runs one of your own agents. Probes:
   `probes/acp-probe-p7-preamble.mjs` (cost per agent configuration) and
   `probes/acp-probe-p8-lean-agent.mjs` (bridge under the lean agent, when the setting is read).
   Tests: `test/acp-transport.test.ts` ("ACP agent selection"), and live,
   `test/acp-transport-live.test.ts` (context under 8% of the window) and `test/bridge-live.test.ts`
   (a bridged tool called from a delegated ACP turn).
+
+- **The workspace setting that disables inherited resources is shared, and fails open.** Holders in
+  one directory now share one change, restored by the last to release it: before, a second turn
+  starting while the first held the key read it as the user's own value, and the first restored the
+  file under it. It is never written when the cwd is the home directory, where
+  `.kiro/settings/cli.json` is kiro's global settings, and a directory that cannot be written costs
+  a warning instead of failing the turn. The test suite now runs with `PI_KIRO_WORKSPACE_SETTINGS=off`
+  so no test writes into the checkout it runs in. Tests: `test/kiro-bridge.test.ts`.
 
 - **The status line shows context usage.** After the credits it now reads `ctx N.N%`, the share of
   the model's context window kiro reported for the last turn that carried one. pi-kiro already

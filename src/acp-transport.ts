@@ -213,6 +213,17 @@ function turnTimeoutMs(): number {
 /** Startup timeout: wait up to 30s for all MCP servers to initialize after
  * session/new. Overridable via PI_KIRO_MCP_STARTUP_TIMEOUT_MS (used by tests to
  * exercise the timeout path without a 30s wall). */
+/**
+ * Longest the workspace setting that disables inherited resources stays on disk
+ * while a child starts. kiro answers initialize in about a second; a child that
+ * has not by now is stuck, and the user's own kiro sessions in that project
+ * should not run without steering for as long as it stays stuck.
+ * Override: PI_KIRO_ACP_SETTINGS_HOLD_MS.
+ */
+function settingsHoldMs(): number {
+	return envMs("PI_KIRO_ACP_SETTINGS_HOLD_MS", 30_000);
+}
+
 function mcpStartupTimeoutMs(): number {
 	const raw = Number.parseInt(process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS ?? "", 10);
 	return Number.isFinite(raw) && raw > 0 ? raw : 30_000;
@@ -456,12 +467,12 @@ function teardownChild(entry: AcpChild, reason: string, options: { kill: boolean
 		} catch { /* already gone */ }
 	}
 	unregisterChildForCleanup(entry.child);
-	entry.agent.cleanup();
 	setChildKeepalive(entry, false);
 	for (const [, resolve] of entry.pending) {
 		resolve({ jsonrpc: "2.0", error: { code: -1, message: `acp child terminated: ${reason}` } });
 	}
 	entry.pending.clear();
+	entry.agent.cleanup();
 }
 
 /** Kill a live child (SIGTERM) and tear it down. Idempotent via teardownChild. */
@@ -893,20 +904,27 @@ async function spawnAcpChild(
 	warnIfUlimitTooLow();
 	const agent = prepareAcpAgent();
 	// kiro reads workspace settings once, at startup, so the project's settings
-	// file is ours from just before spawn until initialize has answered.
+	// file is ours from just before spawn until initialize has answered, or for
+	// settingsHoldMs() if it never does.
 	const settings = agent.disableInheritance ? disableInheritedResources(cwd) : undefined;
+	const settingsTimer = settings ? setTimeout(() => settings.restore(), settingsHoldMs()) : undefined;
+	settingsTimer?.unref?.();
+	const releaseSettings = () => {
+		if (settingsTimer) clearTimeout(settingsTimer);
+		settings?.restore();
+	};
 	const args = ["acp", "--trust-all-tools", "--agent-engine", ACP_ENGINE, ...agent.args];
 	const detached = process.platform !== "win32";
 	let child: ChildProcess;
 	try {
 		child = spawn(binaryPath ?? "kiro-cli", args, {
 			cwd,
-			env: agent.env,
+			env: process.env,
 			stdio: ["pipe", "pipe", "pipe"],
 			detached,
 		});
 	} catch (error) {
-		settings?.restore();
+		releaseSettings();
 		agent.cleanup();
 		throw error;
 	}
@@ -965,7 +983,7 @@ async function spawnAcpChild(
 	try {
 		initResp = await request(entry, "initialize", buildInitializeParams());
 	} finally {
-		settings?.restore();
+		releaseSettings();
 	}
 	if (initResp.error) {
 		registry.delete(key);

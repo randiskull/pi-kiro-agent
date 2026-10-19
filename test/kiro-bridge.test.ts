@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { HttpBridgeHandle } from "../src/bridge.js";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	agentProfilesDir,
 	bridgeEnabled,
@@ -100,6 +100,16 @@ describe("writeAgentProfile", () => {
 		profile.remove();
 	});
 
+	it("takes a narrower tool list and a description, for the ACP lean agent", () => {
+		const profile = writeAgentProfile(undefined, undefined, { tools: ["fs_read", "grep"], description: "lean" });
+		const parsed = JSON.parse(readFileSync(profile.path, "utf8"));
+		expect(parsed.tools).toEqual(["fs_read", "grep"]);
+		expect(parsed.allowedTools).toEqual(["fs_read", "grep"]);
+		expect(parsed.description).toBe("lean");
+		expect(parsed.mcpServers).toEqual({});
+		profile.remove();
+	});
+
 	it("issues unique names per call", () => {
 		const first = writeAgentProfile(HANDLE);
 		const second = writeAgentProfile(HANDLE);
@@ -189,6 +199,49 @@ describe("disableInheritedResources", () => {
 	// because it lands in the user's own project -- that we put it back.
 	const mkws = () => mkdtempSync(join(tmpdir(), "pi-kiro-ws-"));
 	const settings = (ws: string) => join(ws, ".kiro", "settings", "cli.json");
+
+	// test-setup.ts turns the mechanism off for the whole suite.
+	beforeEach(() => {
+		delete process.env.PI_KIRO_WORKSPACE_SETTINGS;
+	});
+
+	// ACP children of one pi (a parent and the subagents it fans out) can start
+	// together in one cwd. The first holder's key must not read as the user's
+	// own value to the rest, and must stay until the last of them is done.
+	it("shares one hold between concurrent holders, and restores when the last releases", () => {
+		const ws = mkws();
+		const first = disableInheritedResources(ws);
+		const second = disableInheritedResources(ws);
+		expect(first).toBeDefined();
+		expect(second).toBeDefined();
+		first?.restore();
+		expect(JSON.parse(readFileSync(settings(ws), "utf8"))).toEqual({ "chat.disableInheritingDefaultResources": true });
+		first?.restore(); // idempotent: does not release the second holder's share
+		expect(existsSync(settings(ws))).toBe(true);
+		second?.restore();
+		expect(existsSync(join(ws, ".kiro"))).toBe(false);
+		rmSync(ws, { recursive: true, force: true });
+	});
+
+	// <home>/.kiro/settings/cli.json is kiro's GLOBAL settings file, not a workspace's.
+	it("never writes kiro's global settings when the cwd is the home directory", () => {
+		const before = existsSync(settings(homedir())) ? readFileSync(settings(homedir()), "utf8") : undefined;
+		expect(disableInheritedResources(homedir())).toBeUndefined();
+		const after = existsSync(settings(homedir())) ? readFileSync(settings(homedir()), "utf8") : undefined;
+		expect(after).toBe(before);
+	});
+
+	// A read-only checkout, or a `.kiro` that is a file: lose the saving, keep the turn.
+	it("fails open when the settings file cannot be written", () => {
+		const ws = mkws();
+		writeFileSync(join(ws, ".kiro"), "not a directory", "utf8");
+		const warn = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		expect(() => disableInheritedResources(ws)).not.toThrow();
+		expect(disableInheritedResources(ws)).toBeUndefined();
+		expect(readFileSync(join(ws, ".kiro"), "utf8")).toBe("not a directory");
+		expect(warn).toHaveBeenCalled();
+		rmSync(ws, { recursive: true, force: true });
+	});
 
 	it("sets the key at workspace scope and leaves a clean project clean", () => {
 		const ws = mkws();
@@ -308,10 +361,12 @@ describe("disableInheritedResources", () => {
 		const first = disableInheritedResources(ws);
 		expect(first).toBeDefined();
 		const second = disableInheritedResources(ws);
-		// The key is already set (by the first), so the second owns nothing...
-		expect(second).toBeUndefined();
+		// The key is ours, not the user's, so the second shares the change...
+		expect(second).toBeDefined();
 		// ...and the first's change and sentinel survived the second's reap pass.
 		expect(JSON.parse(readFileSync(path, "utf8"))["chat.disableInheritingDefaultResources"]).toBe(true);
+		expect(existsSync(join(dirname(path), ".pi-kiro-settings-restore.json"))).toBe(true);
+		second?.restore();
 		expect(existsSync(join(dirname(path), ".pi-kiro-settings-restore.json"))).toBe(true);
 		first?.restore();
 		expect(existsSync(join(ws, ".kiro"))).toBe(false);

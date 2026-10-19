@@ -296,6 +296,7 @@ function expectCleanTextDeltas(texts: string[]): void {
 
 describe("route conformance: an answer is painted exactly once", () => {
 	let savedFormat: string | undefined;
+	let savedWorkspaceSettings: string | undefined;
 	beforeEach(() => {
 		spawnMock.mockReset();
 		execFileMock.mockReset();
@@ -306,12 +307,14 @@ describe("route conformance: an answer is painted exactly once", () => {
 		_resetAcpChildren();
 		savedFormat = process.env.PI_KIRO_CHAT_FORMAT;
 		// The retry case mounts a bridge profile; keep it out of this checkout's .kiro/.
+		savedWorkspaceSettings = process.env.PI_KIRO_WORKSPACE_SETTINGS;
 		process.env.PI_KIRO_WORKSPACE_SETTINGS = "off";
 	});
 	afterEach(() => {
 		if (savedFormat === undefined) delete process.env.PI_KIRO_CHAT_FORMAT;
 		else process.env.PI_KIRO_CHAT_FORMAT = savedFormat;
-		delete process.env.PI_KIRO_WORKSPACE_SETTINGS;
+		if (savedWorkspaceSettings === undefined) delete process.env.PI_KIRO_WORKSPACE_SETTINGS;
+		else process.env.PI_KIRO_WORKSPACE_SETTINGS = savedWorkspaceSettings;
 	});
 
 	it("covers every route, so a new one cannot pass by omission", () => {
