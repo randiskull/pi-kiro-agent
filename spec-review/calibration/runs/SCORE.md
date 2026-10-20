@@ -333,7 +333,7 @@ strings, and it was deliberately not applied before scoring.
 
 **What the runner itself established.** Three isolation holes the hand-run passes
 had are closed and tested, and one of them was live: the Rubric 1 pair's sessions
-could reach `@builder-mcp/WorkspaceSearch`, and the first attempt at run A
+could reach an MCP workspace-search tool, and the first attempt at run A
 reproduced that and **was killed with nothing kept**. `--trust-tools` does not
 close it (smoke-tested: the MCP tool still runs); a per-session agent with
 `mcpServers: {}` does. The clone now has `origin` removed, so it cannot fetch the

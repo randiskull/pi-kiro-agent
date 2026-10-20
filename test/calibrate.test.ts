@@ -303,9 +303,8 @@ describe("verdict verification", () => {
 
 describe("the agent a kiro-cli session runs under", () => {
 	// The defect this exists for was live: the first attempt at this pass ran
-	// under kiro-cli's default agent, which on a machine with builder-mcp
-	// installed carries @builder-mcp/WorkspaceSearch, and that tool ran inside a
-	// reviewer session. A session that can search outside its clone is not a
+	// under kiro-cli's default agent, which on this machine carries an MCP
+	// workspace-search tool, and that tool ran inside a reviewer session. A session that can search outside its clone is not a
 	// blind reviewer, so the pass was voided.
 	it("declares no MCP server and does not read mcp.json", () => {
 		const agent = cal.reviewerAgent();

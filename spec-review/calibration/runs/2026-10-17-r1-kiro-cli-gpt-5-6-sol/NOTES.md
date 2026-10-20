@@ -26,7 +26,7 @@ run 1 missed it, citing the transport item alone.
 ## Deviations specific to this run
 
 - **MCP tools were available to these sessions**, which the README protocol does
-  not grant: `@builder-mcp/WorkspaceSearch` appears in the logs. The audit below
+  not grant: an MCP workspace-search tool appears in the logs. The audit below
   found no key content reached any session, but the reach was wider than
   intended and is disclosed rather than hidden. The next run should pass an
   empty MCP configuration.

@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session's paths, and writes `RUN.json` with blobs it computes rather than blobs someone typed.
   Writing it down closed three holes in the hand protocol: a clone with every ref deleted still had
   its `origin`, which is the repository that holds the key; the sessions of a pass shared one working
-  copy; and the harness brought its own tools, which is how `@builder-mcp/WorkspaceSearch` came to
+  copy; and the harness brought its own tools, which is how an MCP workspace-search tool came to
   run inside a reviewer session on the first attempt at the Rubric 2 pass (that attempt was killed
   and nothing from it kept). Each `kiro-cli` session now runs under a workspace agent that declares
   no MCP server, and each `pi` session with this machine's extensions, skills, prompt templates and
@@ -205,6 +205,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worktree whose HEAD and `core.bare` must not move; both fail with the filter removed).
 
 ### Fixed
+
+- **Internal tool names had spread into the published tree.** Seven files across the spec-review
+  tooling and its run notes named this machine's default kiro-cli agent and an MCP package scope by
+  their internal identifiers, while the rubric's own reviewer rule is to name only publicly
+  available harnesses and models. An internal agent name is not a secret, so `scan:secrets` and
+  gitleaks both pass on one; the names are now described by what the tool does instead. Test:
+  `test/internal-identifiers.test.ts`, which scans every tracked file for the three shapes and
+  builds its patterns from fragments so the guard has no exemption for its own path and scans
+  itself; it also asserts the file list is non-empty and that each pattern still matches a
+  known-bad sample, so neither the loop nor the patterns can pass vacuously.
 
 - **A calibration reviewer was told to skip lint and then asked to work through lint's notes.** The
   prompt `scripts/calibrate.mjs` built said "following its Review procedure, skipping step 1 (lint)"

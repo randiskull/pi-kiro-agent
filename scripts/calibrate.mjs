@@ -232,9 +232,9 @@ export function verifyVerdict({ text, specBlob, reviewerLine }) {
 
 /**
  * The kiro-cli agent a reviewer session runs under. It exists for one reason:
- * kiro-cli's default agent on this machine is `amzn-builder`, which carries MCP
- * servers, and a reviewer session with `@builder-mcp/WorkspaceSearch` can search
- * outside the clone it was given. The first attempt at this pass ran with
+ * the machine's default kiro-cli agent carries MCP servers, and a reviewer
+ * session with an MCP workspace-search tool can search outside the clone it was
+ * given. The first attempt at this pass ran with
  * `--trust-all-tools` and the default agent, and that tool ran inside a session;
  * the pass was voided and re-run under this agent, which declares no MCP server
  * and does not read `mcp.json`.

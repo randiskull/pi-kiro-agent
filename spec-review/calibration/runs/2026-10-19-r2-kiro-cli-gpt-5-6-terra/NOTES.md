@@ -77,7 +77,7 @@ runner is documented in `../README.md` ("The runner") and tested in
 
 ## Deviation from the Rubric 1 runs: the reviewer agent
 
-The Rubric 1 pair's sessions had `@builder-mcp/WorkspaceSearch` available, which
+The Rubric 1 pair's sessions had an MCP workspace-search tool available, which
 the protocol does not grant, and that run's `NOTES.md` says the next run should
 pass an empty MCP configuration. This run does.
 

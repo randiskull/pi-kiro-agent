@@ -237,9 +237,9 @@ Writing it down closed two gaps in the protocol above:
   each copy.
 - **The harness brings its own tools.** A clone a reviewer cannot read the key
   from is not isolation if the session can search somewhere else. `kiro-cli`'s
-  default agent on the maintainer's machine is `amzn-builder`, which carries MCP
-  servers, and the first attempt at the Rubric 2 pass had
-  `@builder-mcp/WorkspaceSearch` run inside a reviewer session. That attempt was
+  default agent on the maintainer's machine carries MCP servers, and the first
+  attempt at the Rubric 2 pass had an MCP workspace-search tool run inside a
+  reviewer session. That attempt was
   killed and the pass re-run; nothing from it was read beyond the tool log, and
   no verdict it produced was kept or scored. The runner now writes a workspace
   agent declaring no MCP server into each `kiro-cli` session's own copy and names
