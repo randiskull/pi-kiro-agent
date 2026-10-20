@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Implementation specs get a rubric and a linter before anyone builds them.**
-  `spec-review/rubric.md` (now Rubric 3) defines five pass/fail gates and six separately scored
+  `spec-review/rubric.md` (now Rubric 4) defines five pass/fail gates and six separately scored
   dimensions for a spec in `docs/specs/`, and `scripts/spec-lint.mjs` checks the part a script can:
   structure, defect or feature typing, attribution, and that cited paths, commits, `§` sections and
   npm scripts exist, with near-miss detection for misspelled symbols. An eight-case calibration set
@@ -119,6 +119,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `node spec-review/calibration/score.mjs` over both directories.
   Reasoning: `spec-review/calibration/runs/SCORE.md` ("Rubric 3's first pair") and each run's
   `NOTES.md`.
+
+- **Rubric 4: the two findings Rubric 3's pair left behind, neither of them the runner's.** No
+  answer-key label moved, in any case, on any gate or dimension. **G3** gains two entries in its
+  Fails list, with a paragraph beneath explaining both: a reason that offers two or more alternative
+  mechanisms for one check's failure, and a control whose own setup supplies the condition its
+  failure is attributed to. c2's G3 had been the set's second both-miss after the feature column,
+  and the cause was the gate's reach rather than the label, because its negative control does state
+  a reason and the reason is in the right area; what it does is offer two of them, and name a test
+  that builds the wiring whose absence before the change is supposed to make it fail. Neither new
+  entry reaches the six cases this key passes on G3, where the stated reason is a single property of
+  the code at the ref or a single mechanism chain in the unchanged reader. **The dimensions and the
+  outcome table gain a read-back rule:** a dimension's score is never higher than the lowest anchor
+  row its own findings describe, the outcome is never softer than the findings, and the **Review
+  procedure** splits its last step so that reading the findings back against both tables, and
+  correcting the numbers where they disagree, is a step of its own. That answers the shape this set
+  has now seen three times, a finding that describes anchor N scored at N+1: both runs of Rubric 3's
+  pair committed it twice, on c1's D3 and c6's D1, writing the harsher row out in prose and then
+  recording the number above it. Both cases gain a reason in `expected.json` saying so.
+  `shipBar.heldOut` is **narrowed** to a model whose output moved the rubric's text, and narrowing
+  is not reopening: Rubric 4's two fixes answer `claude-opus-4.7` and
+  `us.anthropic.claude-opus-4-6-v1` directly, so both stay spent under the narrow rule as well as
+  the broad one and may be re-run only as a non-gating probe. All nine run directories are stale,
+  Rubric 4 has no run, ten models are spent and the next gating pair needs an eleventh and a
+  twelfth; criterion 12 of `docs/specs/spec-review-bus.md` stays open. Test:
+  `test/rubric-procedure.test.ts`, which holds the three places that reference the Review procedure
+  by number against the procedure itself, since Rubric 4 is the first edit to renumber it: the
+  harness prompt's claim about step 3, `shipBar.blind`'s verbatim quote of step 3, and the numbering
+  being contiguous from 1. Each of its seven assertions is killed by a mutation, four of them by one
+  assertion each. The two prose rules have no unit test and cannot have one: their test is a
+  reviewer pass, which is why they ship with the probe named rather than a check implied.
+  Reasoning: `spec-review/calibration/README.md` ("Rubric 4") and
+  `spec-review/calibration/runs/SCORE.md`.
 
 ### Changed
 

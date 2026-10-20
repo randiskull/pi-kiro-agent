@@ -575,3 +575,40 @@ not the rubric's wording, is what needs the argument.
 Criterion 12 of `docs/specs/spec-review-bus.md` stays `Open`. Both run
 directories carry `countsTowardsShipBar: false`, set by
 `calibrate.mjs finalize`, with the reason recorded there.
+
+## Rubric 4, written after this pair and against it
+
+The two misses above that were not the runner's are now answered, and the pair
+that found them does not count towards the result.
+
+**c2's G3.** Rubric 3's Fails list named a reason that is not the defect, a test
+described only as passing, and a run with no stated expectation for the
+unchanged side. c2's negative control is none of those: it states a reason, in
+the right area. What it does is offer two of them, and name a check whose own
+setup supplies what the pre-change failure is attributed to. Both are now Fails
+items, with a paragraph beneath explaining them, and both were checked against
+the six cases this key passes on G3 before the wording went in. The label did
+not move.
+
+**The anchor-row off-by-one.** A dimension's score is never higher than the
+lowest anchor row its own findings describe; the outcome is never softer than
+the findings, and the `reject` row is tested rather than left unasked; and the
+old step 7 of the Review procedure splits so that reading the findings back
+against both tables, and correcting step 6's numbers, is a step of its own.
+c1's `D3` and c6's `D1` gain reasons in `expected.json` recording the
+construction and all three sightings. Neither label moved.
+
+**What this does to these two runs.** Both go stale again, which is the second
+time, and `score.mjs` will keep printing `blobs: stale` for each with every case
+line unchanged. That is rule 5 doing its job twice over: the verdicts are the
+same files and the measurement they recorded still stands as taken, against a
+rubric that has moved on.
+
+**And what it does not do.** `shipBar.heldOut` is narrowed to a model whose
+output moved the rubric's text, which would have returned both of these models
+to the pool, since Rubric 3 was written before they ran. Rubric 4 spends them
+again on the narrow rule too, because its two fixes answer their misses
+directly. They may be re-run as a non-gating probe under
+`shipBar.capabilityMatched`: the tightest test of these two fixes available, and
+still not a pass. `shipBar.spent` stays at ten and Rubric 4's gating pair needs
+an eleventh and a twelfth model.

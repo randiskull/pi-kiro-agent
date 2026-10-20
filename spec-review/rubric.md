@@ -1,6 +1,6 @@
 # Spec review rubric
 
-Rubric: 3
+Rubric: 4
 
 This is the bar an implementation spec in `docs/specs/` must clear before anyone
 builds it. It is written for a reviewer that is not the author: a teammate
@@ -125,7 +125,17 @@ that shows the capability is absent today.
 
 - **Fails:** tests that are only described as passing; a run of the check on
   both sides of the change with no stated expectation for the unchanged side; a
-  negative control whose stated reason for failing is not the defect.
+  negative control whose stated reason for failing is not the defect; a reason
+  that offers two or more alternative mechanisms for one check's failure; a
+  control whose own setup supplies the condition its failure is attributed to.
+
+The last two are ways a negative control can read as complete and show nothing.
+A reason that names one mechanism **or** another has not settled which, and an
+unsettled mechanism is not a stated one: the gate asks why the check fails, and
+two candidates answer a different question. And if the check's own setup builds
+the thing whose absence before the change is supposed to make it fail, the run
+exercises the setup rather than the code as it stands, because the pre-change
+state the control exists to demonstrate was cancelled before the check ran.
 
 Check: lint (a `- **Negative control` bullet exists in `## Verification plan`),
 then reviewer (it is a real one).
@@ -184,6 +194,15 @@ Check: reviewer.
 Scored 1 to 4, **reported separately and never summed**. A sum hides which
 dimension moved. Any dimension at 2 or below makes the outcome `revise`, and
 needs at least one finding tagged with it.
+
+**A dimension's score is never higher than the lowest row its own findings
+describe.** The tables are read downward, so a finding tagged `D3` that states
+what row 2 states puts D3 at 2 or below, however well the rest of that section
+reads. A score one row above the findings is the commonest way a dimension is
+read wrong: the defect is found, written up accurately, and then given the next
+number up, which leaves one verdict asserting a row and the row above it at
+once. Where the two disagree the number is the half that is wrong, because the
+finding is the part with the spec's own text attached to it.
 
 ### D1 Diagnosis (defect) / Grounding (feature)
 
@@ -269,6 +288,14 @@ decision usually also fails a gate or scores a 2. **`reject` outranks
 gates it failed. `pass` requires that neither of the others applies. A verdict
 is not invalid for answering `reject` on a spec with a failed gate.
 
+**The outcome is never softer than the findings either.** Before writing
+`revise`, test the `reject` row against the findings already written, not only
+the `revise` row: `revise` fits almost every spec that is not ready and is
+reached first, so the `reject` row tends to go unasked. A finding saying the
+spec overturns, duplicates or contradicts an accepted spec or a documented
+decision without proposing to supersede it is the `reject` condition written out
+in words, and the outcome follows the finding.
+
 Re-review happens on the author's next commit to the spec: that changes the
 spec's blob, which makes the old verdict stale.
 
@@ -294,7 +321,7 @@ exact spec text it judged:
 
 ```
 spec-review verdict for docs/specs/<slug>.md blob <40-hex git blob sha>
-Rubric: 3
+Rubric: 4
 Reviewer: <harness>, <model>
 Outcome: pass
 
@@ -369,8 +396,13 @@ Outcome: pass
    reads well.
 6. Decide each gate, then score each dimension against its anchors. Score what
    is written, not what the author probably meant.
-7. Write findings, then the outcome by the table. Do not soften the outcome to
-   match the findings' tone, or the findings to match the outcome.
+7. Write findings.
+8. **Read the findings back against the tables, and correct step 6's numbers
+   where the two disagree.** For each dimension, name the lowest anchor row any
+   of its findings describes: the score is not above that row. Then take the
+   outcome from the table, testing the `reject` row against the findings and not
+   only the `revise` row. Do not soften the outcome to match the findings' tone,
+   or the findings to match the outcome.
 
 ## Changing this rubric
 

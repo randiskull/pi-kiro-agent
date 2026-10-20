@@ -41,6 +41,19 @@ bar below. The set stays as a regression suite: every rubric edit re-runs it.
 > `countsTowardsShipBar: false`**, and `shipBar.spent` is ten, so the next pair
 > needs an eleventh and a twelfth model. See "Rubric 3's first pair" in
 > `runs/SCORE.md`.
+>
+> **Rubric 4 is the two findings that pair left behind, and nothing else.** c2's
+> G3, missed by both runs, and the anchor-row off-by-one, which both runs
+> committed twice. No answer-key label moved. G3's Fails list reaches a reason
+> given as two alternatives and a control whose own setup supplies the condition
+> its failure is attributed to; the dimension tables and the outcome table gain a
+> read-back rule, and the Review procedure gains the step that applies it. All
+> nine run directories are stale by blob and Rubric 4 has no run.
+> `shipBar.heldOut` is narrowed to a model whose output moved the rubric's text,
+> which does not reopen the pool: Rubric 4 answers `claude-opus-4.7` and
+> `us.anthropic.claude-opus-4-6-v1` directly, so both stay spent and may be
+> re-run only as a non-gating probe. `shipBar.spent` is still ten ("Rubric 4",
+> below).
 
 **Never give a reviewer this directory, and never give one a worktree of this
 branch.** The answers are in `expected.json`, and the cases are near-copies of
@@ -585,7 +598,8 @@ high, and **nothing in the rubric binds a written finding back to the anchor row
 it came from.** The fifth remaining miss is **c2's G3, missed by both runs**, the
 set's second both-miss after the feature column. Neither is fixed here, because a
 pair run under a contradictory instrument cannot tell an ambiguous anchor table
-from a reviewer guessing at the lint boundary.
+from a reviewer guessing at the lint boundary. Both are answered in "Rubric 4",
+below, now that the instrument is fixed.
 
 `claude-opus-4.7` and `us.anthropic.claude-opus-4-6-v1` join `shipBar.spent`,
 bringing it to **ten**. They are spent whatever the pair turned out to measure:
@@ -595,6 +609,108 @@ that is now the binding constraint on criterion 12: ten models across four
 attempts, no attempt better than 36/40, and a finite supply of comparable
 top-tier models. If the next pair misses, it is the bar's shape rather than the
 rubric's wording that needs the argument.
+
+## Rubric 4, and the two findings it answers
+
+Rubric 3's pair left two misses that were not the runner's: **c2's G3**, missed by
+both runs, and **the anchor-row off-by-one**, which both runs committed twice.
+Rubric 4 is those two and nothing else. **No answer-key label moved**, in any
+case, on any gate or dimension.
+
+### G3: two ways a negative control reads as complete and shows nothing
+
+c2's negative control is not a case Rubric 3's Fails list reached. It names a
+check, says it fails before the change, and gives a reason, and the reason is in
+the right area. Two things are wrong with it and Rubric 3 named neither:
+
+- **The reason is given as two alternatives.** A reason naming one mechanism or
+  another says the author has not settled which, and an unsettled mechanism is
+  not a stated one. The gate asks why the check fails; two candidates answer a
+  different question.
+- **The check's own setup supplies the condition its failure is attributed to.**
+  The test it names builds the wiring whose absence before the change is supposed
+  to make it fail, so the run exercises the setup rather than the code as it
+  stands, and the pre-change state the control exists to demonstrate was
+  cancelled before the check ran.
+
+Both join the Fails list, with a paragraph beneath that explains them, because an
+item of that length buried in a semicolon list is a line a reviewer skims.
+Neither sentence quotes c2 (`test/rubric-anchors.test.ts`), and **neither reaches
+the six cases this key passes on G3**: in c1, c4, c5 and c6 the stated reason is
+a single property of the code at the ref, and in c7 and c8 a single mechanism
+chain in the unchanged reader. That was checked case by case before the wording
+went in, because a Fails item that catches the case it was written for and one
+more is a relabelling with no argument behind it.
+
+### The read-back step: a score may not sit above its own findings
+
+The off-by-one has one shape across three sightings: a reviewer finds the defect,
+writes it up accurately, and then records the number one row generous. Rubric 3
+had an anti-softening sentence, but it covered the outcome's tone and only the
+outcome. Nothing bound a written finding back to the anchor row it came from, so
+the prose and the number were free to disagree, and a verdict could assert a row
+and the row above it at once.
+
+Rubric 4 states it in both tables and gives it somewhere to happen:
+
+- **Dimensions.** A dimension's score is never higher than the lowest row its own
+  findings describe.
+- **Outcome.** The outcome is never softer than the findings, and the `reject`
+  row is tested against the findings rather than left unasked, because `revise`
+  fits almost every spec that is not ready and is reached first.
+- **Review procedure.** The old step 7 splits in two. Writing findings is step 7;
+  step 8 reads them back against both tables and corrects step 6's numbers where
+  they disagree.
+
+It is a ceiling and not an equality: D5 counts omissions, so two findings that
+each describe row 3 can still be a 2 together. The rule binds the direction this
+set has actually seen drift, which is generous.
+
+c1's `D3` and c6's `D1` gain reasons in `expected.json` recording the
+construction and all three sightings. Neither label moved.
+
+`test/rubric-procedure.test.ts` is the one mechanically checkable thing Rubric 4
+produced. It does not grade the procedure's wording; it holds the three places
+that reference the procedure **by number** against the procedure itself, because
+Rubric 4 is the first edit to renumber it: the harness prompt's claim that lint's
+notes are step 3's input and that a reviewer should begin at step 2,
+`shipBar.blind`'s verbatim quote of step 3, and the numbering being contiguous
+from 1. Every one of its seven assertions dies on a mutation, four of them on one
+assertion each. The two prose rules above have no unit test and cannot have one.
+
+### What this costs, and the one thing the narrowing buys
+
+`Rubric:` bumps to **4**: G3's Fails list reaches further and the anchor tables
+are now read with a ceiling in front of them, and both of those are meaning.
+**All nine run directories are stale by blob**, and Rubric 4 has no run at all.
+
+`shipBar.heldOut` is **narrowed**, and narrowing is not reopening. The rule's
+reach is a model whose output moved the rubric's *text*, because that is what
+puts a model in the tuning loop the bar measures; a model whose findings moved
+only the runner was never in it. Under that reading `claude-opus-4.7` and
+`us.anthropic.claude-opus-4-6-v1` would come back, since Rubric 3 was written
+before they ran and four of their six disagreements moved the harness. Rubric 4
+spends them again anyway, for the plainest reason available: **its two fixes
+answer their misses directly** - c2's G3, which both of them passed, and the
+off-by-one, which both of them committed. They are inside Rubric 4's loop under
+the narrow rule as well as the broad one.
+
+What the narrowing buys is a probe. They may be re-run under
+`shipBar.capabilityMatched` as a **non-gating** probe, and that is the tightest
+test of these two fixes available: the two models that committed the defects,
+asked again under the corrected harness and the corrected wording. A probe never
+amends the rubric on its own and never counts as one of the two runs.
+`shipBar.spent` stays at ten, and **Rubric 4's gating pair still needs an
+eleventh and a twelfth model.**
+
+### The caveat, again
+
+Rubric 4's text is an argument about why two reviewers scored what they scored.
+Rubric 3's four fixes all landed in both runs, which is the first evidence this
+set has that such an argument changes what a reviewer does, and the same pair
+then missed nine cases for a reason that had nothing to do with wording. A probe
+that clears c2's G3 and both off-by-ones would be the strongest evidence here yet
+and still not a pass.
 
 ## Known limits of the set
 

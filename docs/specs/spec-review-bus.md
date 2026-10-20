@@ -18,7 +18,11 @@
   nine cases miss, and all six gate disagreements trace to one defect in the
   runner rather than the rubric, fixed here. That fix stales this pair too, so
   all nine runs on this branch are visibly stale and Rubric 3 has no counting
-  run. Ten models are spent; the next pair needs an eleventh and a twelfth.
+  run. **Rubric 4 answers the two findings that pair left that were not the
+  runner's** - c2's G3 and the anchor-row off-by-one - with no answer-key label
+  moved, which stales all nine runs again. Ten models are spent; the next gating
+  pair needs an eleventh and a twelfth, and the two models Rubric 4 answers may
+  be re-run only as a non-gating probe.
 - Area: contributor workflow / CI
 - Target release: none. No code or behaviour in the published package
   changes (see Approach, step 1); the only new file in the tarball is this
@@ -483,8 +487,32 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
     and the reject row for c1 in prose and then scored anchor 2 and answered
     `revise`, and both did the same to c6's D1. Nothing in the rubric binds a
     written finding back to the anchor row it came from. c2's G3 is missed by
-    both runs as well, the set's second both-miss. Neither is acted on until a
-    pair has run under the fixed harness.
+    both runs as well, the set's second both-miss.
+
+    **Rubric 4 is those two findings and nothing else, and no answer-key label
+    moved.** G3's Fails list now reaches a reason given as two or more
+    alternative mechanisms and a control whose own setup supplies the condition
+    its failure is attributed to, which is what c2's negative control does; both
+    were checked against the six cases this key passes on G3 before the wording
+    went in, and neither reaches them. The dimension tables gain a ceiling - a
+    dimension's score is never higher than the lowest row its own findings
+    describe - the outcome table gains the same reading plus an instruction to
+    test the `reject` row rather than leave it unasked, and the Review procedure
+    splits its last step so that reading the findings back against both tables is
+    a step of its own. c1's `D3` and c6's `D1` gain reasons in `expected.json`
+    recording the construction and all three sightings of the shape.
+    `test/rubric-procedure.test.ts` holds the three places that reference the
+    procedure by number against the procedure itself, since Rubric 4 is the first
+    edit to renumber it; the two prose rules themselves have no unit test and
+    cannot have one. Rubric 4 stales all nine run directories again and has no
+    run of its own.
+
+    `shipBar.heldOut` is narrowed to a model whose output moved the rubric's
+    text, which does not reopen the pool: Rubric 4's two fixes answer
+    `claude-opus-4.7` and `us.anthropic.claude-opus-4-6-v1` directly, so both are
+    spent under the narrow rule as well as the broad one. What the narrowing
+    buys is a probe under `shipBar.capabilityMatched`, which never counts as one
+    of the two runs.
 
     **Ten models are now spent, so this criterion waits on an eleventh and a
     twelfth, and that is the binding constraint.** Four attempts, no attempt
