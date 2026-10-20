@@ -445,3 +445,133 @@ Two further notes on what this does and does not buy:
 reason the last section gives. Criterion 12 of `docs/specs/spec-review-bus.md`
 stays `Open`: **Rubric 3 has no run at all**, and the next pair needs a ninth and
 a tenth model.
+
+# Rubric 3's first pair
+
+`2026-10-20-r3-kiro-cli-claude-opus-4-7` (run A) and
+`2026-10-20-r3-pi-us-anthropic-claude-opus-4-6-v1` (run B), the ninth and tenth
+models. Both collected by `scripts/calibrate.mjs` at `5a7ccaf`, blobs matching,
+isolation audit clean for all sixteen sessions, no `Reviewer:` line correction.
+Run A spent 209s to 266s per case, run B 288s to 641s.
+
+```
+gate agreement: 34/40  (disagree: c1 G2, c2 G2, c3 G2, c3 G3, c4 G2, c6 G2)
+cases with a miss: 9  (run A 4, run B 5)
+```
+
+**The ship bar is not met.** Nine cases miss, agreement fell from 36/40 to
+34/40, and run B returns the pair's only false fail, a `revise` on c4.
+
+## What the result says
+
+**1. All four of Rubric 3's changes did what they were written to do, in both
+runs.** This is the primary result and it is independent of everything below it.
+
+| change | measured by | run A | run B |
+| --- | --- | --- | --- |
+| D1's feature-column precondition | c7 `D1 >= 3`, c8 `D1 <= 2` | 4 and 2 | 4 and 2 |
+| G1's "finding the D2 or the D3 does not answer G1" | c1 `G1 fail` | fail | fail |
+| G5's person-or-role-or-team clause | c6 `G5 pass` | pass | pass |
+| `mustQuoteOneOf` punctuation | every quote in c1, c6, c8 | matched | matched |
+
+**`shipBar.featureColumn` is met, by both runs, for the first time in the set's
+history.** It was the only rule in `expected.json` that no reviewing model had
+ever satisfied: four models had seen c7 and c8 and all four scored them the same
+on D1, which is the one thing that pair discriminates. Run A's c8 finding
+reaches the new paragraph in its own words, naming the absent command, row,
+trace and ref and then quoting the cap: a Problem "that names the right code and
+states its findings as claims is a 2 however well those claims hold up". The fix
+was followed for the reason it was written.
+
+**2. Six of the six gate disagreements come from one defect, and it is in the
+harness, not the rubric.** The calibration prompt says "following its Review
+procedure, skipping step 1 (lint)" and supplies no lint output. The rubric's
+step 3 is **"Work through every item lint listed under notes (G2 reviewer
+half)"**, so step 3 has no input. G2 splits itself the same way: its script half
+owns "a repo path that does not exist at the ref", and its reviewer half opens
+"lint lists, without failing, every identifier it could not find, every path
+outside the repo, every gitignored local path, and every path marked `(new)`.
+For each one, the spec must either create it or attribute it to a named source."
+
+G2's reviewer half is therefore **defined as a function of a list calibration
+never hands over**, and the boundary between the halves is left to the reviewer
+to guess. The two runs guessed opposite ways:
+
+- Run B did lint's job. It found `docs/specs/dual-host-pi-gsd.md` absent at
+  `61bb96f` and failed G2 on it in c1, c3, c4 and c6: every case that cites the
+  path except c5, where it had two real G2 defects to report instead.
+- Run A treated the path as resolving, never raised it, and skipped step 3. On
+  c3, where the `- **Negative control` bullet is deleted and `lint.fail` is
+  `["G3"]`, run A read the absence as lint's business and passed G3; run B read
+  it as its own and failed it, correctly.
+
+`expected.json` `aliases` maps that path to `cases/c2.md`, and the deterministic
+half is handed it on the command line (`spec-lint.mjs --alias ...`), so **lint
+resolves the path and the reviewer is not told that it does.** Lint's notes for
+c4 list nine unresolved symbols, five local paths, four external names and one
+placeholder, and never mention the aliased path: that is both the list the
+reviewer should have worked through and the proof the path was never a G2
+question. The prompt's one alias sentence, "Where the spec cites `X`, read
+`<file>`", says where the content is and not that the citation resolves, so a
+reviewer that checks the filesystem is contradicted by the harness rather than
+informed by it.
+
+The cost is concrete: **c4's false fail has exactly one finding in it**, the G2
+item on the aliased path. Delete that finding and c4 is clean. One harness
+defect produced four of run B's five G2 misses, both of run A's G3 misses, the
+drop in agreement, and the only false fail in the pair.
+
+So `shipBar.agreement`'s rule 4 ("any disagreement means the rubric wording is
+ambiguous: fix the wording and re-run both") **must not be applied to these six
+disagreements.** They measure the instrument. Fixing G2's or G3's wording in
+response to them would be tuning the rubric to a defect in the runner, which is
+the pass 8 mistake in a new costume.
+
+**3. What is left is one real shape, and it is not acted on yet.** Strip the
+harness defect and five misses remain, and four of them are the same thing: **a
+finding that describes anchor N, scored as anchor N+1.**
+
+| case | run | the finding says | scored | key |
+| --- | --- | --- | --- | --- |
+| c1 D3 | A and B | the Approach "overturns" §5e.3 while claiming to preserve it; fix: "promote this to a supersede" | 2 | 1 |
+| c1 outcome | A and B | the same finding | revise | reject |
+| c6 D1 | A and B | "probably" hedges a cause the snapshot "already settles" | 3 | 2 |
+| c6 outcome | A | the same finding | pass | revise |
+
+Both runs, independently, wrote D3 anchor 1 and the reject row in prose and then
+scored anchor 2 and answered `revise`. This is the third time the set has seen
+this shape: Rubric 2's pair found c1's contradiction and filed it as D3, and
+read c8's Problem correctly and scored `D1 4`. Rubric 3 answered those two by
+adding listing steps to the procedure, and the steps worked. **Nothing in the
+rubric binds a written finding back to the anchor row it came from**, and that is
+where these four misses live.
+
+The fifth is **c2's G3, missed by both runs**, so the set's second both-miss
+after the feature column. c2's negative control exists and gives two outcomes
+with no mechanism, and the GSD-home test it names builds the wiring itself.
+Neither run raised it.
+
+Neither is acted on in this commit. The harness defect has to be fixed first,
+because a pair run under a contradictory instrument cannot tell an ambiguous
+anchor table from a reviewer guessing at the lint boundary, and a Rubric 4
+written on top of this pair would be arguing from five misses when four of them
+may move once the reviewer is handed step 3's input.
+
+## Where this leaves the ship bar
+
+`shipBar.spent` is now ten: `claude-opus-4.7` and
+`us.anthropic.claude-opus-4-6-v1` join it, because `heldOut` spends any model
+that took part in a pass, whatever the pass turns out to have measured. The
+next pair needs an eleventh and a twelfth model.
+
+**That is the binding constraint on criterion 12 now, and it should be said
+plainly.** The bar asks for two unspent models that agree on all 40 gate
+decisions and miss nothing in eight cases. Ten models have been spent across
+four attempts and no attempt has come closer than 36/40. Each attempt costs two
+models and buys one round of wording fixes, and the supply of comparable
+top-tier models is finite. Either the next pair clears it or the bar's shape,
+not the rubric's wording, is what needs the argument.
+
+Criterion 12 of `docs/specs/spec-review-bus.md` stays `Open`. Both run
+directories carry `countsTowardsShipBar: false`, set by
+`calibrate.mjs finalize`, with the reason recorded there.

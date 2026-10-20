@@ -97,6 +97,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Reasoning: `spec-review/calibration/README.md` ("Rubric 3") and
   `spec-review/calibration/runs/SCORE.md`.
 
+- **Rubric 3's first pair: all four fixes landed in both runs, and the pair found a defect in the
+  runner rather than the rubric.** `claude-opus-4.7` on kiro-cli and
+  `us.anthropic.claude-opus-4-6-v1` on pi through Bedrock, the ninth and tenth models, collected by
+  `scripts/calibrate.mjs` with blobs matching and the isolation audit clean for all sixteen sessions.
+  Both runs separate c7 from c8 on D1, 4 against 2, so **`shipBar.featureColumn` is met for the first
+  time in the set's history**: it was the only rule in `expected.json` that no reviewing model had
+  ever satisfied, and the four models that had seen the pair before all scored it the same. Both runs
+  also fail c1's G1, pass c6's G5 and match every `mustQuoteOneOf` string, so each of Rubric 3's four
+  changes did what it was written to do. **The bar is still not met:** nine cases miss, gate agreement
+  fell to 34/40, and one run returns a false fail on c4. But all six gate disagreements have a single
+  cause, and it is the harness: the calibration prompt tells the reviewer to skip lint and supplies no
+  lint output, while the rubric's Review procedure step 3 is to work through lint's notes and G2's
+  reviewer half is written as a function of that list. So one run did lint's script-half job and failed
+  G2 on `docs/specs/dual-host-pi-gsd.md`, the path `expected.json` aliases and `spec-lint.mjs` is
+  handed on the command line, and the other treated it as resolving and skipped step 3 instead. c4's
+  false fail contains that one finding and nothing else. Those six disagreements are therefore not
+  evidence about the rubric's wording and no gate text is changed in response to them. Both runs
+  record `countsTowardsShipBar: false` with the reason, and criterion 12 of
+  `docs/specs/spec-review-bus.md` stays open. Held by `test/spec-review-score.test.ts` and
+  `node spec-review/calibration/score.mjs` over both directories.
+  Reasoning: `spec-review/calibration/runs/SCORE.md` ("Rubric 3's first pair") and each run's
+  `NOTES.md`.
+
 ### Changed
 
 - **A stream-json turn that is priced more than once now traces it.** Credits come from the last
