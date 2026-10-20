@@ -612,3 +612,104 @@ directly. They may be re-run as a non-gating probe under
 `shipBar.capabilityMatched`: the tightest test of these two fixes available, and
 still not a pass. `shipBar.spent` stays at ten and Rubric 4's gating pair needs
 an eleventh and a twelfth model.
+
+## Rubric 4's probe: 38 of 40, the best yet, and it cannot count
+
+`node spec-review/calibration/score.mjs runs/2026-10-20-r4-kiro-cli-claude-opus-4-7 runs/2026-10-20-r4-pi-us-anthropic-claude-opus-4-6-v1`
+
+```
+gate agreement: 38/40  (disagree: c1 G1, c3 G3)
+cases with a miss: 8
+runs that do not count: 2/2 - the ship bar asks for two that do
+```
+
+**Both models were spent before this ran, and the run is labelled a probe for
+that reason.** `claude-opus-4.7` and `us.anthropic.claude-opus-4-6-v1` were
+Rubric 3's first pair, and Rubric 4's two fixes answer that pair's misses, so
+they are inside the tuning loop under `shipBar.heldOut`'s narrow reading as well
+as its broad one. `shipBar.capabilityMatched` allows a non-gating probe, and the
+reason to spend the compute was that the tightest test of a fix is the model that
+committed the defect, asked again under the corrected instrument.
+
+**38/40 is the best gate agreement the set has recorded** (34/40, then 36/40,
+then 38/40), and it is still short: rule 3 asks for agreement on *every* gate
+decision, which is 40. Eight run-cases miss against a bar of none. The number is
+evidence and not progress towards the bar, because neither run could have
+counted.
+
+### What Rubric 4 was written for
+
+| fix | run A | run B |
+| --- | --- | --- |
+| G3's two new Fails entries (c2) | **`G3 fail`** | **`G3 fail`** |
+| the dimension ceiling (c1 `D3`) | **1, correct** | 2, wanted 1 |
+| the outcome read-back (c1) | **`reject`, correct** | `revise`, wanted `reject` |
+
+**The G3 fix landed in both runs, and that closes the set's second both-miss.**
+No reviewing model had ever failed c2's G3. Both of these do, and the case's own
+construction is what the new Fails entries describe: a reason given as two
+alternatives, and a control whose setup supplies the condition its failure is
+attributed to. That is the second time a change to the rubric's text has closed
+a miss no model got right, after D1's feature column.
+
+**The read-back rule is split, and a split is not a landing.** It corrected
+c1's `D3` and outcome in run A and changed nothing in run B. One pair cannot
+separate that from session variance, and the rule is not touched again here.
+
+### Three things this probe found that Rubric 4 did not anticipate
+
+**1. The ceiling does not carry across dimensions.** Both runs score c1's `D2`
+at 3 with a `D2` finding that describes anchor 2 in words. Run A does it three
+lines below a `D3` where the same rule *did* carry. So the off-by-one is not a
+property of the two instances Rubric 4 was derived from: it reappears on a
+dimension the set had never seen it on, under a rule written to stop it. That is
+the most useful thing here, and it argues the rule's text is not carrying rather
+than that c1 and c6 were special.
+
+**2. c2's `G2` is a new both-miss, and the likely cause is this branch's own
+harness fix.** c2's G2 fails on three claims credited to sources the spec never
+names. Lint's notes cannot list those: they are prose attributions, not
+unresolved paths or symbols. Handing a reviewer the notes and naming them step
+3's input gives it a route to reading G2's reviewer half as the notes and nothing
+more, and both runs took it. The fix that bought six gate disagreements has a
+cost, and this is the first sight of it. It is recorded and not acted on: a
+second pair under the same harness is what would tell a side effect from a
+coincidence.
+
+**3. c8's quote rule was penalising a correct finding, and that one is fixed.**
+Both runs scored c8 `D1 2` correctly, with reasoning taken straight from Rubric
+3's measurement precondition, and both were marked a miss on the quote alone.
+Run A quoted `"## Problem"` - which is what the rubric's Findings section tells a
+reviewer to do, since a finding about something missing quotes the nearest
+heading, and what is missing from c8 is the Problem section's measurement.
+`## Problem` was not in c8's `mustQuoteOneOf`. It is added, which follows from
+the rubric as written and from how c8 was built, the standard
+`shipBar.relabelling` sets. `cases with a miss` went from 9 to 8 on that one
+edit, and both probe runs are now stale by blob, which is rule 5 again.
+
+**Left open for the maintainer:** run B's c8 finding was also correct and quoted
+a verbatim sentence from the same section that is not one of the four listed.
+Widening the list to any sentence in the section would make the rule vacuous;
+widening it to that sentence is tuning the key to a run. Not acted on.
+
+### Where this leaves criterion 12
+
+`shipBar.spent` is still **ten** - a probe spends nothing, because both models
+were already spent. The gating pair still needs an **eleventh and a twelfth**.
+
+What has changed is the shape of the argument. Of the misses still standing,
+**c3's G3 and c1's G1 are the only two gate disagreements**, and both are cases
+where one run reached a defect the other read as satisfied. The rest are
+dimensions and outcomes, which the bar holds to thresholds rather than to
+agreement. A pair that agrees on 38 of 40 gate decisions, meets
+`shipBar.featureColumn`, and fails the bar on dimension thresholds in three
+cases is a different kind of failure from 28 of 30 with four cases missed, and it
+is worth saying which: **the gates are nearly stable and the dimension anchors
+are not.** If the next pair reproduces that, the honest conclusion is that the
+anchor tables need work the gates did not, and that the bar's demand for every
+dimension threshold in both runs may be asking a 1-to-4 judgement to be
+reproducible in a way gate decisions are.
+
+Criterion 12 of `docs/specs/spec-review-bus.md` stays `Open`. Both probe
+directories carry `countsTowardsShipBar: false`, set by `calibrate.mjs
+finalize`, with the reason recorded there.

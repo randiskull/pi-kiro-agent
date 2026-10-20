@@ -54,6 +54,21 @@ bar below. The set stays as a regression suite: every rubric edit re-runs it.
 > `us.anthropic.claude-opus-4-6-v1` directly, so both stay spent and may be
 > re-run only as a non-gating probe. `shipBar.spent` is still ten ("Rubric 4",
 > below).
+>
+> **Rubric 4's probe ran: 38 of 40 gate decisions agree, the best the set has
+> recorded, and it cannot count.** The same two models, under the corrected
+> harness and the corrected wording. **G3's fix landed in both runs**, closing
+> c2's G3, which no reviewing model had ever failed: the second both-miss a
+> change to the rubric's text has closed. The read-back rule is **split**,
+> correcting c1's `D3` and outcome in one run and nothing in the other. Three
+> things the probe found that Rubric 4 did not anticipate: the ceiling **does not
+> carry to `D2`**, in either run; **c2's `G2` is a new both-miss** whose likely
+> cause is this branch's own harness fix, since lint's notes cannot list a prose
+> attribution; and **c8's `mustQuoteOneOf` was penalising a correct finding** for
+> quoting `## Problem`, the heading the rubric's own Findings rule names, which
+> is corrected here. Eleven run directories, all eleven
+> `countsTowardsShipBar: false`. `shipBar.spent` is still ten, because a probe
+> spends nothing. See "Rubric 4's probe" in `runs/SCORE.md`.
 
 **Never give a reviewer this directory, and never give one a worktree of this
 branch.** The answers are in `expected.json`, and the cases are near-copies of
@@ -280,10 +295,11 @@ From `expected.json` `shipBar`, in short:
    a check on the number would let those edits through with stale runs. Each run
    directory's `RUN.json` records the git blob of `rubric.md`, of `expected.json`
    and of each case as they stood when it was scored, and a run counts only when
-   those match the committed blobs. **All nine runs here are visibly stale**
+   those match the committed blobs. **All eleven runs here are visibly stale**
    rather than plausibly current: five record Rubric 1's blobs, Rubric 3's wording
-   fixes staled the two that recorded Rubric 2's, and the harness fix made for
-   Rubric 3's own pair stales that pair in turn. That is the mechanism working,
+   fixes staled the two that recorded Rubric 2's, the harness fix made for
+   Rubric 3's own pair stales that pair in turn, Rubric 4 stales all nine again,
+   and the c8 quote correction Rubric 4's probe produced stales the probe. That is the mechanism working,
    and it is the standing cost of a fix - see rule 4.
 6. **The two runs are at a comparable capability level.** The bar measures
    agreement between them, so a strong-plus-weak pair cannot tell an ambiguous

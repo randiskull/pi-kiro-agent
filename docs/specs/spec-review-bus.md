@@ -22,7 +22,13 @@
   runner's** - c2's G3 and the anchor-row off-by-one - with no answer-key label
   moved, which stales all nine runs again. Ten models are spent; the next gating
   pair needs an eleventh and a twelfth, and the two models Rubric 4 answers may
-  be re-run only as a non-gating probe.
+  be re-run only as a non-gating probe. **That probe has run: 38 of 40 gate
+  decisions agree, the best recorded, and it cannot count.** G3's fix landed in
+  both runs, the read-back rule landed in one, and the probe found three things
+  Rubric 4 did not anticipate - the ceiling does not carry to `D2`, c2's `G2` is
+  a new both-miss whose likely cause is the harness fix two commits earlier, and
+  c8's quote rule was penalising a correct finding, which is corrected. Eleven
+  runs, none counting; `shipBar.spent` is still ten.
 - Area: contributor workflow / CI
 - Target release: none. No code or behaviour in the published package
   changes (see Approach, step 1); the only new file in the tarball is this
@@ -513,6 +519,33 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
     spent under the narrow rule as well as the broad one. What the narrowing
     buys is a probe under `shipBar.capabilityMatched`, which never counts as one
     of the two runs.
+
+    **That probe ran on 2026-10-20 and recorded 38 of 40 gate agreement, the
+    best the set has seen** (34, then 36, then 38), with eight run-cases missing
+    against a bar of none and rule 3 asking for all 40. **G3's two new Fails
+    entries landed in both runs**, so c2's G3 fails for the first time in the
+    set's history: the second both-miss a change to the rubric's text has
+    closed. The read-back rule is split, correcting c1's `D3` and outcome in one
+    run and changing nothing in the other, which one pair cannot separate from
+    session variance. Three findings Rubric 4 did not anticipate: the dimension
+    ceiling **does not carry to `D2`**, in either run, and in one of them three
+    lines below a `D3` where it did; **c2's `G2` is a new both-miss** and the
+    likely cause is the harness fix of `d98d5b6`, because lint's notes cannot
+    list a claim credited to an unnamed source, so a reviewer told the notes are
+    step 3's input has a route to reading G2's reviewer half as the notes and
+    nothing more; and **c8's `mustQuoteOneOf` was penalising a correct
+    finding** that quoted `## Problem`, the heading the rubric's Findings
+    section names for something missing, which is added to the list and takes
+    the miss count from 9 to 8. Both probe directories record
+    `countsTowardsShipBar: false`, all eleven runs on this branch are stale, and
+    `shipBar.spent` is still ten because a probe spends nothing.
+
+    What the probe changes is the shape of the argument rather than the verdict.
+    Only two gate decisions disagree, c1's G1 and c3's G3; everything else
+    standing is a dimension threshold or an outcome. **The gates are nearly
+    stable and the dimension anchors are not**, which is a different failure
+    from 28 of 30 with four cases missed, and if the next pair reproduces it the
+    anchor tables are what need the work.
 
     **Ten models are now spent, so this criterion waits on an eleventh and a
     twelfth, and that is the binding constraint.** Four attempts, no attempt

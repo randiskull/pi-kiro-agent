@@ -1,0 +1,36 @@
+{
+	"runId": "2026-10-20-r4-kiro-cli-claude-opus-4-7",
+	"harness": "kiro-cli",
+	"harnessVersion": "kiro-cli 2.32.0",
+	"model": "claude-opus-4.7",
+	"modelRoute": "kiro-cli's own model id, as listed by 'kiro-cli chat --list-models --format json'. Seat-billed through the official client; no model endpoint is called directly. Model claude-opus-4.7.",
+	"calibrationPass": null,
+	"ref": "61bb96f",
+	"refsByCase": {
+		"c1": "61bb96f",
+		"c2": "61bb96f",
+		"c3": "61bb96f",
+		"c4": "61bb96f",
+		"c5": "61bb96f",
+		"c6": "61bb96f",
+		"c7": "68ffb40",
+		"c8": "68ffb40"
+	},
+	"scoredAtCommit": "8bc789095b82a5f6d5d0ae9fb7df8ee7290f09ef",
+	"scoredAgainst": {
+		"rubric": "24816d8466e0054ac2e3fa59b5d36c98c06a0d7e",
+		"expected": "2060b02fbfa8927d923e87992506153d383cec7c",
+		"cases": {
+			"c1": "4f7fc8231a50c5b7198959520e93ef9da1886775",
+			"c2": "0cc053895dd7742ed2987524854b870290723d53",
+			"c3": "20985efe4052a821ad6abd5ac02852b2c2146a2d",
+			"c4": "3e3e121ec784f541c8a192a7cb581cded0ad8bc7",
+			"c5": "2dbde55c3fdfd8322fc317a3fe051451d300e161",
+			"c6": "d9ad6cb04248e96c40d8b881ebe47cdac694ec20",
+			"c7": "f1cabc6d9d8c2a69b2f9c873e8c999b02b2626aa",
+			"c8": "a1eeab778e11ceaf9302ebef8452ce254179965d"
+		}
+	},
+	"countsTowardsShipBar": false,
+	"whyNot": "A non-gating probe under shipBar.capabilityMatched, not one of the two runs. claude-opus-4.7 was already in shipBar.spent when this ran: it took part in Rubric 3's first pair, and Rubric 4's two fixes answer that pair's misses directly, so it is inside the tuning loop under heldOut's narrow reading as well as its broad one. The probe was run to test those two fixes on the model that committed the defects, which it did: c2's G3 fails and c1's D3 and outcome are corrected. It cannot meet the bar and was never eligible to."
+}

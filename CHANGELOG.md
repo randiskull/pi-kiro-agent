@@ -152,6 +152,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Reasoning: `spec-review/calibration/README.md` ("Rubric 4") and
   `spec-review/calibration/runs/SCORE.md`.
 
+- **Rubric 4's probe: 38 of 40 gate decisions agree, the best this set has
+  recorded, and it cannot count.** The two models Rubric 4 answers, re-run under
+  the corrected harness and the corrected wording as the non-gating probe
+  `shipBar.capabilityMatched` provides for, because the tightest test of a fix is
+  the model that committed the defect asked again. **G3's two new Fails entries
+  landed in both runs**, so c2's G3 fails for the first time in the set's
+  history: the second both-miss a change to the rubric's text has closed, after
+  D1's feature column. The read-back rule is **split**, correcting c1's `D3` and
+  outcome in one run and changing nothing in the other, which one pair cannot
+  separate from session variance. Three things the probe found that Rubric 4 did
+  not anticipate: the dimension ceiling **does not carry to `D2`** in either run,
+  and in one of them three lines below a `D3` where it did, which argues the
+  rule's text is not carrying rather than that the two cases it came from were
+  special; **c2's `G2` is a new both-miss** whose likely cause is this branch's
+  own harness fix, since lint's notes cannot list a claim credited to a source
+  the spec never names, so a reviewer told the notes are step 3's input has a
+  route to reading G2's reviewer half as the notes and nothing more; and **c8's
+  `mustQuoteOneOf` was penalising a correct finding** for quoting `## Problem`,
+  which is exactly what the rubric's Findings section tells a reviewer to do for
+  something missing. That last one is corrected, by the `shipBar.relabelling`
+  standard of following the rubric as written rather than a run, and it takes the
+  miss count from nine to eight while staling the probe itself. Eleven run
+  directories now, all eleven `countsTowardsShipBar: false`; `shipBar.spent` is
+  still ten, because a probe spends nothing. Criterion 12 of
+  `docs/specs/spec-review-bus.md` stays open, and what the probe changes is the
+  shape of the argument: only two gate decisions disagree, so **the gates are
+  nearly stable and the dimension anchors are not**. Held by
+  `test/spec-review-score.test.ts` and `node spec-review/calibration/score.mjs`
+  over both directories. Reasoning:
+  `spec-review/calibration/runs/SCORE.md` ("Rubric 4's probe") and each run's
+  `NOTES.md`.
+
 ### Changed
 
 - **A stream-json turn that is priced more than once now traces it.** Credits come from the last
