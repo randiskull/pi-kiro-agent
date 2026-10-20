@@ -116,7 +116,12 @@ describe("the rubric's Review procedure, as other files describe it", () => {
 		}
 	});
 
-	it("agrees with the key about the rubric number", () => {
-		expect(/^Rubric: (\d+)$/m.exec(rubric)?.[1]).toBe(String(key.rubric));
+	it("agrees with the key about the rubric number, on every line that states it", () => {
+		// exec() returns the first match only, so the header alone was checked and
+		// the verdict template's line could drift to any other number unnoticed.
+		const stated = [...rubric.matchAll(/^Rubric: (\d+)$/gm)].map((m) => m[1]);
+		expect(stated.length, "rubric.md states its number in the header and the verdict template").toBe(2);
+		expect(new Set(stated).size, `rubric.md states two different numbers: ${stated.join(", ")}`).toBe(1);
+		for (const n of stated) expect(n).toBe(String(key.rubric));
 	});
 });

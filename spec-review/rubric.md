@@ -1,6 +1,6 @@
 # Spec review rubric
 
-Rubric: 4
+Rubric: 5
 
 This is the bar an implementation spec in `docs/specs/` must clear before anyone
 builds it. It is written for a reviewer that is not the author: a teammate
@@ -79,10 +79,13 @@ or signature other code or users will depend on.
 **Finding the D2 or the D3 does not answer G1.** The questions are asked of
 different things: D2 and D3 are about the behaviour the spec chose, G1 about the
 cases it left without one. A reviewer who has written the contradiction down
-still owes G1 the other question, asked of every case the spec names. Expect the
-two together, because a change that overturns a decision usually also leaves the
-path that decision protected undecided, and the contradiction is the easier of
-the two to see.
+still owes G1 the other question, asked of every case the spec names. The two
+often appear together, because a change that overturns a decision tends to leave
+the path that decision protected undecided, and the contradiction is the easier
+of the two to see. **The contradiction is never the evidence, though.** G1 fails
+only where a case can be named and the sentence deciding it cannot be found. A
+verdict that fails G1 on the strength of a D3 finding, without naming the case
+left undecided, has answered D3 twice.
 
 This list is the gate. The opening sentence says what G1 is for, and every way
 of falling short of it is one of the bullets above.
@@ -127,15 +130,25 @@ that shows the capability is absent today.
   both sides of the change with no stated expectation for the unchanged side; a
   negative control whose stated reason for failing is not the defect; a reason
   that offers two or more alternative mechanisms for one check's failure; a
-  control whose own setup supplies the condition its failure is attributed to.
+  control whose own setup builds what the code under test lacks before the
+  change, so the pre-change state the control exists to demonstrate is gone by
+  the time the check runs.
 
 The last two are ways a negative control can read as complete and show nothing.
 A reason that names one mechanism **or** another has not settled which, and an
 unsettled mechanism is not a stated one: the gate asks why the check fails, and
-two candidates answer a different question. And if the check's own setup builds
-the thing whose absence before the change is supposed to make it fail, the run
-exercises the setup rather than the code as it stands, because the pre-change
-state the control exists to demonstrate was cancelled before the check ran.
+two candidates answer a different question. **Alternative techniques are not
+alternative mechanisms**, though. A spec may name two ways to assert the same
+failure, or more than one place to observe the same effect, and neither is this
+bullet; G1 allows a spec two ways to write a test, and what this bullet forbids
+is two answers to why the unchanged code fails. And if the check's own setup
+builds the thing whose absence before the change is supposed to make it fail,
+the run exercises the setup rather than the code as it stands, because the
+pre-change state the control exists to demonstrate was cancelled before the
+check ran. **Building the subject of the check is not that.** A control may
+construct, start or call the code under test, and usually has to; what it may
+not do is leave the condition it blames the failure on no longer true when the
+check runs.
 
 Check: lint (a `- **Negative control` bullet exists in `## Verification plan`),
 then reviewer (it is a real one).
@@ -292,9 +305,9 @@ is not invalid for answering `reject` on a spec with a failed gate.
 `revise`, test the `reject` row against the findings already written, not only
 the `revise` row: `revise` fits almost every spec that is not ready and is
 reached first, so the `reject` row tends to go unasked. A finding saying the
-spec overturns, duplicates or contradicts an accepted spec or a documented
-decision without proposing to supersede it is the `reject` condition written out
-in words, and the outcome follows the finding.
+spec duplicates or contradicts an accepted spec or design decision without
+proposing to supersede it is the `reject` condition written out in words, in the
+row's own terms, and the outcome follows the finding.
 
 Re-review happens on the author's next commit to the spec: that changes the
 spec's blob, which makes the old verdict stale.
@@ -321,7 +334,7 @@ exact spec text it judged:
 
 ```
 spec-review verdict for docs/specs/<slug>.md blob <40-hex git blob sha>
-Rubric: 4
+Rubric: 5
 Reviewer: <harness>, <model>
 Outcome: pass
 
@@ -384,16 +397,22 @@ Outcome: pass
 2. Read the spec in full, then every file and `§` it cites that its Root cause
    (or Problem) and Approach depend on.
 3. Work through every item lint listed under notes (G2 reviewer half).
-4. **List the cases the spec names**, in its Goal, its Scope and its Approach,
-   and beside each the sentence that says what the change does in that case.
-   This list is what G1 is decided from. A case with no such sentence fails G1,
-   and a contradiction or an unargued risk found elsewhere does not settle it.
+4. **List the cases the spec names**, in its Goal, its In scope items and its
+   Approach, and beside each the sentence that says what the change does in
+   that case. This list is what G1 is decided from; a case left without such a
+   sentence is G1's undecided-effect bullet, not a rule of its own, and a
+   contradiction or an unargued risk found elsewhere does not settle it. Items
+   the spec puts out of scope are not cases: saying a thing will not be done is
+   a fence, and G5 reads it.
 5. **List what the spec offers as evidence for its own starting point**: each
    command run, each output or number it produced, and the ref. That is the
    Problem for a feature spec, Observed failure for a defect spec. Make the list
-   even when it comes out empty, because an empty one caps D1 at 2 whatever else
-   that section does well, and the cap is easy to miss once the rest of the spec
-   reads well.
+   even when it comes out empty. **For a feature spec an empty list caps D1 at
+   2**, whatever else that section does well, and the cap is easy to miss once
+   the rest of the spec reads well. **For a defect spec it caps nothing**: the
+   defect column asks rows 3 and 4 for a mechanism traced to code, not for a
+   command, an output or a ref, so this list informs D1 there without bounding
+   it.
 6. Decide each gate, then score each dimension against its anchors. Score what
    is written, not what the author probably meant.
 7. Write findings.

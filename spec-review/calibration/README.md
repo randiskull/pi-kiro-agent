@@ -69,6 +69,16 @@ bar below. The set stays as a regression suite: every rubric edit re-runs it.
 > is corrected here. Eleven run directories, all eleven
 > `countsTowardsShipBar: false`. `shipBar.spent` is still ten, because a probe
 > spends nothing. See "Rubric 4's probe" in `runs/SCORE.md`.
+>
+> **Rubric 5 fixes five sentences before the gating pair runs.** A review of
+> Rubric 4 predicted that five of its new sentences could fail a case the key
+> passes - G3's control bullet and its alternative-mechanisms bullet against c4,
+> step 5's D1 cap against c2, step 4's case list against c4's fence, and G1's
+> read-back paragraph against any D3 finding. Every one is narrowed to what its
+> own explanation says. **No answer-key label moved**, all eleven run
+> directories are stale by blob, Rubric 5 has no run, and `shipBar.spent` is
+> still ten, because the fixes came from reading the text and not from a run.
+> See "Rubric 5" below.
 
 **Never give a reviewer this directory, and never give one a worktree of this
 branch.** The answers are in `expected.json`, and the cases are near-copies of
@@ -727,6 +737,81 @@ set has that such an argument changes what a reviewer does, and the same pair
 then missed nine cases for a reason that had nothing to do with wording. A probe
 that clears c2's G3 and both off-by-ones would be the strongest evidence here yet
 and still not a pass.
+
+## Rubric 5, and the five sentences that could have failed a passing case
+
+Rubric 4 was reviewed before its gating pair ran, and the review's sharpest
+objection was not that anything in it was wrong. It was that five of its new
+sentences read more broadly than the paragraphs explaining them, and each one
+could make the next pair miss on a case the key **passes**. That pair is the
+eleventh and twelfth models, and the set has three of them left. A false fail
+spent on wording the set caused itself is the most expensive mistake available
+here, so these are fixed before the pair runs rather than after.
+
+Every one is a prediction from the text. None has been observed in a run.
+
+- **G3's control bullet could reach c4.** It read: a control whose own setup
+  supplies the condition its failure is attributed to. c4's control starts the
+  server under test in a child process, and that call creates the referenced
+  handle the failure is blamed on, so the bullet matched c4 literally and only
+  the paragraph beneath it - which says *absence* - ruled c4 out. The absence is
+  now in the bullet: a setup that builds what the code under test **lacks**
+  before the change, so the pre-change state is gone by the time the check runs.
+  A sentence was added for the other half: building the subject of the check is
+  not that, and a control may construct, start or call the code under test.
+- **G3's alternative-mechanisms bullet could reach c4's assertions.** c4 offers
+  two ways to assert one failure. Those are techniques, which G1 explicitly
+  allows a spec to leave open, not two answers to why the unchanged code fails.
+  Said so in the paragraph.
+- **Step 5's cap applied to defect specs.** It covered the Problem of a feature
+  spec and the Observed failure of a defect spec alike, and capped D1 at 2 on an
+  empty list. But measurement is the feature column's precondition; the defect
+  column's rows 3 and 4 ask for a mechanism traced to code and never for a
+  command, an output or a ref. c2 is a defect spec at `D1 >= 3` with an output
+  but no ref and its command in prose, so the cap put the key's own label out of
+  reach. The cap is now the feature column's, stated as capping nothing on the
+  defect side.
+- **Step 4 drew cases from Scope, and stated a G1 failure of its own.** Scope
+  includes the out-of-scope list, and an item the spec promises not to do has no
+  sentence saying what the change does in it by design, so a literal reading
+  could fail c4's G1 on c4's fence. Step 4 now draws from Goal, In scope and
+  Approach, and says that out-of-scope items are not cases because a fence is
+  what G5 reads. Its sentence about failing G1 now points at G1's own
+  undecided-effect bullet instead of reading as a sixth way to fail the gate,
+  which sat badly beside G1's closing line that the list is the gate.
+- **G1's read-back paragraph primed the gate off a D3 finding.** It told a
+  reviewer to expect the contradiction and the undecided case together, which is
+  a prior pointing one way on a gate. It still says they often appear together,
+  and now also says the contradiction is never the evidence: G1 fails only where
+  a case can be named and the sentence deciding it cannot be found.
+
+One more, in the same family and not a false-fail risk: the outcome read-back
+paragraph described the `reject` condition as a spec that **overturns**,
+duplicates or contradicts an accepted spec or a **documented decision**, which
+is wider than the row it was pointing at. It now uses the row's own words.
+
+### What this costs
+
+`Rubric:` bumps to **5**. G3's Fails list reaches less far than Rubric 4's did,
+the D1 cap is a feature-column rule rather than a dimension-wide one, and step
+4's input set is smaller: all three are meaning, and the direction is narrower
+rather than wider in every case but one. **No answer-key label moved**, on any
+gate, dimension or outcome, in any case. The two findings Rubric 4 answers are
+answered the same way: c2's G3 still fails on both bullets (its reason names two
+mechanisms, and its control builds the wiring whose absence is supposed to make
+the load fail), and the read-back rule is untouched.
+
+**All eleven run directories are stale by blob**, including Rubric 4's probe, and
+Rubric 5 has no run. `shipBar.spent` is still **ten**: these fixes came from
+reading the text against the cases, not from a model's output, so no model enters
+the tuning loop and none leaves it. The gating pair still needs an eleventh and a
+twelfth.
+
+The probe's three unanticipated findings are unaddressed on purpose. The ceiling
+not carrying to `D2`, c2's `G2` as a new both-miss, and the question left open on
+c8's second correct quote are all misses or open questions rather than false-fail
+risks, and the rule that sends a miss to the rubric's wording wants a gating pair
+behind it, not a probe.
 
 ## Known limits of the set
 
