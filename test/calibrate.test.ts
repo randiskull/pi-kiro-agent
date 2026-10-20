@@ -135,39 +135,110 @@ describe("the prompt", () => {
 	const base = {
 		inputDir: "/t/in-x",
 		verdictPath: "/t/in-x/verdict.md",
+		lintNotesPath: "/t/in-x/lint-notes.json",
 		reviewerLine: "Reviewer: pi, us.anthropic.claude-opus-5",
 	};
 
 	it("names the spec, the rubric, the verdict path and the reviewer line", () => {
-		const p = cal.promptFor({ ...base, aliases: [] });
+		const p = cal.promptFor(base);
 		expect(p).toContain("/t/in-x/spec.md");
 		expect(p).toContain("/t/in-x/rubric.md");
 		expect(p).toContain("/t/in-x/verdict.md");
 		expect(p).toContain("`Reviewer: pi, us.anthropic.claude-opus-5`");
-		expect(p).toContain("skipping step 1 (lint)");
 	});
 
-	// The README's prompt drops its alias sentence for a case that is given no
-	// alias file. A prompt that kept it would point a reviewer at a file that is
-	// not there, and the G2 finding would be the runner's fault.
-	it("carries the alias sentence only when the case is given the file", () => {
-		const withAlias = cal.promptFor({
-			...base,
-			aliases: [{ cited: "docs/specs/dual-host-pi-gsd.md", target: "spec-review/calibration/cases/c2.md" }],
-		});
-		expect(withAlias).toContain("Where the spec cites `docs/specs/dual-host-pi-gsd.md`, read /t/in-x/c2.md.");
-		expect(cal.promptFor({ ...base, aliases: [] })).not.toContain("Where the spec cites");
+	// Rubric 3's pair cost a false fail to a prompt that skipped lint and then
+	// asked the reviewer to work through lint's notes at step 3. The prompt has to
+	// hand over that input, and has to say which step it is, or the reviewer is
+	// left to guess where G2's script half ends and its reviewer half begins.
+	it("hands over lint's notes as step 3's input, and says step 1 is done", () => {
+		const p = cal.promptFor(base);
+		expect(p).toContain("/t/in-x/lint-notes.json");
+		expect(p).toContain("step 3's input");
+		expect(p).toContain("Step 1 is already done");
+		expect(p).not.toContain("skipping step 1");
+	});
+
+	// Handing over the notes must not hand over the verdict. c3's construction is
+	// a lint G3 failure the reviewer has to reach for itself, so a prompt that let
+	// the reviewer learn or re-derive lint's result would answer the case.
+	it("withholds whether lint passed, and forbids re-running it", () => {
+		const p = cal.promptFor(base);
+		expect(p).toContain("deliberately withheld");
+		expect(p).toContain("do not assume it passed");
+		expect(p).toContain("do not run lint yourself");
+		for (const word of ["lint-fail", "lint passed", "lint failed"]) {
+			expect(p, `the prompt states lint's result with ${word}`).not.toContain(word);
+		}
+	});
+
+	// The alias file now sits in the clone at the path the spec cites, so there is
+	// nothing to redirect a reviewer to. A surviving redirect sentence is the
+	// defect run B found: it says where the content is, not that the citation
+	// resolves, and a reviewer that checks the filesystem is contradicted by it.
+	it("carries no alias redirect of any kind", () => {
+		const p = cal.promptFor(base);
+		expect(p).not.toContain("Where the spec cites");
+		expect(p).not.toContain("dual-host-pi-gsd");
 	});
 
 	// A prompt that named a case, the set or the key would tell the reviewer what
 	// it is being measured on.
 	it("says nothing about the calibration set", () => {
-		const p = cal.promptFor({
-			...base,
-			aliases: [{ cited: "docs/specs/dual-host-pi-gsd.md", target: "spec-review/calibration/cases/c2.md" }],
-		});
+		const p = cal.promptFor(base);
 		for (const word of ["calibration", "expected.json", "answer key", "mutant"]) {
 			expect(p.toLowerCase(), `the prompt leaks ${word}`).not.toContain(word);
+		}
+	});
+});
+
+describe("lint's notes, and the alias file's home", () => {
+	const lint = {
+		spec: "spec-review/calibration/cases/c3.md",
+		type: "defect",
+		pass: false,
+		checks: [{ id: "G3", findings: ["no negative control bullet"], pass: false }],
+		notes: { external: ["session/new"], local: [], proposed: [], unresolvedSymbols: [], placeholders: [] },
+	};
+
+	// The whole point of passing notes rather than output: `pass` and `checks`
+	// carry the answer to c3, and c3's answer is the one a reviewer has to reach
+	// on its own.
+	it("keeps only the notes, dropping pass, checks and every finding", () => {
+		const notes = cal.lintNotesOf([lint]);
+		expect(notes).toEqual(lint.notes);
+		const text = JSON.stringify(notes);
+		for (const leak of ["pass", "checks", "G3", "negative control"]) {
+			expect(text, `notes carry ${leak}`).not.toContain(leak);
+		}
+	});
+
+	it("accepts one spec and refuses a batch or a shapeless entry", () => {
+		expect(cal.lintNotesOf(lint)).toEqual(lint.notes);
+		expect(() => cal.lintNotesOf([lint, lint])).toThrow(/reported 2 specs/);
+		expect(() => cal.lintNotesOf([{ pass: true }])).toThrow(/no notes object/);
+	});
+
+	// The citation has to resolve from the clone, which is where every other
+	// citation in the spec resolves from. Putting the file in the input directory
+	// under its basename is what let run B of Rubric 3's pair fail G2 on it in
+	// four cases, and turned c4 into the pair's only false fail.
+	it("places an alias file at the cited path inside the session clone", () => {
+		const placed = cal.aliasPlacements({
+			sessionDir: "/t/s-x",
+			aliases: [{ cited: "docs/specs/dual-host-pi-gsd.md", target: "spec-review/calibration/cases/c2.md" }],
+		});
+		expect(placed).toHaveLength(1);
+		expect(placed[0].to).toBe("/t/s-x/docs/specs/dual-host-pi-gsd.md");
+		expect(placed[0].from).toBe(join(cal.root, "spec-review/calibration/cases/c2.md"));
+		expect(cal.aliasPlacements({ sessionDir: "/t/s-x", aliases: [] })).toEqual([]);
+	});
+
+	it("refuses a cited path that would write outside the clone", () => {
+		for (const cited of ["/etc/passwd", "../../key.json", "docs/../../out.md"]) {
+			expect(() =>
+				cal.aliasPlacements({ sessionDir: "/t/s-x", aliases: [{ cited, target: "x.md" }] }),
+			).toThrow(/must be repo-relative/);
 		}
 	});
 });

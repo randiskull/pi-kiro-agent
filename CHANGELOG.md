@@ -142,6 +142,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A calibration reviewer was told to skip lint and then asked to work through lint's notes.** The
+  prompt `scripts/calibrate.mjs` built said "following its Review procedure, skipping step 1 (lint)"
+  and supplied no lint output, while step 3 of that procedure is "Work through every item lint listed
+  under notes (G2 reviewer half)" and G2 divides itself the same way: its script half owns "a repo
+  path that does not exist at the ref", its reviewer half opens with what lint listed *without*
+  failing. So step 3 had no input and the boundary between the gate's two halves was left for the
+  reviewer to guess, and Rubric 3's first pair guessed it two opposite ways: one run did lint's job
+  itself and failed G2 in four cases on `docs/specs/dual-host-pi-gsd.md`, the path `expected.json`
+  aliases and `spec-lint.mjs` is handed on the command line, while the other treated it as resolving
+  and skipped step 3 too, passing a G3 whose bullet is deleted outright. **That one defect produced
+  all six of the pair's gate disagreements and its only false fail**, a c4 verdict containing that
+  single G2 finding and nothing else. The runner now runs lint for the case and writes its `notes`
+  object, and nothing else from lint, into the session's input directory, with the prompt naming it
+  as step 3's input; lint's pass or fail stays withheld, because c3's whole construction is a lint G3
+  failure the reviewer has to reach on its own. The alias file also moves out of the input directory
+  and into the session's clone **at the path the spec cites**, so G2 is answered from the checkout as
+  every other citation is and the gate's two halves see one world; a redirect sentence says where the
+  content is, not that the citation resolves, which is what a reviewer reading the filesystem
+  contradicted. No gate text changed in response to those six disagreements: the rule that sends a
+  disagreement to the rubric's wording would have tuned the rubric to a defect in the runner. Test:
+  `test/calibrate.test.ts`, where five gates each fail on a mutation of their own and four of the
+  five fail on nothing else - reverting the prompt to "skipping step 1", dropping the ban on a
+  self-run of lint, returning lint's whole entry instead of its notes, putting the alias file back
+  under its basename, and removing the climb-out guard on a cited path.
+  Reasoning: `spec-review/calibration/README.md` ("Running a reviewer pass") and `expected.json`
+  `shipBar.blind` and `shipBar.aliasResolves`.
+
 - **A cited path below a symlink was reported as a broken citation.** `scripts/spec-lint.mjs` asks
   `git check-ignore` whether a cited path is a local, gitignored file, and read any non-zero exit as
   "not ignored". git answers a path below a symlink with a fatal ("beyond a symbolic link"), whose

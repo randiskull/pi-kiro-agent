@@ -30,10 +30,25 @@ export declare function planCases(
 	readCase: (name: string) => string,
 ): CasePlan[];
 
+export interface LintNotes {
+	external: string[];
+	local: string[];
+	proposed: string[];
+	unresolvedSymbols: string[];
+	placeholders: string[];
+}
+export declare function lintNotesOf(lintJson: unknown): LintNotes;
+
+export interface AliasPlacement {
+	from: string;
+	to: string;
+}
+export declare function aliasPlacements(input: { sessionDir: string; aliases: CaseAlias[] }): AliasPlacement[];
+
 export declare function promptFor(input: {
 	inputDir: string;
 	verdictPath: string;
-	aliases: CaseAlias[];
+	lintNotesPath: string;
 	reviewerLine: string;
 }): string;
 

@@ -1,7 +1,7 @@
 # Implementation Spec: every spec gets an independent, rubric-scored verdict before it is built
 
 - Status: Draft. On this branch already: the rubric, the calibration set with
-  the two specs it was built from, seven runs (none of which counts: see below),
+  the two specs it was built from, nine runs (none of which counts: see below),
   a calibration runner, an interim scorer, the linter and its test, and the
   anchor-leak test. Not built yet: the queue, verdict validation, the two CI jobs
   and the restricted review agent. **Rubric 1 has no measured result.** Pass 8's
@@ -13,8 +13,12 @@
   miss no rewording addresses. The c2 and c7 label ratification was given on
   2026-10-19 with no label changed; criterion 12 is still open, so this spec is
   not ready to merge on its own terms. **Rubric 3 fixes what that pair found and
-  stales it by blob**, so all seven runs on this branch are visibly stale and
-  Rubric 3 has no run at all.
+  stales it by blob**. **Rubric 3's own first pair has now run**: all four fixes
+  landed in both runs and `shipBar.featureColumn` is met for the first time, but
+  nine cases miss, and all six gate disagreements trace to one defect in the
+  runner rather than the rubric, fixed here. That fix stales this pair too, so
+  all nine runs on this branch are visibly stale and Rubric 3 has no counting
+  run. Ten models are spent; the next pair needs an eleventh and a twelfth.
 - Area: contributor workflow / CI
 - Target release: none. No code or behaviour in the published package
   changes (see Approach, step 1); the only new file in the tarball is this
@@ -449,10 +453,44 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
     had made load-bearing. **No answer-key label moved on any gate or dimension.**
     The two Rubric 2 runs are now stale by blob, by design, so **seven run
     directories are stale and Rubric 3 has no run at all**. Eight models are
-    spent, so this criterion waits on a ninth and a tenth - and on the honest
-    caveat that Rubric 3's text is an argument about why two reviewers scored what
-    they scored, not yet a measurement: Rubric 2's G1 bullet was written for c1,
-    read correctly, and one of two reviewers passed c1's G1 anyway.
+    spent, so this criterion waits on a ninth and a tenth.
+
+    **Rubric 3's first pair ran on 2026-10-20. All four fixes landed in both
+    runs, and the pair found a defect in the runner.** `kiro-cli` 2.32.0 on
+    `claude-opus-4.7` and `pi` 1.3.0 on `us.anthropic.claude-opus-4-6-v1`, the
+    ninth and tenth models: sixteen sessions, all exit 0, all header blobs
+    matching, isolation audit clean. Both runs separate c7 from c8 on D1, 4
+    against 2, so **`shipBar.featureColumn` is met for the first time in the
+    set's history**, having been the only rule in the key that no reviewing model
+    had ever satisfied. Both also fail c1's G1, pass c6's G5 and match every
+    quote, so each of Rubric 3's four changes did what it was written to do.
+    **The bar is still not met:** nine cases miss, gate agreement fell to 34/40,
+    and run B returns a false fail on c4. But **all six gate disagreements have
+    one cause and it is the harness, not the rubric**: the calibration prompt
+    skipped lint and supplied no lint output, while the Review procedure's step 3
+    is to work through lint's notes and G2's reviewer half is written as a
+    function of that list, so the boundary between the gate's halves was left for
+    the reviewer to guess. Run B did lint's script-half job and failed G2 on the
+    aliased path in four cases; c4's false fail is that one finding and nothing
+    else. The runner now hands over lint's `notes` and places the alias file in
+    the clone at the cited path (`shipBar.blind`, `shipBar.aliasResolves`), and
+    **no gate text changed in response to those six**, because rule 4 would have
+    tuned the rubric to a defect in the runner. That harness fix stales this pair
+    in turn, so **nine run directories are stale and Rubric 3 still has no
+    counting run**.
+
+    What remains unfixed is one shape, four misses: both runs wrote D3 anchor 1
+    and the reject row for c1 in prose and then scored anchor 2 and answered
+    `revise`, and both did the same to c6's D1. Nothing in the rubric binds a
+    written finding back to the anchor row it came from. c2's G3 is missed by
+    both runs as well, the set's second both-miss. Neither is acted on until a
+    pair has run under the fixed harness.
+
+    **Ten models are now spent, so this criterion waits on an eleventh and a
+    twelfth, and that is the binding constraint.** Four attempts, no attempt
+    better than 36/40, and a finite supply of comparable top-tier models. If the
+    next pair misses, the honest conclusion is that the bar's shape needs the
+    argument rather than the rubric's wording.
 13. **Only specs are added to the tarball.** `npm pack --dry-run` lists no
     path under `spec-review/` (including `originals/`) or `scripts/`, and differs
     from `main`'s tracked list only by `docs/specs/*.md`. Evidence: both

@@ -23,9 +23,23 @@ bar below. The set stays as a regression suite: every rubric edit re-runs it.
 > **seven run-cases missed across five cases**. The miss that mattered was not a
 > gate's wording: **neither run read D1's feature column**, scoring c7 and c8
 > alike, which fails `shipBar.featureColumn`. Rubric 3 answers that and three
-> smaller items ("Rubric 3", below). It also stales that pair by blob, on purpose,
-> so **Rubric 3 has no run at all** and seven run directories all record
-> `countsTowardsShipBar: false`. See "Rubric 2's first pair" below and
+> smaller items ("Rubric 3", below).
+>
+> **Rubric 3's first pair ran. All four fixes landed in both runs, and the pair
+> found a defect in the runner.** `kiro-cli` on `claude-opus-4.7` and `pi` on
+> `us.anthropic.claude-opus-4-6-v1`, the ninth and tenth models: sixteen clean
+> sessions, blobs matching. Both runs separate c7 from c8 on D1, 4 against 2, so
+> **`shipBar.featureColumn` is met for the first time in the set's history** - it
+> was the only rule in `expected.json` that no reviewing model had ever
+> satisfied. Both also fail c1's G1, pass c6's G5 and match every quote. **The
+> bar is still not met:** nine cases miss and agreement fell to 34/40. But all
+> six gate disagreements have one cause, and it is the harness, not the rubric:
+> the prompt skipped lint and supplied no lint output, while the Review
+> procedure's step 3 is to work through lint's notes. That is fixed here
+> (`shipBar.blind`, `shipBar.aliasResolves`) and no gate text changed in response
+> to those six. **Nine run directories now all record
+> `countsTowardsShipBar: false`**, and `shipBar.spent` is ten, so the next pair
+> needs an eleventh and a twelfth model. See "Rubric 3's first pair" in
 > `runs/SCORE.md`.
 
 **Never give a reviewer this directory, and never give one a worktree of this
@@ -35,8 +49,9 @@ mutation. `git worktree add` shares the object database and the refs, so from a
 worktree the key is one `git show <branch>:spec-review/calibration/expected.json`
 away: a worktree is not isolation. Use `git clone --no-local`, strip the refs, and
 check that the key's blob is absent. A reviewer gets the rubric, the case under
-review, `c2.md` when the case cites it (c2 is not a near-copy of the others), and
-that clone. Nothing else.
+review, `c2.md` placed in its clone at the cited path when the case cites it (c2
+is not a near-copy of the others), lint's `notes` for that case, and that clone.
+Nothing else, and in particular never lint's pass or fail.
 
 ## The cases
 
@@ -68,7 +83,14 @@ trail.
 c1 to c6 cite code as of commit `61bb96f`, so they are linted and reviewed
 against that commit, not against `main`. c4 and its mutants cite
 `docs/specs/dual-host-pi-gsd.md`, which in this set is `cases/c2.md`
-(`expected.json` `aliases`). c7 and c8 cite `docs/design/v3-engine.md`, which
+(`expected.json` `aliases`). **That file is copied into the reviewer's clone at
+the path the spec cites**, so the citation resolves from the checkout exactly as
+every other citation does, and lint is handed the same mapping on its command
+line below. It used to live in the input directory under its basename with a
+prompt sentence pointing at it, which says where the content is and not that the
+citation resolves: run B of Rubric 3's pair read the filesystem instead, found
+the path absent at `61bb96f`, and failed G2 on it in four cases, one of which
+became the pair's only false fail (`expected.json` `shipBar.aliasResolves`). c7 and c8 cite `docs/design/v3-engine.md`, which
 `61bb96f` predates, so they carry their own ref, `68ffb40` (`expected.json`
 `cases.<name>.ref`): the last commit on `main` before this set merged, so a
 clone checked out there cannot reach the key either. A case with no `ref` uses
@@ -89,9 +111,22 @@ c3 must fail `[G3]`, c5 must fail `[G2]` naming both `6ea0517` and
 
 ## Running a reviewer pass
 
-Calibration reviewers are **blind to lint** and review every case, including the
-two lint fails. In production lint runs first and a lint failure is never
-reviewed; here the point is to measure the reviewer half on its own.
+Calibration reviewers are **blind to lint's result and are given lint's notes**,
+and they review every case, including the two lint fails. In production lint runs
+first and a lint failure is never reviewed; here the point is to measure the
+reviewer half on its own.
+
+Withholding the notes as well was a defect, and it cost Rubric 3's first pair six
+of its gate decisions. The rubric's Review procedure step 3 is "Work through
+every item lint listed under notes (G2 reviewer half)", and G2 divides itself the
+same way: its script half owns "a repo path that does not exist at the ref", its
+reviewer half opens with what lint listed *without* failing. With no lint output
+at all, step 3 has no input and a reviewer has to guess where one half ends and
+the other begins. One run guessed that it owned the whole gate and failed G2 on a
+path lint resolves; the other guessed the opposite and passed a G3 whose bullet
+is deleted outright. So the runner now hands over lint's `notes` object and
+nothing else from lint. The pass or fail stays withheld, because c3's whole
+construction is a lint G3 failure the reviewer has to reach on its own.
 
 For each case, in a **fresh session** (one case per session, never two), from a
 clone that has never held the key:
@@ -110,24 +145,35 @@ the repository and under a name that says nothing about the case:
 
 ```
 in=$(mktemp -d)
-cp spec-review/rubric.md spec-review/calibration/cases/c2.md "$in"/
+cp spec-review/rubric.md "$in"/
 cp spec-review/calibration/cases/c1.md "$in"/spec.md
+mkdir -p ../pk-cal/docs/specs                                   # c1 to c6 only
+cp spec-review/calibration/cases/c2.md ../pk-cal/docs/specs/dual-host-pi-gsd.md
+node scripts/spec-lint.mjs --json --ref 61bb96f \
+  --alias docs/specs/dual-host-pi-gsd.md=spec-review/calibration/cases/c2.md \
+  spec-review/calibration/cases/c1.md | <keep only .notes> > "$in"/lint-notes.json
 ```
 
-`c2.md` is copied for c1 to c6, because c4 and its mutants cite it; c7 and c8
-cite nothing outside their clone, so their input directory holds only the
-rubric and `spec.md`, and the prompt drops its `c2.md` sentence. Give the verdict
-path explicitly, so parallel sessions cannot overwrite each other. Then give the
-reviewer this prompt, working directory `../pk-cal`:
+`c2.md` goes into the **clone**, at the path the spec cites, for c1 to c6,
+because c4 and its mutants cite it; c7 and c8 cite nothing outside their clone
+and get no placement. `lint-notes.json` holds lint's `notes` object and nothing
+else from lint: not `pass`, not `checks`, not a single finding. Two cases fail
+lint by construction, so a non-zero exit is the normal path here and the output
+still has to be read. Give the verdict path explicitly, so parallel sessions
+cannot overwrite each other. Then give the reviewer this prompt, working
+directory `../pk-cal`:
 
 > Review the implementation spec in ../pk-cal-input/spec.md against the rubric in
-> ../pk-cal-input/rubric.md, following its Review procedure, skipping step 1
-> (lint). The repository is checked out at the commit the spec was written
-> against. Where the spec cites `docs/specs/dual-host-pi-gsd.md`, read
-> ../pk-cal-input/c2.md. Write only the verdict file described in the rubric,
-> with the first line `spec-review verdict for spec.md blob <sha>`, where
-> `<sha>` is `git hash-object ../pk-cal-input/spec.md`, and with the line
-> `Reviewer: <harness>, <model>` copied exactly.
+> ../pk-cal-input/rubric.md, following its Review procedure. The repository is
+> checked out at the commit the spec was written against. Step 1 is already done:
+> lint ran at that commit, and the notes it produced are in
+> ../pk-cal-input/lint-notes.json, which is step 3's input. Whether it passed or
+> failed is deliberately withheld, so do not assume it passed, do not infer it
+> from the notes, and do not run lint yourself. Begin at step 2. Write only the
+> verdict file described in the rubric, with the first line `spec-review verdict
+> for spec.md blob <sha>`, where `<sha>` is `git hash-object
+> ../pk-cal-input/spec.md`, and with the line `Reviewer: <harness>, <model>`
+> copied exactly.
 
 Before sending it, replace `<harness>, <model>` in the prompt with the harness
 and the model id the session was launched with, the same values `RUN.json`
@@ -221,10 +267,11 @@ From `expected.json` `shipBar`, in short:
    a check on the number would let those edits through with stale runs. Each run
    directory's `RUN.json` records the git blob of `rubric.md`, of `expected.json`
    and of each case as they stood when it was scored, and a run counts only when
-   those match the committed blobs. **All seven runs here are visibly stale**
-   rather than plausibly current: five record Rubric 1's blobs, and Rubric 3's
-   wording fixes staled the two that recorded Rubric 2's. That is the mechanism
-   working, and it is the standing cost of a fix - see rule 4.
+   those match the committed blobs. **All nine runs here are visibly stale**
+   rather than plausibly current: five record Rubric 1's blobs, Rubric 3's wording
+   fixes staled the two that recorded Rubric 2's, and the harness fix made for
+   Rubric 3's own pair stales that pair in turn. That is the mechanism working,
+   and it is the standing cost of a fix - see rule 4.
 6. **The two runs are at a comparable capability level.** The bar measures
    agreement between them, so a strong-plus-weak pair cannot tell an ambiguous
    rubric from a reviewer that could not do the task, which is the distinction
@@ -489,9 +536,65 @@ would not have bumped it on their own.
 `gpt-5.6-terra` and `us.anthropic.claude-opus-5` join `shipBar.spent` in the same
 commit, bringing it to eight, and `shipBar.heldOut` says why. Rubric 3 was
 drafted by `us.anthropic.claude-opus-5`, which its own run had already spent, so
-the draft excludes nothing that was not already excluded. **The next pair needs a
-ninth and a tenth model**, and this is the cost `shipBar.heldOut` exists to make
-visible.
+the draft excludes nothing that was not already excluded.
+
+## Rubric 3's first pair, and what it measured
+
+`kiro-cli` on `claude-opus-4.7` and `pi` on `us.anthropic.claude-opus-4-6-v1`,
+the ninth and tenth models. Sixteen clean sessions, blobs matching, 209s to 266s
+per case in run A and 288s to 641s in run B, which satisfies rule 6 on the
+evidence available and closes the effort concern that had to be disclosed last
+time. The full score is in `runs/SCORE.md`.
+
+**All four of Rubric 3's changes did what they were written to do, in both runs.**
+
+| change | measured by | run A | run B |
+| --- | --- | --- | --- |
+| D1's feature-column precondition | c7 `D1 >= 3`, c8 `D1 <= 2` | 4 and 2 | 4 and 2 |
+| G1's `Not G1` paragraph | c1 `G1 fail` | fail | fail |
+| G5's person-or-role-or-team clause | c6 `G5 pass` | pass | pass |
+| the punctuation fix | every quote in c1, c6, c8 | matched | matched |
+
+**`shipBar.featureColumn` is met for the first time in the set's history**, by
+both runs. It was the only rule in `expected.json` that no reviewing model had
+ever satisfied: four models had seen c7 and c8 and all four scored them the same
+on D1. Run A's c8 finding reaches the new paragraph in its own words, naming the
+absent command, row, trace and ref, and then quoting the cap it falls under.
+
+**The bar is not met.** Nine cases miss, agreement fell from 36/40 to 34/40, and
+run B returns a false fail on c4.
+
+**All six gate disagreements have one cause, and it is the harness.** The prompt
+said "skipping step 1 (lint)" and supplied no lint output, while step 3 of the
+Review procedure is to work through lint's notes, and G2's reviewer half is
+written as a function of that list. Run B did lint's script-half job and failed
+G2 on the aliased path in c1, c3, c4 and c6; run A treated the path as resolving
+and skipped step 3 too, which is how it passed c3's G3 where the
+negative-control bullet is deleted outright. **c4's false fail is that one
+finding and nothing else.** The fix is in this commit, in the runner and in
+`shipBar.blind` and `shipBar.aliasResolves`, and **no gate text changed in
+response to those six**: rule 4 sends a disagreement to the rubric's wording, and
+applying it here would have tuned the rubric to a defect in the runner, which is
+the pass 8 mistake in a new costume.
+
+**What is left is one shape, four misses, and it is not acted on yet.** Both
+runs, independently, wrote D3 anchor 1 and the reject row for c1 in prose and
+then scored anchor 2 and answered `revise`; both did the same to c6's D1. It is
+the third time the set has seen a reviewer find a defect and score it one row
+high, and **nothing in the rubric binds a written finding back to the anchor row
+it came from.** The fifth remaining miss is **c2's G3, missed by both runs**, the
+set's second both-miss after the feature column. Neither is fixed here, because a
+pair run under a contradictory instrument cannot tell an ambiguous anchor table
+from a reviewer guessing at the lint boundary.
+
+`claude-opus-4.7` and `us.anthropic.claude-opus-4-6-v1` join `shipBar.spent`,
+bringing it to **ten**. They are spent whatever the pair turned out to measure:
+`shipBar.heldOut` excludes a model that took part in a pass, not only one whose
+misses moved a word. **The next pair needs an eleventh and a twelfth model**, and
+that is now the binding constraint on criterion 12: ten models across four
+attempts, no attempt better than 36/40, and a finite supply of comparable
+top-tier models. If the next pair misses, it is the bar's shape rather than the
+rubric's wording that needs the argument.
 
 ## Known limits of the set
 
