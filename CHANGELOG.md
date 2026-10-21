@@ -206,6 +206,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The calibration runner could void a pass without saying so, and a leaked answer key could
+  reach a session.** Five defects in `scripts/calibrate.mjs`, found by reading it rather than by a
+  run. (1) The forbidden-blob list held only each file's current blob, so `expected.json` as it
+  stood at any earlier commit was reachable in a clone whose refs were stripped; the list now
+  carries every historical blob of the key and the cases, 24 shas today, 12 of them older
+  `expected.json`. (2) The leak check ran after sessions had been launched, so a clone that could
+  read the answers was found out once the reviewing had already happened; every session is now
+  prepared and leak-checked before the first one is spawned, and the refusal says nothing was
+  launched. (3) An isolation audit hit was printed and then ignored, leaving a run that the README
+  calls void with a `RUN.json` that did not record it; a hit now sets the run's failure count and
+  the hits are recorded per case in `RUN.json`, with the work root replaced by `<work>` so a
+  committed line carries no home directory. (4) Sessions and input directories were created under
+  the system temp directory and never removed, so each pass leaked a full clone per case; they are
+  now under `--work`. (5) `--jobs`, `--timeout-min` and `--date` were used unvalidated, so
+  `--jobs abc` became `NaN` and `--date ../../x` wrote outside the runs directory. Also: an alias
+  placement is now refused unless it resolves inside its session, the prompt's wording is hashed
+  into `RUN.json` as `scoredAgainst.prompt` (the prompt is not a file, so the blob rule could not
+  see it, and a defective prompt caused all six of Rubric 3's pair's disagreements), a run on a
+  spent model is a probe whether or not it says so, `finalize --counts true` refuses a probe and a
+  spent model, and a real run refuses a dirty tree under `spec-review` or the two scripts. Test:
+  `test/calibrate-guards.test.ts`, 19 checks that assert the call sites and not only the helpers -
+  the leak check is reached through a documented seam that can only make the runner refuse, every
+  forbidden blob is confirmed unreachable by sha in the clone the runner built, and the temp
+  directory is asserted empty of new entries after a dry run.
+
+- **`spec-review/calibration/score.mjs` printed 7 of its 33 lines into a pipe.** It called
+  `process.exit()` while stdout was a pipe, and on macOS that discards whatever has not drained, so
+  `score.mjs ... | cat` and `| tee` silently truncated the report that decides whether a pass
+  counts. The tail is now a function returning a code into `process.exitCode`, which exits once the
+  stream is flushed; a missing `<case>.verdict.md` is also reported as a miss instead of throwing
+  ENOENT. Test: `test/spec-review-score.test.ts`, whose fixture now copies the real runner in so the
+  prompt-fingerprint assertions cannot be self-fulfilling; the truncation itself is shown by
+  `score.mjs` over the probe pair, 33 lines to a file and 33 through `| cat`.
+
 - **Internal tool names had spread into the published tree.** Seven files across the spec-review
   tooling and its run notes named this machine's default kiro-cli agent and an MCP package scope by
   their internal identifiers, while the rubric's own reviewer rule is to name only publicly

@@ -395,6 +395,16 @@ describe("the module's surface", () => {
 		expect(names.length).toBeGreaterThan(8);
 		for (const n of names) expect(Object.keys(cal), `${n} is declared but not exported`).toContain(n);
 	});
+
+	// The other direction. An export the declaration file omits is a type error
+	// in any test that imports it, which is a worse place to learn about it.
+	it("declares every name the script exports", () => {
+		const declared = readFileSync(join(root, "scripts", "calibrate.d.mts"), "utf8");
+		const names = [...declared.matchAll(/^export declare (?:function|const) (\w+)/gm)].map((m) => m[1]);
+		for (const n of Object.keys(cal)) {
+			expect(names, `${n} is exported but scripts/calibrate.d.mts does not declare it`).toContain(n);
+		}
+	});
 });
 
 describe("the runner end to end, without a reviewer", () => {

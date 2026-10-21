@@ -171,11 +171,18 @@ clone that has never held the key:
 
 ```
 git clone --no-local --no-checkout . ../pk-cal && cd ../pk-cal
+git remote remove origin                      # or one fetch reaches the key
 git checkout --detach 61bb96f    # 68ffb40 for c7 and c8, in a clone of its own
 git for-each-ref --format='%(refname)' | xargs -r -n1 git update-ref -d
 git reflog expire --expire=now --all && git gc --prune=now
 git cat-file -e <expected.json blob> && echo "LEAK: the key is reachable" && exit 1
 ```
+
+Copy that clone once per case before any session starts, and run the last line
+again on each copy: a clone one session has already written into is not a clone
+that has never held the key. This is the protocol the runner implements, and the
+runner is the supported way to run it; the block is here so the steps are
+readable, not so they are typed.
 
 The last line is the check, not a comment: if that blob resolves, the clone can
 read the answers and the run is void. Then, per case, an input directory outside
@@ -199,19 +206,22 @@ else from lint: not `pass`, not `checks`, not a single finding. Two cases fail
 lint by construction, so a non-zero exit is the normal path here and the output
 still has to be read. Give the verdict path explicitly, so parallel sessions
 cannot overwrite each other. Then give the reviewer this prompt, working
-directory `../pk-cal`:
+directory `../pk-cal`, with `<input>` the case's own input directory (`$in`
+above):
 
-> Review the implementation spec in ../pk-cal-input/spec.md against the rubric in
-> ../pk-cal-input/rubric.md, following its Review procedure. The repository is
-> checked out at the commit the spec was written against. Step 1 is already done:
-> lint ran at that commit, and the notes it produced are in
-> ../pk-cal-input/lint-notes.json, which is step 3's input. Whether it passed or
+> Review the implementation spec in <input>/spec.md against the rubric in
+> <input>/rubric.md, following its Review procedure. The repository is checked
+> out at the commit the spec was written against. Step 1 is already done: lint
+> ran at that commit, and the notes it produced are in
+> <input>/lint-notes.json, which is step 3's input. Whether it passed or
 > failed is deliberately withheld, so do not assume it passed, do not infer it
-> from the notes, and do not run lint yourself. Begin at step 2. Write only the
-> verdict file described in the rubric, with the first line `spec-review verdict
-> for spec.md blob <sha>`, where `<sha>` is `git hash-object
-> ../pk-cal-input/spec.md`, and with the line `Reviewer: <harness>, <model>`
-> copied exactly.
+> from the notes, and do not run lint yourself. Begin at step 2. Check a cited
+> path against the files in the checkout rather than against git's HEAD: the
+> checkout is the world under review, and not every file in it is committed at
+> this commit. Write only the verdict file described in the rubric, at
+> <input>/verdict.md, with the first line `spec-review verdict for spec.md
+> blob <sha>`, where `<sha>` is `git hash-object <input>/spec.md`, and with
+> the line `Reviewer: <harness>, <model>` copied exactly.
 
 Before sending it, replace `<harness>, <model>` in the prompt with the harness
 and the model id the session was launched with, the same values `RUN.json`
@@ -220,6 +230,13 @@ cannot see its own model id (Rubric 1's runs show what happens otherwise). After
 the session, check that the verdict's line is the one given; a verdict whose
 line differs is corrected from `RUN.json` and the correction noted in
 `NOTES.md`.
+
+This is the runner's prompt, word for word: `test/calibrate-guards.test.ts`
+reads the quoted block out of this file and compares it to what `promptFor`
+returns for the same placeholders. The prompt is hashed into `RUN.json` as
+`scoredAgainst.prompt`, and the wording is why that field exists, so a prompt
+printed here that differs from the one sent would be the same defect in a
+different file.
 
 ### The runner
 
@@ -233,7 +250,7 @@ once. Two passes are two invocations, which is also what keeps them in separate
 processes. `test/calibrate.test.ts` holds its checks, each against a case it has
 to catch.
 
-Writing it down closed two gaps in the protocol above:
+Writing it down closed three gaps in the protocol above:
 
 - **A clone keeps its `origin`.** Deleting every ref does not stop
   `git fetch origin`, and `origin` here is the repository that holds the key. The
@@ -256,6 +273,20 @@ Writing it down closed two gaps in the protocol above:
   it on the command line, and gives `pi` the flags that keep this machine's
   extensions, skills, prompt templates and MCP servers out of the session: one of
   those extensions injects guidance into every turn.
+
+**What the isolation audit can and cannot see.** It reads one thing: the
+session's own transcript. `kiro-cli --no-interactive` prints the tools it runs,
+and `pi` is given `--mode json`, so in both cases stdout carries the tool calls
+and their results, and the audit greps that stream for the key's paths, for
+`expected.json`'s own field names and for the other cases' paths. A hit voids
+the run. It is blind to a read whose path and content never appear in the
+transcript, to anything a session did through a tool whose output it did not
+echo, and to the real filesystem: a session runs as the maintainer and is not
+sandboxed, so nothing stops a determined reviewer from reading the repository it
+was cloned from. The clone, the stripped refs, the removed remote and the blob
+check are the boundary; the audit is evidence about what the transcript shows.
+`RUN.json` records both halves of this paragraph, as `auditScope` and
+`auditBlindTo`, so a reader of a run does not have to come back here for them.
 
 Two things it deliberately does not do: decide whether a pass met the bar, and
 set `countsTowardsShipBar`. It writes that field `false`, with a `whyNot` saying

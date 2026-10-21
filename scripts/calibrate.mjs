@@ -47,7 +47,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -175,10 +175,17 @@ export function lintNotesOf(lintJson) {
  */
 export function aliasPlacements({ sessionDir, aliases }) {
 	return aliases.map(({ cited, target }) => {
-		if (cited.startsWith("/") || cited.split("/").includes("..")) {
-			throw new Error(`alias path ${cited} must be repo-relative and must not climb out of the clone`);
+		// A forward-slash check alone passed a backslash, a drive letter and a
+		// parent that resolves elsewhere. The key is trusted, so none of these was
+		// reachable; the guard is cheaper than the argument that it stays that way.
+		if (isAbsolute(cited) || /^[A-Za-z]:/.test(cited) || cited.includes("\\") || cited.split("/").includes("..")) {
+			throw new Error(`alias path ${cited} must be repo-relative, forward-slashed, and must not climb out of the clone`);
 		}
-		return { from: join(root, target), to: join(sessionDir, cited) };
+		const to = join(sessionDir, cited);
+		if (!resolve(to).startsWith(resolve(sessionDir) + sep)) {
+			throw new Error(`alias path ${cited} resolves outside the session clone`);
+		}
+		return { from: join(root, target), to };
 	});
 }
 
@@ -195,10 +202,34 @@ export function promptFor({ inputDir, verdictPath, lintNotesPath, reviewerLine }
 		`Step 1 is already done: lint ran at that commit, and the notes it produced are in ${lintNotesPath}, ` +
 		"which is step 3's input. Whether it passed or failed is deliberately withheld, so do not assume it " +
 		"passed, do not infer it from the notes, and do not run lint yourself. Begin at step 2. " +
+		"Check a cited path against the files in the checkout rather than against git's HEAD: the " +
+		"checkout is the world under review, and not every file in it is committed at this commit. " +
 		`Write only the verdict file described in the rubric, at ${verdictPath}, with the first line ` +
 		"`spec-review verdict for spec.md blob <sha>`, where `<sha>` is " +
 		`\`git hash-object ${join(inputDir, "spec.md")}\`, and with the line \`${reviewerLine}\` copied exactly.`
 	);
+}
+
+/**
+ * The prompt's wording, as a sha256 over the template with every per-session
+ * path and the reviewer line replaced by a placeholder.
+ *
+ * `d98d5b6` is why this exists. The prompt alone caused all six of Rubric 3's
+ * pair's gate disagreements, and a run collected under the defective prompt
+ * still recorded blobs that matched, because the prompt is not a file and the
+ * blob rule could not see it. Hashing the wording puts it inside the rule. The
+ * placeholders are what make the two runs of a pair comparable: the paths differ
+ * per session and the reviewer line per run, and neither is the wording.
+ */
+export const PROMPT_FINGERPRINT_INPUT = {
+	inputDir: "<input>",
+	verdictPath: "<input>/verdict.md",
+	lintNotesPath: "<input>/lint-notes.json",
+	reviewerLine: "Reviewer: <harness>, <model>",
+};
+
+export function promptFingerprint() {
+	return createHash("sha256").update(promptFor(PROMPT_FINGERPRINT_INPUT)).digest("hex");
 }
 
 /**
@@ -310,12 +341,23 @@ const HARNESSES = {
 	},
 	pi: {
 		bin: "pi",
+		// One source for the region. The route note said us-west-2 while the
+		// environment honoured AWS_REGION, so a run in another region recorded a
+		// route that was not the one it used.
+		region: () => process.env.AWS_REGION ?? "us-west-2",
 		// -nc -ne -ns -np --no-mcp keep this machine's globally installed pi
 		// extensions, skills, prompt templates and MCP servers out of the
 		// session: one of them injects guidance into every turn, which a
 		// calibration session must not have. --no-session keeps nothing behind.
+		// --mode json is what makes the isolation audit able to see anything. In
+		// text mode pi's print mode writes the final answer and nothing else, so
+		// a session could have read the key with a tool and the audit, which scans
+		// stdout, would have reported clean. The json transcript carries the tool
+		// calls and their results.
 		argv: (model, prompt) => [
 			"-p",
+			"--mode",
+			"json",
 			"--no-session",
 			"-nc",
 			"-ne",
@@ -330,9 +372,12 @@ const HARNESSES = {
 			prompt,
 		],
 		version: () => `@earendil-works/pi-coding-agent ${run("pi", ["--version"])}`,
-		route: (model) =>
-			`amazon-bedrock, us-west-2, through pi's provider of that name. ${model} is a US cross-region inference profile; the bare anthropic.* id of a current-generation model is refused for on-demand invocation. Both are public Bedrock identifiers.`,
-		env: () => ({ AWS_REGION: process.env.AWS_REGION ?? "us-west-2" }),
+		route(model) {
+			return `amazon-bedrock, ${this.region()}, through pi's provider of that name. ${model} is a US cross-region inference profile; the bare anthropic.* id of a current-generation model is refused for on-demand invocation. Both are public Bedrock identifiers.`;
+		},
+		env() {
+			return { AWS_REGION: this.region() };
+		},
 		// Nothing to prepare: the flags above already keep this machine's
 		// extensions, skills, prompt templates and MCP servers out of the session.
 		prepare: () => {},
@@ -356,12 +401,43 @@ function blobOf(path) {
 	return blobShaOf(readFileSync(path));
 }
 
+/**
+ * Every blob of a path that has ever been committed on any ref, newest first.
+ *
+ * The current blob is not the whole exposure. A clone at an old ref cannot reach
+ * today's key, but it can reach any key blob that is an ancestor of that ref,
+ * and both refs this set uses happen to predate the file. That is a property of
+ * two commit ids, not of the design: a case added at a later ref would expose
+ * every older key and the check would still pass. So the history is forbidden
+ * too.
+ */
+function historicalBlobsOf(relPath) {
+	const commits = (git(["log", "--all", "--format=%H", "--", relPath], root, true) || "").split("\n").filter(Boolean);
+	const shas = new Set();
+	for (const commit of commits) {
+		const sha = git(["rev-parse", `${commit}:${relPath}`], root, true);
+		if (sha) shas.add(sha);
+	}
+	return [...shas];
+}
+
 /** Every blob a reviewer must not be able to reach, with a label for the error. */
 function forbiddenBlobs(key) {
-	return [
-		{ label: "expected.json", sha: blobOf(join(CAL, "expected.json")) },
-		...Object.keys(key.cases).map((name) => ({ label: `cases/${name}.md`, sha: blobOf(join(CAL, "cases", `${name}.md`)) })),
-	];
+	const paths = ["spec-review/calibration/expected.json", ...Object.keys(key.cases).map((name) => `spec-review/calibration/cases/${name}.md`)];
+	const out = [];
+	const seen = new Set();
+	for (const relPath of paths) {
+		const label = relPath.replace("spec-review/calibration/", "");
+		for (const [sha, which] of [
+			[blobOf(join(root, relPath)), label],
+			...historicalBlobsOf(relPath).map((sha) => [sha, `${label} (an earlier commit of it)`]),
+		]) {
+			if (seen.has(sha)) continue;
+			seen.add(sha);
+			out.push({ label: which, sha });
+		}
+	}
+	return out;
 }
 
 /**
@@ -402,6 +478,12 @@ function lintNotesFor({ name, ref, aliases }) {
 	try {
 		out = execFileSync(process.execPath, argv, { cwd: root, encoding: "utf8", env: stripGitEnv(process.env) });
 	} catch (err) {
+		// Exit 1 is "lint found something", which is the normal path for c3 and c5.
+		// Exit 2 is could-not-verify, and its notes would describe the runner's own
+		// failure to resolve a ref rather than the spec. It happens to carry no
+		// stdout today, so accepting any non-zero exit with output worked by
+		// accident; a reviewer must never be handed notes from a 2.
+		if (err.status !== 1) throw err;
 		if (typeof err.stdout !== "string" || !err.stdout.trim()) throw err;
 		out = err.stdout;
 	}
@@ -413,14 +495,54 @@ function lintNotesFor({ name, ref, aliases }) {
 	return notes;
 }
 
-function leakCheck(dir, forbidden) {
-	const message = leakReport({ forbidden, isReachable: (sha) => git(["cat-file", "-e", sha], dir, true) !== null });
-	if (message) throw new Error(`${message} from ${dir}. The run would be void; nothing was launched.`);
+/**
+ * Which of `shas` the object database in `dir` can reach, in one git call.
+ *
+ * One `cat-file -e` per blob was fine for nine; with the history of the key
+ * forbidden too it is hundreds, per clone, twice per session.
+ *
+ * CALIBRATE_ASSUME_LEAK is a test seam, and the only one in this file. It makes
+ * every forbidden blob read as reachable, which is how `test/calibrate.test.ts`
+ * proves the CALL SITES refuse a run rather than only that `leakReport` returns
+ * a string. It can make the runner refuse and can never make it permit, so the
+ * seam cannot weaken the check it tests.
+ */
+function reachableShas(dir, shas) {
+	if (!shas.length) return new Set();
+	if (process.env.CALIBRATE_ASSUME_LEAK) return new Set(shas);
+	const out = execFileSync("git", ["cat-file", "--batch-check"], {
+		cwd: dir,
+		input: `${shas.join("\n")}\n`,
+		encoding: "utf8",
+		env: stripGitEnv(process.env),
+		maxBuffer: 64 * 1024 * 1024,
+	});
+	const found = new Set();
+	for (const line of out.split("\n")) {
+		const m = /^([0-9a-f]{40}) (\S+)/.exec(line);
+		if (m && m[2] !== "missing") found.add(m[1]);
+	}
+	return found;
+}
+
+function leakCheck(dir, forbidden, launched = false) {
+	const reachable = reachableShas(dir, forbidden.map((f) => f.sha));
+	const message = leakReport({ forbidden, isReachable: (sha) => reachable.has(sha) });
+	if (message) {
+		const tail = launched ? "The run is void." : "The run would be void; nothing was launched.";
+		throw new Error(`${message} from ${dir}. ${tail}`);
+	}
+	return forbidden.length;
 }
 
 function baseClone(workRoot, ref, forbidden) {
 	const dir = join(workRoot, `base-${ref}`);
-	if (existsSync(dir)) return dir;
+	// A reused --work used to return here unchecked, so the one clone every
+	// session is copied from was the one thing never verified on a second run.
+	if (existsSync(dir)) {
+		leakCheck(dir, forbidden);
+		return dir;
+	}
 	git(["clone", "--no-local", "--no-checkout", "--quiet", root, dir]);
 	git(["checkout", "--detach", "--quiet", ref], dir);
 	git(["remote", "remove", "origin"], dir);
@@ -431,6 +553,34 @@ function baseClone(workRoot, ref, forbidden) {
 	git(["gc", "--prune=now", "--quiet"], dir);
 	leakCheck(dir, forbidden);
 	return dir;
+}
+
+/**
+ * A flag that must be a whole number above zero.
+ *
+ * `--jobs abc` made `Array.from({length: NaN})`, which is zero lanes: the run
+ * exited 0 having launched nothing, and in a real run would have written a
+ * RUN.json with no verdicts in it. `--timeout-min abc` passed NaN to
+ * setTimeout, which Node treats as 1ms, so every session was killed at once.
+ */
+export function positiveInt(value, flag) {
+	const n = Number(value);
+	if (!Number.isInteger(n) || n < 1) {
+		throw new Error(`--${flag} must be a whole number above zero, got ${JSON.stringify(String(value))}`);
+	}
+	return n;
+}
+
+/** A run id and a run directory are built from this, so it is not free text. */
+export function checkedDate(value) {
+	const s = String(value);
+	// toISOString throws a RangeError on an impossible date, which would surface
+	// as "Invalid Date" and say nothing about which flag was wrong.
+	const real = /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(new Date(`${s}T00:00:00Z`).getTime());
+	if (!real || new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) !== s) {
+		throw new Error(`--date must be a real yyyy-mm-dd date, got ${JSON.stringify(s)}`);
+	}
+	return s;
 }
 
 function parseArgs(argv) {
@@ -450,13 +600,30 @@ function parseArgs(argv) {
 	return out;
 }
 
-async function session({ harness, model, reviewerLine, workRoot, base, caseEntry, timeoutMs, dryRun }) {
+/**
+ * Everything a session needs, built before any model is launched.
+ *
+ * This used to run inside the parallel pool, which made two claims false. The
+ * lint-notes leak check and the per-session leak check both throw, and by the
+ * time one lane threw another lane had already started a model: the process
+ * exited 2 while those children kept running and billing, and the message said
+ * nothing was launched. Preparing every session first, in order, makes the
+ * sentence true and leaves the pool with one job, which is to spawn.
+ *
+ * The directories live under the work root rather than in the system temp
+ * directory. A full clone per case and an input directory per case were being
+ * created outside --work and never removed, so every run and every `npm run
+ * verify` left two more behind.
+ */
+function prepareSession({ harness, model, reviewerLine, workRoot, base, caseEntry }) {
 	const h = HARNESSES[harness];
 	const name = caseEntry.name;
-	const sessionDir = mkdtempSync(join(tmpdir(), "s-"));
-	const inputDir = mkdtempSync(join(tmpdir(), "in-"));
+	const sessionDir = join(workRoot, "sessions", name);
+	const inputDir = join(workRoot, "inputs", name);
+	mkdirSync(dirname(sessionDir), { recursive: true });
+	mkdirSync(inputDir, { recursive: true });
 	cpSync(base, sessionDir, { recursive: true });
-	leakCheck(sessionDir, caseEntry.forbidden);
+	const blobsChecked = leakCheck(sessionDir, caseEntry.forbidden);
 	h.prepare(sessionDir);
 	for (const { from, to } of aliasPlacements({ sessionDir, aliases: caseEntry.aliases })) {
 		mkdirSync(dirname(to), { recursive: true });
@@ -482,8 +649,22 @@ async function session({ harness, model, reviewerLine, workRoot, base, caseEntry
 		join(logs, `${name}.cmd.txt`),
 		`${[h.bin, ...argv.slice(0, -1)].join(" ")} <prompt>\ncwd: ${sessionDir}\ninput: ${inputDir}\n`,
 	);
-	const meta = { name, sessionDir, inputDir, verdictPath, specBlob: blobOf(join(inputDir, "spec.md")) };
-	if (dryRun) return { ...meta, code: null, signal: null, dryRun: true };
+	return {
+		name,
+		harness,
+		sessionDir,
+		inputDir,
+		verdictPath,
+		argv,
+		blobsChecked,
+		specBlob: blobOf(join(inputDir, "spec.md")),
+	};
+}
+
+async function launchSession({ prepared, workRoot, timeoutMs }) {
+	const { name, sessionDir, argv, harness } = prepared;
+	const h = HARNESSES[harness];
+	const logs = join(workRoot, "logs");
 	const started = Date.now();
 	const { code, signal, out, err } = await new Promise((done) => {
 		const child = spawn(h.bin, argv, {
@@ -502,7 +683,7 @@ async function session({ harness, model, reviewerLine, workRoot, base, caseEntry
 	});
 	writeFileSync(join(logs, `${name}.out.txt`), out);
 	writeFileSync(join(logs, `${name}.err.txt`), err);
-	return { ...meta, code, signal, seconds: Math.round((Date.now() - started) / 1000) };
+	return { ...prepared, code, signal, seconds: Math.round((Date.now() - started) / 1000) };
 }
 
 async function pool(items, jobs, worker) {
@@ -528,7 +709,7 @@ async function cmdRun(args) {
 	const key = JSON.parse(readFileSync(join(CAL, "expected.json"), "utf8"));
 	const rubricText = readFileSync(join(root, "spec-review", "rubric.md"), "utf8");
 	const rubric = rubricNumber(rubricText);
-	const date = args.date ?? new Date().toISOString().slice(0, 10);
+	const date = args.date === undefined ? new Date().toISOString().slice(0, 10) : checkedDate(args.date);
 	const runId = runIdFor({ date, rubric, harness, model });
 	const reviewerLine = `Reviewer: ${harness}, ${model}`;
 	const forbidden = forbiddenBlobs(key);
@@ -539,37 +720,71 @@ async function cmdRun(args) {
 	const workRoot = args.work ? resolve(args.work) : mkdtempSync(join(tmpdir(), "cal-"));
 	mkdirSync(workRoot, { recursive: true });
 	const dryRun = Boolean(args["dry-run"]);
-	const timeoutMs = Number(args["timeout-min"] ?? 60) * 60_000;
-	const jobs = Number(args.jobs ?? 4);
+	const timeoutMs = (args["timeout-min"] === undefined ? 60 : positiveInt(args["timeout-min"], "timeout-min")) * 60_000;
+	const jobs = args.jobs === undefined ? 4 : positiveInt(args.jobs, "jobs");
+	// A model that has already taken part in a pass cannot be one of the two the
+	// bar asks for, and a run on one is a probe whether or not it is labelled.
+	// Recording that as a field rather than as prose in whyNot is what lets
+	// score.mjs refuse it: a probe's run id, its null calibrationPass and its
+	// directory all look exactly like a gating run's.
+	const spent = new Set(Array.isArray(key.shipBar?.spent) ? key.shipBar.spent : []);
+	const probe = Boolean(args.probe) || spent.has(model);
+	// What the sessions are given has to be what the run records. The blobs used
+	// to be hashed from the working tree after the pool finished, hours after the
+	// rubric and the cases were copied into the first session, and scoredAtCommit
+	// was HEAD whether or not those blobs were in it. One snapshot, before
+	// anything is prepared, over a tree that is not allowed to be dirty.
+	if (!dryRun) {
+		const watched = ["spec-review", "scripts/calibrate.mjs", "scripts/spec-lint.mjs"];
+		const dirty = (git(["status", "--porcelain", "--", ...watched]) || "").trim();
+		if (dirty) {
+			throw new Error(
+				`the tree is dirty under ${watched.join(", ")}, so a run's blobs would match no commit:\n${dirty}\n` +
+					"Commit or stash first. Nothing was launched.",
+			);
+		}
+	}
+	const snapshot = {
+		rubric: blobOf(join(root, "spec-review", "rubric.md")),
+		expected: blobOf(join(CAL, "expected.json")),
+		runner: blobOf(join(root, "scripts", "calibrate.mjs")),
+		prompt: promptFingerprint(),
+		cases: Object.fromEntries(chosen.map((c) => [c.name, blobOf(join(CAL, "cases", `${c.name}.md`))])),
+	};
 	console.log(`run id    ${runId}`);
 	console.log(`reviewer  ${reviewerLine}`);
 	console.log(`work      ${workRoot}`);
 	console.log(`cases     ${chosen.map((c) => c.name).join(", ")}${dryRun ? "  (dry run)" : ""}`);
+	if (probe) {
+		console.log(`probe     yes${spent.has(model) ? ` (${model} is in shipBar.spent)` : " (--probe)"}; this run can never count`);
+	}
 	const bases = new Map();
 	for (const c of chosen) {
 		if (!bases.has(c.ref)) bases.set(c.ref, baseClone(workRoot, c.ref, forbidden));
 	}
 	console.log(`clones    ${[...bases.keys()].map((r) => `${r} (leak check clean)`).join(", ")}`);
-	const results = await pool(
-		chosen.map((c) => ({ ...c, forbidden })),
-		jobs,
-		(caseEntry) =>
-			session({
+	// Sequential, and before the first spawn: every check that can void the run
+	// happens here, so the message that nothing was launched is true.
+	const prepared = [];
+	for (const caseEntry of chosen) {
+		prepared.push(
+			prepareSession({
 				harness,
 				model,
 				reviewerLine,
 				workRoot,
 				base: bases.get(caseEntry.ref),
-				caseEntry,
-				timeoutMs,
-				dryRun,
+				caseEntry: { ...caseEntry, forbidden },
 			}),
-	);
+		);
+	}
+	console.log(`prepared  ${prepared.length} session(s), ${forbidden.length} forbidden blobs checked per clone`);
 	if (dryRun) {
-		for (const r of results) console.log(`  ${r.name}: prepared, spec blob ${r.specBlob.slice(0, 12)}, input ${r.inputDir}`);
+		for (const r of prepared) console.log(`  ${r.name}: prepared, spec blob ${r.specBlob.slice(0, 12)}, input ${r.inputDir}`);
 		console.log(`\nprompts and argv are under ${join(workRoot, "logs")}`);
 		return 0;
 	}
+	const results = await pool(prepared, jobs, (p) => launchSession({ prepared: p, workRoot, timeoutMs }));
 	const runDir = join(CAL, "runs", runId);
 	mkdirSync(runDir, { recursive: true });
 	const report = [];
@@ -577,7 +792,7 @@ async function cmdRun(args) {
 	for (const r of results) {
 		if (!existsSync(r.verdictPath)) {
 			bad += 1;
-			report.push({ name: r.name, status: `NO VERDICT (exit ${r.code}, signal ${r.signal})`, corrections: [] });
+			report.push({ name: r.name, verdict: false, status: `NO VERDICT (exit ${r.code}, signal ${r.signal})`, corrections: [] });
 			continue;
 		}
 		const checked = verifyVerdict({
@@ -589,11 +804,13 @@ async function cmdRun(args) {
 		if (checked.problems.length) bad += 1;
 		report.push({
 			name: r.name,
+			verdict: true,
 			status: checked.problems.length ? `PROBLEM: ${checked.problems.join("; ")}` : `ok (exit ${r.code}, ${r.seconds}s)`,
 			corrections: checked.corrections,
 		});
 	}
 	const audit = [];
+	const hitsByCase = new Map();
 	for (const r of results) {
 		const others = results.filter((o) => o.name !== r.name).flatMap((o) => [o.sessionDir, o.inputDir]);
 		const texts = [`${r.name}.out.txt`, `${r.name}.err.txt`]
@@ -602,10 +819,18 @@ async function cmdRun(args) {
 			.map((p) => readFileSync(p, "utf8"));
 		if (existsSync(join(runDir, `${r.name}.verdict.md`))) texts.push(readFileSync(join(runDir, `${r.name}.verdict.md`), "utf8"));
 		const hits = auditText({ text: texts.join("\n"), otherPaths: others });
+		// Paths are stripped of the work root: these lines are committed, and a
+		// maintainer's temp directory carries a home directory in it.
+		hitsByCase.set(r.name, hits.map((h) => h.split(workRoot).join("<work>")));
 		audit.push(`${r.name}: ${hits.length ? `HITS ${hits.join("; ")}` : "clean"}`);
 	}
 	writeFileSync(join(workRoot, "audit.txt"), `${audit.join("\n")}\n`);
-	for (const ref of bases.keys()) leakCheck(bases.get(ref), forbidden);
+	// An audit hit used to print and leave the exit code alone, so a run that had
+	// seen the key could still be finalized as a pass. It voids the run.
+	const auditFailed = [...hitsByCase.values()].some((h) => h.length);
+	if (auditFailed) bad += 1;
+	for (const ref of bases.keys()) leakCheck(bases.get(ref), forbidden, true);
+	const reviewed = new Set(report.filter((r) => r.verdict).map((r) => r.name));
 	const h = HARNESSES[harness];
 	const runJson = {
 		runId,
@@ -614,14 +839,40 @@ async function cmdRun(args) {
 		model,
 		modelRoute: h.route(model),
 		calibrationPass: null,
+		probe,
 		ref: key.ref,
-		refsByCase: Object.fromEntries(plan.map((c) => [c.name, c.ref])),
+		// Both of these used to be taken from the key, so a --cases run and a run
+		// whose session timed out both recorded all eight cases: the run claimed
+		// coverage it did not have, and score.mjs then died on the missing verdict
+		// file rather than reporting the gap.
+		refsByCase: Object.fromEntries(chosen.filter((c) => reviewed.has(c.name)).map((c) => [c.name, c.ref])),
 		scoredAtCommit: git(["rev-parse", "HEAD"]),
 		scoredAgainst: {
-			rubric: blobOf(join(root, "spec-review", "rubric.md")),
-			expected: blobOf(join(CAL, "expected.json")),
-			cases: Object.fromEntries(Object.keys(key.cases).map((name) => [name, blobOf(join(CAL, "cases", `${name}.md`))])),
+			rubric: snapshot.rubric,
+			expected: snapshot.expected,
+			runner: snapshot.runner,
+			prompt: snapshot.prompt,
+			cases: Object.fromEntries(Object.entries(snapshot.cases).filter(([name]) => reviewed.has(name))),
 		},
+		sessions: results.map((r) => {
+			const line = report.find((x) => x.name === r.name);
+			return {
+				case: r.name,
+				exit: r.code,
+				signal: r.signal,
+				seconds: r.seconds ?? null,
+				verdict: Boolean(line?.verdict),
+				forbiddenBlobsChecked: r.blobsChecked,
+				reviewerLineCorrected: Boolean(line?.corrections.length),
+				audit: (hitsByCase.get(r.name) ?? []).length ? { clean: false, hits: hitsByCase.get(r.name) } : { clean: true },
+			};
+		}),
+		auditScope:
+			harness === "pi"
+				? "pi runs with --mode json, so stdout carries the tool calls and their results and the audit reads them."
+				: "kiro-cli --no-interactive prints the tools it runs, so stdout carries them and the audit reads them.",
+		auditBlindTo:
+			"A read whose path and content never appear in the transcript, anything a session did through a tool whose output it did not echo, and the real filesystem: a session runs as the maintainer and is not sandboxed, so this audit is evidence about what the transcript shows and not a boundary.",
 		countsTowardsShipBar: false,
 		whyNot:
 			"Not scored yet: scripts/calibrate.mjs writes this false on purpose, because a runner that declared its own pass to meet the bar is the pass 8 defect (shipBar.relabelling). Run score.mjs over both passes, then set it with 'calibrate.mjs finalize'.",
@@ -632,7 +883,7 @@ async function cmdRun(args) {
 		console.log(`  ${r.name.padEnd(3)} ${r.status}`);
 		for (const c of r.corrections) console.log(`      correction: ${c}`);
 	}
-	console.log(`\nisolation audit: ${audit.every((a) => a.endsWith("clean")) ? "clean for every session" : "SEE audit.txt"}`);
+	console.log(`\nisolation audit: ${auditFailed ? "HITS - THE RUN IS VOID, see audit.txt" : "clean for every session"}`);
 	console.log(`verdicts and RUN.json: ${runDir}`);
 	console.log(`logs, prompts and audit: ${workRoot}`);
 	console.log(`corrections to record in NOTES.md: ${report.flatMap((r) => r.corrections).length}`);
@@ -647,6 +898,21 @@ function cmdFinalize(args) {
 	if (typeof args.why !== "string" || !args.why.trim()) throw new Error("--why is required: a run records why it counts, or why not");
 	const path = join(resolve(dir), "RUN.json");
 	const run = JSON.parse(readFileSync(path, "utf8"));
+	// Nothing used to read shipBar.spent. A probe, or any run on a model that had
+	// already taken part in a pass, could be finalized with --counts true over
+	// matching blobs and score.mjs would exit 0 on it. Both are refused here and
+	// again in score.mjs, because a flag a human types is the place this is most
+	// likely to go wrong and the place a reason can be given.
+	if (args.counts === "true") {
+		const key = JSON.parse(readFileSync(join(CAL, "expected.json"), "utf8"));
+		const spent = Array.isArray(key.shipBar?.spent) ? key.shipBar.spent : [];
+		if (run.probe === true) {
+			throw new Error("this run records probe: true, and a probe is never one of the two (shipBar.capabilityMatched)");
+		}
+		if (spent.includes(run.model)) {
+			throw new Error(`${run.model} is in shipBar.spent, so it cannot be one of the two held-out models (shipBar.heldOut)`);
+		}
+	}
 	run.countsTowardsShipBar = args.counts === "true";
 	if (run.countsTowardsShipBar) {
 		run.why = args.why;
@@ -662,7 +928,8 @@ function cmdFinalize(args) {
 
 const USAGE = `usage:
   calibrate.mjs run --harness <${Object.keys(HARNESSES).join("|")}> --model <id>
-       [--cases c1,c2] [--jobs 4] [--timeout-min 60] [--work <dir>] [--date <yyyy-mm-dd>] [--dry-run]
+       [--cases c1,c2] [--jobs 4] [--timeout-min 60] [--work <dir>] [--date <yyyy-mm-dd>]
+       [--probe] [--dry-run]
   calibrate.mjs finalize <run-dir> --counts true|false --why "<reason>"
 `;
 

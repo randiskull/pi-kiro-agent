@@ -25,9 +25,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { promptFingerprint } from "../scripts/calibrate.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const realScorer = join(root, "spec-review", "calibration", "score.mjs");
+const realRunner = join(root, "scripts", "calibrate.mjs");
 
 /** The blob sha git itself would store, as an oracle independent of the scorer. */
 function gitBlob(path: string): string {
@@ -103,10 +105,17 @@ function makeFixture() {
 	writeFileSync(join(calib, "cases", "f1.md"), "# Fixture case f1\n\nNothing to review.\n");
 	writeFileSync(join(calib, "runs", "r1", "f1.verdict.md"), VERDICT);
 	copyFileSync(realScorer, join(calib, "score.mjs"));
+	// The scorer resolves the runner at ../../scripts/calibrate.mjs to recompute
+	// the prompt fingerprint, so the real one is copied in too. A stub exporting
+	// a constant would make every prompt assertion here self-fulfilling.
+	mkdirSync(join(dir, "scripts"), { recursive: true });
+	copyFileSync(realRunner, join(dir, "scripts", "calibrate.mjs"));
 	const truth = {
 		rubric: gitBlob(join(dir, "spec-review", "rubric.md")),
 		expected: gitBlob(join(calib, "expected.json")),
 		f1: gitBlob(join(calib, "cases", "f1.md")),
+		runner: gitBlob(join(dir, "scripts", "calibrate.mjs")),
+		prompt: promptFingerprint(),
 	};
 	const writeRunRaw = (body: string) => writeFileSync(join(calib, "runs", "r1", "RUN.json"), body);
 	const writeRun = (scoredAgainst: unknown, counts: unknown) => {
@@ -116,7 +125,13 @@ function makeFixture() {
 		writeFileSync(join(calib, "runs", "r1", "RUN.json"), `${JSON.stringify(body, null, "\t")}\n`);
 	};
 	const score = () => runScorer(join(calib, "score.mjs"), [join(calib, "runs", "r1")]);
-	const honest = () => ({ rubric: truth.rubric, expected: truth.expected, cases: { f1: truth.f1 } });
+	const honest = () => ({
+		rubric: truth.rubric,
+		expected: truth.expected,
+		runner: truth.runner,
+		prompt: truth.prompt,
+		cases: { f1: truth.f1 },
+	});
 	return { dir, calib, truth, writeRun, writeRunRaw, score, honest };
 }
 

@@ -52,6 +52,19 @@ export declare function promptFor(input: {
 	reviewerLine: string;
 }): string;
 
+/**
+ * The placeholder input promptFingerprint() hashes: a prompt wording with no
+ * path and no reviewer in it, so the fingerprint a run records identifies the
+ * instructions and not the machine that ran them.
+ */
+export declare const PROMPT_FINGERPRINT_INPUT: {
+	inputDir: string;
+	verdictPath: string;
+	lintNotesPath: string;
+	reviewerLine: string;
+};
+export declare function promptFingerprint(): string;
+
 export declare function verifyVerdict(input: { text: string; specBlob: string; reviewerLine: string }): {
 	text: string;
 	problems: string[];
@@ -79,3 +92,8 @@ export declare function leakReport(input: {
 
 export declare const LEAK_STRINGS: string[];
 export declare function auditText(input: { text: string; otherPaths: string[] }): string[];
+
+/** Throws when the value is not a decimal integer of at least 1. */
+export declare function positiveInt(value: unknown, flag: string): number;
+/** Throws unless the value is a real yyyy-mm-dd date, not merely that shape. */
+export declare function checkedDate(value: unknown): string;
