@@ -423,20 +423,19 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
     carries the whole criterion and not only the case expectations
     (`test/spec-review-score.test.ts`); `spec-review.mjs score` must keep that.
     **Open, and merged open by maintainer decision; tracked by issue 67.**
-    Eleven runs exist and none counts. Two are withdrawn for being scored against a key fitted to
-    them. The `claude-sonnet-5` run was held out and honest, but it missed
-    three cases and its misses drove wording fixes, so that model is now in the
-    tuning loop. The last pair - `gsd` 1.22.0 on
+    Eleven runs exist and none counts. Two are withdrawn for being scored
+    against a key fitted to them. The `claude-sonnet-5` run was held out and
+    honest, but it missed three cases and its misses drove wording fixes, so
+    that model is now in the tuning loop. The last pair - `gsd` 1.22.0 on
     `us.anthropic.claude-fable-5-1` and `kiro-cli` 2.32.0 on `gpt-5.6-sol`,
     held out from every pass and every fix - agreed with itself on 28 of 30
-    gate decisions and missed four of twelve cases. That pair records the
-    blobs current when it ran, and Rubric 2 staled it; the misses stand as
-    taken. The four misses are
-    rubric-wording defects, not defects in anything this spec builds; they are
-    listed in issue 67 and summarised in the Risks below. The c2 and c7 label
-    ratification was a precondition; it was given on 2026-10-19 and changed no
-    label, so it is no longer what this criterion waits on. Rubric 2 fixes the
-    wording those misses found.
+    gate decisions and missed four of twelve cases. That pair records the blobs
+    current when it ran, and Rubric 2 staled it; the misses stand as taken. The
+    four misses are rubric-wording defects, not defects in anything this spec
+    builds; they are listed in issue 67 and summarised in the Risks below. The
+    c2 and c7 label ratification was a precondition; it was given on 2026-10-19
+    and changed no label, so it is no longer what this criterion waits on.
+    Rubric 2 fixes the wording those misses found.
 
     **Rubric 2's first pair ran on 2026-10-19 and misses.** `kiro-cli` 2.32.0 on
     `gpt-5.6-terra` and `pi` 1.3.0 on `us.anthropic.claude-opus-5`, both held out
@@ -636,9 +635,9 @@ so the protocol says clone, strip the refs, and assert the key's blob is absent.
   deliberately the broad rule: taking part in a pass spends a model whatever
   that pass turned out to measure, because the narrow reading lets the same two
   models be re-run after each harness fix until session variance puts a pair
-  over the bar. A spent model may be re-run only as a non-gating probe. That cost is the reason Rubric 2 widens the set with c7 and c8
-  rather than re-tuning the original six: a wider set makes each exclusion
-  cheaper.
+  over the bar. A spent model may be re-run only as a non-gating probe. That
+  cost is the reason Rubric 2 widens the set with c7 and c8 rather than
+  re-tuning the original six: a wider set makes each exclusion cheaper.
 - **The c2 and c7 labels are judgement, and were ratified on 2026-10-19**
   without changing one. The held-out run passed c2 G3 and G4 where the key fails
   them, but its findings were on D2, D3 and D5, so it argued against neither,

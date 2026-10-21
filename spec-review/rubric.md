@@ -227,16 +227,16 @@ finding is the part with the spec's own text attached to it.
 | **1** | No cause, or one contradicted by the spec's own evidence. | No problem statement beyond the goal. |
 
 **For a feature spec, measurement is a precondition, not one of several
-credits.** Rows 4 and 3 both open with it, so a 3 or a 4 needs the spec itself to
-show how the current behaviour was observed: a command that was run, an output or
-a number it produced, and the ref it was taken at, present in the spec where a
-reader can see them. Tying each gap to the code that produces it is the rest of
-row 4 and carries no score on its own, so a Problem that names the right code and
-states its findings as claims is a 2, however precise those claims are and
-however well they hold up.
+credits.** Rows 4 and 3 both open with it, so a 3 or a 4 needs the spec itself
+to show how the current behaviour was observed: a command that was run, an
+output or a number it produced, and the ref it was taken at, present in the
+spec where a reader can see them. Tying each gap to the code that produces it
+is the rest of row 4 and carries no score on its own, so a Problem that names
+the right code and states its findings as claims is a 2, however precise those
+claims are and however well they hold up.
 
-**Score the evidence the spec presents, not whether its conclusions are true.** A
-reviewer who checks the claims against the checkout and finds them right has
+**Score the evidence the spec presents, not whether its conclusions are true.**
+A reviewer who checks the claims against the checkout and finds them right has
 learned that the author was right, which is not the same as the spec having
 measured anything. Row 2 is where a Problem that turns out to be correct but is
 not measured belongs, and raising it because it turned out to be correct is the

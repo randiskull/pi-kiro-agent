@@ -122,13 +122,14 @@ c1 to c6 cite code as of commit `61bb96f`, so they are linted and reviewed
 against that commit, not against `main`. c4 and its mutants cite
 `docs/specs/dual-host-pi-gsd.md`, which in this set is `cases/c2.md`
 (`expected.json` `aliases`). **That file is copied into the reviewer's clone at
-the path the spec cites**, so the citation resolves from the checkout exactly as
-every other citation does, and lint is handed the same mapping on its command
-line below. It used to live in the input directory under its basename with a
-prompt sentence pointing at it, which says where the content is and not that the
-citation resolves: run B of Rubric 3's pair read the filesystem instead, found
-the path absent at `61bb96f`, and failed G2 on it in four cases, one of which
-became the pair's only false fail (`expected.json` `shipBar.aliasResolves`). c7 and c8 cite `docs/design/v3-engine.md`, which
+the path the spec cites**, so the citation resolves from the checkout exactly
+as every other citation does, and lint is handed the same mapping on its
+command line below. It used to live in the input directory under its basename
+with a prompt sentence pointing at it, which says where the content is and not
+that the citation resolves: run B of Rubric 3's pair read the filesystem
+instead, found the path absent at `61bb96f`, and failed G2 on it in four cases,
+one of which became the pair's only false fail (`expected.json`
+`shipBar.aliasResolves`). c7 and c8 cite `docs/design/v3-engine.md`, which
 `61bb96f` predates, so they carry their own ref, `68ffb40` (`expected.json`
 `cases.<name>.ref`): the last commit on `main` before this set merged, so a
 clone checked out there cannot reach the key either. A case with no `ref` uses
@@ -332,16 +333,17 @@ From `expected.json` `shipBar`, in short:
    is the clause pass 8 was missing, and breaking it is why its result is
    withdrawn.
 5. **Runs are keyed to blobs, not to the `Rubric:` number.** A wording fix that
-   keeps the meaning does not bump the number, yet every edit re-runs the set, so
-   a check on the number would let those edits through with stale runs. Each run
-   directory's `RUN.json` records the git blob of `rubric.md`, of `expected.json`
-   and of each case as they stood when it was scored, and a run counts only when
-   those match the committed blobs. **All eleven runs here are visibly stale**
-   rather than plausibly current: five record Rubric 1's blobs, Rubric 3's wording
-   fixes staled the two that recorded Rubric 2's, the harness fix made for
-   Rubric 3's own pair stales that pair in turn, Rubric 4 stales all nine again,
-   and the c8 quote correction Rubric 4's probe produced stales the probe. That is the mechanism working,
-   and it is the standing cost of a fix - see rule 4.
+   keeps the meaning does not bump the number, yet every edit re-runs the set,
+   so a check on the number would let those edits through with stale runs. Each
+   run directory's `RUN.json` records the git blob of `rubric.md`, of
+   `expected.json` and of each case as they stood when it was scored, and a run
+   counts only when those match the committed blobs. **All eleven runs here are
+   visibly stale** rather than plausibly current: five record Rubric 1's blobs,
+   Rubric 3's wording fixes staled the two that recorded Rubric 2's, the
+   harness fix made for Rubric 3's own pair stales that pair in turn, Rubric 4
+   stales all nine again, and the c8 quote correction Rubric 4's probe produced
+   stales the probe. That is the mechanism working, and it is the standing cost
+   of a fix - see rule 4.
 6. **The two runs are at a comparable capability level.** The bar measures
    agreement between them, so a strong-plus-weak pair cannot tell an ambiguous
    rubric from a reviewer that could not do the task, which is the distinction
@@ -515,7 +517,8 @@ alone. c1's G1 reason now argues the label from the mutation and the code at
 selects the delta prompt), which is what `shipBar.relabelling` asks of a label
 that a run has questioned. c4, which had only a D5 reason, gained G1, G4 and G5
 reasons arguing its pass labels under Rubric 2's wider G1, its G4 split and its
-G5 wording, and they cover c3, c5 and c6 where the text is shared. `shipBar.heldOut` names every spent model, and
+G5 wording, and they cover c3, c5 and c6 where the text is shared.
+`shipBar.heldOut` names every spent model, and
 `shipBar.spent` lists them for a script to read.
 
 The two runs that measure Rubric 2 must come from models outside that list, and
