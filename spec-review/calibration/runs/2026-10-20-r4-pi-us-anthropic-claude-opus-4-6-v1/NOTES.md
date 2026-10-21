@@ -24,10 +24,14 @@ verdicts being collected and the pair being scored.
 
 ## Result
 
-**Three of eight cases miss on a gate, a dimension or the outcome**, which is
-the fewest any run has recorded against any rubric; Rubric 3's run B missed five.
-`score.mjs` counts four, the fourth being c8, where this run's `D1 2` is correct
-and only the `mustQuoteOneOf` quote misses.
+**Three of eight cases miss on a gate, a dimension or the outcome**, against
+five for the same model under Rubric 3. `score.mjs` counts four, the fourth
+being c8, where this run's `D1 2` is correct and only the `mustQuoteOneOf` quote
+misses. That is not the fewest the set has recorded: scored against the current
+key, Rubric 2's `us.anthropic.claude-opus-5` run misses two of eight, Rubric 1's
+held-out `claude-sonnet-5` run three of six, and the two earliest six-case runs
+none at all - which is the pass-8 result that was withdrawn, and the reason a
+low count is not by itself evidence.
 
 ### What Rubric 4 was written for
 

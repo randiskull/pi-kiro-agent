@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Implementation specs get a rubric and a linter before anyone builds them.**
-  `spec-review/rubric.md` (now Rubric 4) defines five pass/fail gates and six separately scored
+  `spec-review/rubric.md` (now Rubric 5) defines five pass/fail gates and six separately scored
   dimensions for a spec in `docs/specs/`, and `scripts/spec-lint.mjs` checks the part a script can:
   structure, defect or feature typing, attribution, and that cited paths, commits, `§` sections and
   npm scripts exist, with near-miss detection for misspelled symbols. An eight-case calibration set
@@ -33,156 +33,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Contributor tooling only: nothing under `spec-review/` or `scripts/` is in the published package.
   Design: `docs/specs/spec-review-bus.md`.
 
-- **A calibration pass is a script now, not a protocol followed by hand.**
-  `node scripts/calibrate.mjs run --harness <harness> --model <model>` makes a ref-stripped clone
-  per ref the set needs, copies it once per case so no two sessions share a directory, builds an
-  input directory and the README's prompt per case, runs one fresh session per case, checks each
-  verdict's header blob against the spec that session was given and its `Reviewer:` line against the
-  line it was launched with, audits every session's output for answer-key strings and for another
-  session's paths, and writes `RUN.json` with blobs it computes rather than blobs someone typed.
-  Writing it down closed three holes in the hand protocol: a clone with every ref deleted still had
-  its `origin`, which is the repository that holds the key; the sessions of a pass shared one working
-  copy; and the harness brought its own tools, which is how an MCP workspace-search tool came to
-  run inside a reviewer session on the first attempt at the Rubric 2 pass (that attempt was killed
-  and nothing from it kept). Each `kiro-cli` session now runs under a workspace agent that declares
-  no MCP server, and each `pi` session with this machine's extensions, skills, prompt templates and
-  MCP servers switched off. It never decides whether a pass met the bar - it writes
-  `countsTowardsShipBar: false` with a reason, and a human flips that through
-  `calibrate.mjs finalize` after reading `score.mjs`, because a runner that graded its own pass is
-  the withdrawn pass 8 with a script behind it. Contributor tooling only: nothing under `scripts/`
-  is in the published package. Test: `test/calibrate.test.ts`, where the leak check, the citation
-  guard, the verdict header check, the `Reviewer:` correction, the run-id slug and `finalize`'s
-  required reason each fail on a mutation of their own.
-
-- **Rubric 2 has its first measured result, and it does not meet the ship bar.** Two held-out runs
-  over all eight calibration cases: `kiro-cli` 2.32.0 on `gpt-5.6-terra`, and `pi` 1.3.0 on
-  `us.anthropic.claude-opus-5` through Amazon Bedrock. Sixteen sessions, every one exited 0, every
-  header blob matches its case, the isolation audit is clean for every one and both `RUN.json` files
-  record blobs that match the committed rubric, key and cases. **36 of 40 gate decisions agree and
-  seven run-cases miss across five cases**, so both runs are committed with
-  `countsTowardsShipBar: false` and a reason, and criterion 12 of `docs/specs/spec-review-bus.md`
-  stays open. The result that matters is not a wording defect: **neither run read D1's feature
-  column**, scoring c7 and c8 alike when the pair exists only to separate them, which fails
-  `shipBar.featureColumn` and is the first miss here that no reviewing model got right. Against
-  that, c1's disputed `G1 fail` is settled in the key's favour, because one run re-derived it from
-  how the case is built rather than from what a run said, which is what `shipBar.relabelling` asks.
-  Two smaller items follow: G5 still does not say whether a role names an owner, and one
-  `mustQuoteOneOf` string ends in a full stop, which cost a correct finding a miss on a
-  substring match. Nothing in the rubric, the cases, the key or the scorer was touched after the
-  verdicts were collected, so each item stales both runs when it lands and the next pair spends a
-  ninth and tenth model. Evidence: `spec-review/calibration/runs/SCORE.md` and the two run
-  directories, each with its `NOTES.md`.
-
-- **Rubric 3: the four fixes Rubric 2's pair bought, and it stales that pair.** No answer-key label
-  moved, on any gate or dimension, in any case; every change is to the text a reviewer reads or to
-  one key string's punctuation. **D1** gains a precondition paragraph beside its anchor table: for a
-  feature spec, measurement is a precondition of a 3 or a 4 rather than one of several credits, tying
-  each gap to its code carries no score alone, and the evidence the spec presents is what is scored
-  rather than whether its conclusions turn out to be true. **G1**'s `Not G1` bullet now says that
-  finding the D2 or the D3 does not answer G1, because the two questions are asked of different
-  things. **G5** says an owner may be a person, a role or a team, so a role is a disposition and how
-  specific it is is not G5's question. The **Review procedure** gains two listing steps, one for the
-  cases the spec names and one for the evidence behind its starting point, the second of which caps
-  D1 at 2 when the list comes out empty. And six `mustQuoteOneOf` strings lose a terminal full stop
-  that a substring match had made load-bearing (`shipBar.quoteMatching`). The first two fixes are the
-  same shape, which is why they are procedure steps and not more gate text: in both, a reviewer found
-  the defect and scored it in the wrong place, and Rubric 2's G1 bullet had been written for that
-  exact case, read correctly, and still not applied. Both runs committed last are now **stale by
-  blob, by design**, so all seven run directories are stale, Rubric 3 has no run at all, and
-  criterion 12 of `docs/specs/spec-review-bus.md` stays open. `gpt-5.6-terra` and
-  `us.anthropic.claude-opus-5` join `shipBar.spent`, bringing it to eight, so the next pair needs a
-  ninth and a tenth. Test: `test/calibration-ship-bar.test.ts`, where the punctuation rule and a
-  second test that every string is still findable in its case each fail on a mutation of their own;
-  the punctuation test found five offending strings in c1 that no run had reached.
-  Reasoning: `spec-review/calibration/README.md` ("Rubric 3") and
-  `spec-review/calibration/runs/SCORE.md`.
-
-- **Rubric 3's first pair: all four fixes landed in both runs, and the pair found a defect in the
-  runner rather than the rubric.** `claude-opus-4.7` on kiro-cli and
-  `us.anthropic.claude-opus-4-6-v1` on pi through Bedrock, the ninth and tenth models, collected by
-  `scripts/calibrate.mjs` with blobs matching and the isolation audit clean for all sixteen sessions.
-  Both runs separate c7 from c8 on D1, 4 against 2, so **`shipBar.featureColumn` is met for the first
-  time in the set's history**: it was the only rule in `expected.json` that no reviewing model had
-  ever satisfied, and the four models that had seen the pair before all scored it the same. Both runs
-  also fail c1's G1, pass c6's G5 and match every `mustQuoteOneOf` string, so each of Rubric 3's four
-  changes did what it was written to do. **The bar is still not met:** nine cases miss, gate agreement
-  fell to 34/40, and one run returns a false fail on c4. But all six gate disagreements have a single
-  cause, and it is the harness: the calibration prompt tells the reviewer to skip lint and supplies no
-  lint output, while the rubric's Review procedure step 3 is to work through lint's notes and G2's
-  reviewer half is written as a function of that list. So one run did lint's script-half job and failed
-  G2 on `docs/specs/dual-host-pi-gsd.md`, the path `expected.json` aliases and `spec-lint.mjs` is
-  handed on the command line, and the other treated it as resolving and skipped step 3 instead. c4's
-  false fail contains that one finding and nothing else. Those six disagreements are therefore not
-  evidence about the rubric's wording and no gate text is changed in response to them. Both runs
-  record `countsTowardsShipBar: false` with the reason, and criterion 12 of
-  `docs/specs/spec-review-bus.md` stays open. Held by `test/spec-review-score.test.ts` and
-  `node spec-review/calibration/score.mjs` over both directories.
-  Reasoning: `spec-review/calibration/runs/SCORE.md` ("Rubric 3's first pair") and each run's
-  `NOTES.md`.
-
-- **Rubric 4: the two findings Rubric 3's pair left behind, neither of them the runner's.** No
-  answer-key label moved, in any case, on any gate or dimension. **G3** gains two entries in its
-  Fails list, with a paragraph beneath explaining both: a reason that offers two or more alternative
-  mechanisms for one check's failure, and a control whose own setup supplies the condition its
-  failure is attributed to. c2's G3 had been the set's second both-miss after the feature column,
-  and the cause was the gate's reach rather than the label, because its negative control does state
-  a reason and the reason is in the right area; what it does is offer two of them, and name a test
-  that builds the wiring whose absence before the change is supposed to make it fail. Neither new
-  entry reaches the six cases this key passes on G3, where the stated reason is a single property of
-  the code at the ref or a single mechanism chain in the unchanged reader. **The dimensions and the
-  outcome table gain a read-back rule:** a dimension's score is never higher than the lowest anchor
-  row its own findings describe, the outcome is never softer than the findings, and the **Review
-  procedure** splits its last step so that reading the findings back against both tables, and
-  correcting the numbers where they disagree, is a step of its own. That answers the shape this set
-  has now seen three times, a finding that describes anchor N scored at N+1: both runs of Rubric 3's
-  pair committed it twice, on c1's D3 and c6's D1, writing the harsher row out in prose and then
-  recording the number above it. Both cases gain a reason in `expected.json` saying so.
-  `shipBar.heldOut` is **narrowed** to a model whose output moved the rubric's text, and narrowing
-  is not reopening: Rubric 4's two fixes answer `claude-opus-4.7` and
-  `us.anthropic.claude-opus-4-6-v1` directly, so both stay spent under the narrow rule as well as
-  the broad one and may be re-run only as a non-gating probe. All nine run directories are stale,
-  Rubric 4 has no run, ten models are spent and the next gating pair needs an eleventh and a
-  twelfth; criterion 12 of `docs/specs/spec-review-bus.md` stays open. Test:
-  `test/rubric-procedure.test.ts`, which holds the three places that reference the Review procedure
-  by number against the procedure itself, since Rubric 4 is the first edit to renumber it: the
-  harness prompt's claim about step 3, `shipBar.blind`'s verbatim quote of step 3, and the numbering
-  being contiguous from 1. Each of its seven assertions is killed by a mutation, four of them by one
-  assertion each. The two prose rules have no unit test and cannot have one: their test is a
-  reviewer pass, which is why they ship with the probe named rather than a check implied.
-  Reasoning: `spec-review/calibration/README.md` ("Rubric 4") and
-  `spec-review/calibration/runs/SCORE.md`.
-
-- **Rubric 4's probe: 38 of 40 gate decisions agree, the best this set has
-  recorded, and it cannot count.** The two models Rubric 4 answers, re-run under
-  the corrected harness and the corrected wording as the non-gating probe
-  `shipBar.capabilityMatched` provides for, because the tightest test of a fix is
-  the model that committed the defect asked again. **G3's two new Fails entries
-  landed in both runs**, so c2's G3 fails for the first time in the set's
-  history: the second both-miss a change to the rubric's text has closed, after
-  D1's feature column. The read-back rule is **split**, correcting c1's `D3` and
-  outcome in one run and changing nothing in the other, which one pair cannot
-  separate from session variance. Three things the probe found that Rubric 4 did
-  not anticipate: the dimension ceiling **does not carry to `D2`** in either run,
-  and in one of them three lines below a `D3` where it did, which argues the
-  rule's text is not carrying rather than that the two cases it came from were
-  special; **c2's `G2` is a new both-miss** whose likely cause is this branch's
-  own harness fix, since lint's notes cannot list a claim credited to a source
-  the spec never names, so a reviewer told the notes are step 3's input has a
-  route to reading G2's reviewer half as the notes and nothing more; and **c8's
-  `mustQuoteOneOf` was penalising a correct finding** for quoting `## Problem`,
-  which is exactly what the rubric's Findings section tells a reviewer to do for
-  something missing. That last one is corrected, by the `shipBar.relabelling`
-  standard of following the rubric as written rather than a run, and it takes the
-  miss count from nine to eight while staling the probe itself. Eleven run
-  directories now, all eleven `countsTowardsShipBar: false`; `shipBar.spent` is
-  still ten, because a probe spends nothing. Criterion 12 of
-  `docs/specs/spec-review-bus.md` stays open, and what the probe changes is the
-  shape of the argument: only two gate decisions disagree, so **the gates are
-  nearly stable and the dimension anchors are not**. Held by
-  `test/spec-review-score.test.ts` and `node spec-review/calibration/score.mjs`
-  over both directories. Reasoning:
-  `spec-review/calibration/runs/SCORE.md` ("Rubric 4's probe") and each run's
-  `NOTES.md`.
+- **A calibration pass is a script, and the rubric is at Rubric 5.**
+  `scripts/calibrate.mjs run --harness <h> --model <id>` collects one pass of
+  the eight calibration cases: a ref-stripped clone per case with `origin`
+  removed and the answer key's blobs proved unreachable, lint's `notes` and
+  nothing else handed over per case, one session per case in its own working
+  copy, each verdict checked against the blob it reviewed, an isolation audit
+  over the session transcript, and a `RUN.json` recording the blobs, the
+  prompt's fingerprint and what the audit could and could not see. It never
+  grades its own pass: `countsTowardsShipBar` is written `false` and a human
+  flips it with `calibrate.mjs finalize`. Three pairs have run under it, at 36,
+  34 and 38 of 40 gate decisions agreeing, and **none of them counts** - the
+  38/40 is a non-gating probe of two already-spent models. Rubrics 2 to 5 are
+  the wording those pairs bought, with no answer-key label moved in any of
+  them; ten models are now spent, so the gating pair needs an eleventh and a
+  twelfth. Each revision, each pair and every defect found in the harness
+  itself is recorded once, in `spec-review/calibration/runs/SCORE.md`, with the
+  standing summary in `spec-review/calibration/README.md` and the criterion in
+  `docs/specs/spec-review-bus.md`. Tests: `test/calibrate.test.ts`,
+  `test/calibrate-guards.test.ts`, `test/rubric-procedure.test.ts`,
+  `test/calibration-ship-bar.test.ts`, `test/rubric-anchors.test.ts`.
 
 ### Changed
 
@@ -206,39 +76,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The calibration runner could void a pass without saying so, and a leaked answer key could
-  reach a session.** Five defects in `scripts/calibrate.mjs`, found by reading it rather than by a
-  run. (1) The forbidden-blob list held only each file's current blob, so `expected.json` as it
-  stood at any earlier commit was reachable in a clone whose refs were stripped; the list now
-  carries every historical blob of the key and the cases, 24 shas today, 12 of them older
-  `expected.json`. (2) The leak check ran after sessions had been launched, so a clone that could
-  read the answers was found out once the reviewing had already happened; every session is now
-  prepared and leak-checked before the first one is spawned, and the refusal says nothing was
-  launched. (3) An isolation audit hit was printed and then ignored, leaving a run that the README
-  calls void with a `RUN.json` that did not record it; a hit now sets the run's failure count and
-  the hits are recorded per case in `RUN.json`, with the work root replaced by `<work>` so a
-  committed line carries no home directory. (4) Sessions and input directories were created under
-  the system temp directory and never removed, so each pass leaked a full clone per case; they are
-  now under `--work`. (5) `--jobs`, `--timeout-min` and `--date` were used unvalidated, so
-  `--jobs abc` became `NaN` and `--date ../../x` wrote outside the runs directory. Also: an alias
-  placement is now refused unless it resolves inside its session, the prompt's wording is hashed
-  into `RUN.json` as `scoredAgainst.prompt` (the prompt is not a file, so the blob rule could not
-  see it, and a defective prompt caused all six of Rubric 3's pair's disagreements), a run on a
-  spent model is a probe whether or not it says so, `finalize --counts true` refuses a probe and a
-  spent model, and a real run refuses a dirty tree under `spec-review` or the two scripts. Test:
-  `test/calibrate-guards.test.ts`, 19 checks that assert the call sites and not only the helpers -
-  the leak check is reached through a documented seam that can only make the runner refuse, every
-  forbidden blob is confirmed unreachable by sha in the clone the runner built, and the temp
-  directory is asserted empty of new entries after a dry run.
-
 - **`spec-review/calibration/score.mjs` printed 7 of its 33 lines into a pipe.** It called
   `process.exit()` while stdout was a pipe, and on macOS that discards whatever has not drained, so
   `score.mjs ... | cat` and `| tee` silently truncated the report that decides whether a pass
   counts. The tail is now a function returning a code into `process.exitCode`, which exits once the
   stream is flushed; a missing `<case>.verdict.md` is also reported as a miss instead of throwing
-  ENOENT. Test: `test/spec-review-score.test.ts`, whose fixture now copies the real runner in so the
-  prompt-fingerprint assertions cannot be self-fulfilling; the truncation itself is shown by
-  `score.mjs` over the probe pair, 33 lines to a file and 33 through `| cat`.
+  ENOENT. Test: `test/spec-review-score.test.ts`. The truncation itself is shown by `score.mjs` over
+  a run pair: 33 lines to a file and 33 through `| cat`, where it was 27 and 7.
 
 - **Internal tool names had spread into the published tree.** Seven files across the spec-review
   tooling and its run notes named this machine's default kiro-cli agent and an MCP package scope by
@@ -249,33 +93,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   builds its patterns from fragments so the guard has no exemption for its own path and scans
   itself; it also asserts the file list is non-empty and that each pattern still matches a
   known-bad sample, so neither the loop nor the patterns can pass vacuously.
-
-- **A calibration reviewer was told to skip lint and then asked to work through lint's notes.** The
-  prompt `scripts/calibrate.mjs` built said "following its Review procedure, skipping step 1 (lint)"
-  and supplied no lint output, while step 3 of that procedure is "Work through every item lint listed
-  under notes (G2 reviewer half)" and G2 divides itself the same way: its script half owns "a repo
-  path that does not exist at the ref", its reviewer half opens with what lint listed *without*
-  failing. So step 3 had no input and the boundary between the gate's two halves was left for the
-  reviewer to guess, and Rubric 3's first pair guessed it two opposite ways: one run did lint's job
-  itself and failed G2 in four cases on `docs/specs/dual-host-pi-gsd.md`, the path `expected.json`
-  aliases and `spec-lint.mjs` is handed on the command line, while the other treated it as resolving
-  and skipped step 3 too, passing a G3 whose bullet is deleted outright. **That one defect produced
-  all six of the pair's gate disagreements and its only false fail**, a c4 verdict containing that
-  single G2 finding and nothing else. The runner now runs lint for the case and writes its `notes`
-  object, and nothing else from lint, into the session's input directory, with the prompt naming it
-  as step 3's input; lint's pass or fail stays withheld, because c3's whole construction is a lint G3
-  failure the reviewer has to reach on its own. The alias file also moves out of the input directory
-  and into the session's clone **at the path the spec cites**, so G2 is answered from the checkout as
-  every other citation is and the gate's two halves see one world; a redirect sentence says where the
-  content is, not that the citation resolves, which is what a reviewer reading the filesystem
-  contradicted. No gate text changed in response to those six disagreements: the rule that sends a
-  disagreement to the rubric's wording would have tuned the rubric to a defect in the runner. Test:
-  `test/calibrate.test.ts`, where five gates each fail on a mutation of their own and four of the
-  five fail on nothing else - reverting the prompt to "skipping step 1", dropping the ban on a
-  self-run of lint, returning lint's whole entry instead of its notes, putting the alias file back
-  under its basename, and removing the climb-out guard on a cited path.
-  Reasoning: `spec-review/calibration/README.md` ("Running a reviewer pass") and `expected.json`
-  `shipBar.blind` and `shipBar.aliasResolves`.
 
 - **A cited path below a symlink was reported as a broken citation.** `scripts/spec-lint.mjs` asks
   `git check-ignore` whether a cited path is a local, gitignored file, and read any non-zero exit as

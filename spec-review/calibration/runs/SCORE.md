@@ -401,9 +401,15 @@ revision, by a script, with the isolation holes closed.
 All four items are fixed in the same commit, and **both runs above are now stale
 by blob**, which is the mechanism doing what rule 5 describes. Re-running the
 command in "Rubric 2's first pair" prints `blobs: stale` for each run instead of
-`blobs: match`, and **every case line and both totals are unchanged**, because
-nothing a run recorded moved: the scorer reads the verdicts, and the verdicts are
-the same files.
+`blobs: match`. Gate agreement is unchanged at 36/40 on the same four
+disagreements, because no gate label moved. **One case line and one total did
+move**, and item 4 is why: run B's c6 missed on a `mustQuoteOneOf` string whose
+only defect was a terminal full stop, so trimming the string turns that line
+from `MISS: no finding quotes any mustQuoteOneOf string` into `OK`, and `cases
+with a miss` from 7 to 6. The verdicts are the same files; what changed is a key
+string that was asking a reviewer for a character it had no reason to write.
+That is the edit scoring itself, and it is the reason `shipBar.quoteMatching`
+exists.
 
 **No answer-key label moved**, on any gate or any dimension, in any case. What
 changed:
@@ -456,8 +462,11 @@ Run A spent 209s to 266s per case, run B 288s to 641s.
 
 ```
 gate agreement: 34/40  (disagree: c1 G2, c2 G2, c3 G2, c3 G3, c4 G2, c6 G2)
-cases with a miss: 9  (run A 4, run B 5)
+cases with a miss: 9
 ```
+
+Of those nine, four are run A's and five run B's; the split is counted from the
+case lines above and `score.mjs` does not print it.
 
 **The ship bar is not met.** Nine cases miss, agreement fell from 36/40 to
 34/40, and run B returns the pair's only false fail, a `revise` on c4.
@@ -697,18 +706,23 @@ widening it to that sentence is tuning the key to a run. Not acted on.
 `shipBar.spent` is still **ten** - a probe spends nothing, because both models
 were already spent. The gating pair still needs an **eleventh and a twelfth**.
 
-What has changed is the shape of the argument. Of the misses still standing,
-**c3's G3 and c1's G1 are the only two gate disagreements**, and both are cases
-where one run reached a defect the other read as satisfied. The rest are
-dimensions and outcomes, which the bar holds to thresholds rather than to
-agreement. A pair that agrees on 38 of 40 gate decisions, meets
-`shipBar.featureColumn`, and fails the bar on dimension thresholds in three
-cases is a different kind of failure from 28 of 30 with four cases missed, and it
-is worth saying which: **the gates are nearly stable and the dimension anchors
-are not.** If the next pair reproduces that, the honest conclusion is that the
-anchor tables need work the gates did not, and that the bar's demand for every
-dimension threshold in both runs may be asking a 1-to-4 judgement to be
-reproducible in a way gate decisions are.
+What has changed is the shape of the argument. **c3's G3 and c1's G1 are the
+only two gate decisions the two runs disagree on**, and both are cases where one
+run reached a defect the other read as satisfied. Agreement is not the whole of
+the gate half, though: **c2's G2 is a gate miss both runs share** - item 2 above
+- and a both-miss costs the bar nothing in agreement while failing
+`mustCatch` in both runs. The rest of what is standing is dimensions, outcomes
+and three missed quotes (c6 in both runs, c8 in run B), and the dimension misses
+are in two cases, c1 and c6: `D2 3` against a ceiling of 2 in both runs, `D3 2`
+against 1 in run B, and `D1 3` against 2 in both. A pair that agrees on 38 of 40
+gate decisions, meets `shipBar.featureColumn`, and fails the bar on one shared
+gate and on dimension thresholds in two cases is a different kind of failure
+from 28 of 30 with four cases missed, and it is worth saying which: **the gates
+are nearly stable and the dimension anchors are not.** If the next pair
+reproduces that, the honest conclusion is that the anchor tables need work the
+gates did not, and that the bar's demand for every dimension threshold in both
+runs may be asking a 1-to-4 judgement to be reproducible in a way gate decisions
+are.
 
 Criterion 12 of `docs/specs/spec-review-bus.md` stays `Open`. Both probe
 directories carry `countsTowardsShipBar: false`, set by `calibrate.mjs
