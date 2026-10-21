@@ -351,3 +351,44 @@ describe("score.mjs enforces shipBar.blobs", () => {
 		expect(r.exitCode, r.out).toBe(1);
 	});
 });
+
+/**
+ * The other two defects the CHANGELOG entry for this scorer claims, which cites
+ * this file. Neither was gated: the entry named a test that did not cover them.
+ */
+describe("score.mjs cannot report less than it measured", () => {
+	it("reports a missing <case>.verdict.md as a miss instead of throwing ENOENT", () => {
+		const f = fixture();
+		f.writeRun(f.honest(), true);
+		rmSync(join(f.calib, "runs", "r1", "f1.verdict.md"));
+		const r = f.score();
+		expect(r.out, "the scorer threw on a run directory, which the exit code cannot survive").not.toMatch(
+			/ENOENT|Error:/,
+		);
+		expect(r.out).toContain("f1: MISS: this run names the case but has no f1.verdict.md");
+		expect(r.exitCode, r.out).toBe(1);
+	});
+
+	/**
+	 * Gated on the shape of the source, not on behaviour. The loss needs a report
+	 * larger than the pipe buffer and a consumer that has not drained it: with one
+	 * run pair named 256 times, `| { sleep 2; cat; }` delivered 65351 of 117035
+	 * bytes under process.exit() and all of it under process.exitCode, while the
+	 * real 27-line report fits inside the buffer and cannot show the defect at all.
+	 * Rebuilding that here would buy a two second sleep and a race against the
+	 * scorer's own speed, where a slow machine makes the check vacuous rather than
+	 * failing. The first assertion is what stops this one passing on a file it
+	 * failed to read.
+	 */
+	it("ends in process.exitCode, so it cannot exit with the report unwritten", () => {
+		const source = readFileSync(realScorer, "utf8");
+		expect(source, "the scorer's tail is not where this test expects it").toMatch(
+			/^process\.exitCode = main\(/m,
+		);
+		const calls = source
+			.split("\n")
+			.map((line, i) => [i + 1, line] as const)
+			.filter(([, line]) => /^\s*(await\s+)?process\.exit\s*\(/.test(line));
+		expect(calls, "process.exit() discards a stdout write that has not flushed").toEqual([]);
+	});
+});

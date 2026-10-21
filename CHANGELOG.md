@@ -76,13 +76,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`spec-review/calibration/score.mjs` printed 7 of its 33 lines into a pipe.** It called
-  `process.exit()` while stdout was a pipe, and on macOS that discards whatever has not drained, so
-  `score.mjs ... | cat` and `| tee` silently truncated the report that decides whether a pass
-  counts. The tail is now a function returning a code into `process.exitCode`, which exits once the
-  stream is flushed; a missing `<case>.verdict.md` is also reported as a miss instead of throwing
-  ENOENT. Test: `test/spec-review-score.test.ts`. The truncation itself is shown by `score.mjs` over
-  a run pair: 33 lines to a file and 33 through `| cat`, where it was 27 and 7.
+- **`spec-review/calibration/score.mjs` could exit with its report still unwritten.** It called
+  `process.exit()`, which discards a stdout write that has not flushed. The tail is now a
+  function returning a code into `process.exitCode`, which exits once the stream has drained; a
+  missing `<case>.verdict.md` is also reported as a miss instead of throwing ENOENT. Test:
+  `test/spec-review-score.test.ts`. An earlier revision of this entry said the report printed 7
+  of its 33 lines through `| cat`. That does not reproduce and no count of lost lines is
+  supported: reaching the defect needs a report larger than the pipe buffer and a consumer that
+  has not drained it, and this report is about 2 KB. Measured on macOS and node 26 with one run
+  pair named 256 times, `| { sleep 2; cat; }` delivered 65351 of 117035 bytes under
+  `process.exit()` and all 117035 under `process.exitCode`; at the real size nothing was ever
+  lost through `| cat`.
 
 - **Internal tool names had spread into the published tree.** Seven files across the spec-review
   tooling and its run notes named this machine's default kiro-cli agent and an MCP package scope by

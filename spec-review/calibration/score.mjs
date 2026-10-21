@@ -242,11 +242,16 @@ function scoreRun(dir) {
 /**
  * Everything this script prints, then the exit code as a return value.
  *
- * process.exit() used to run with output still queued, and on macOS a pipe is
- * not drained before the process goes: 27 lines to a file and 7 through `| cat`,
- * every time. Anyone piping this into grep, tail or a paste buffer got a
- * truncated transcript and no sign that it was truncated. Setting
+ * process.exit() used to run with output still queued, and it discards a write
+ * that has not flushed, so a consumer which has not drained the pipe would get
+ * a truncated transcript and no sign that it was truncated. Setting
  * process.exitCode and returning lets Node exit once stdout has flushed.
+ *
+ * The loss needs a report larger than the pipe buffer, which this one is not:
+ * with one run pair named 256 times, `| { sleep 2; cat; }` delivered 65351 of
+ * 117035 bytes under process.exit() and all of it under process.exitCode, while
+ * the real 27-line report fits in the buffer and was never cut. Worth keeping
+ * anyway, since nothing here bounds how long a report may get.
  */
 function main(dirs) {
 	if (dirs.length === 0) {
