@@ -181,6 +181,11 @@ export function aliasPlacements({ sessionDir, aliases }) {
 		if (isAbsolute(cited) || /^[A-Za-z]:/.test(cited) || cited.includes("\\") || cited.split("/").includes("..")) {
 			throw new Error(`alias path ${cited} must be repo-relative, forward-slashed, and must not climb out of the clone`);
 		}
+		// The same mapping goes to lint as `--alias cited=target`, which splits on
+		// the first `=`. A cited path holding one would reach lint truncated, and
+		// lint would fail the citation the clone resolves: G2's two halves given
+		// opposite worlds again, which is what placing the file here exists to stop.
+		if (cited.includes("=")) throw new Error(`alias path ${cited} must not contain '=': lint's --alias splits on it`);
 		const to = join(sessionDir, cited);
 		if (!resolve(to).startsWith(resolve(sessionDir) + sep)) {
 			throw new Error(`alias path ${cited} resolves outside the session clone`);

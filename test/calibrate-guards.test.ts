@@ -14,7 +14,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -91,6 +91,12 @@ describe("the alias guard", () => {
 				`accepted ${JSON.stringify(cited)}`,
 			).toThrow();
 		}
+	});
+
+	it("refuses a path holding '=', which lint's --alias would split on", () => {
+		expect(() =>
+			aliasPlacements({ sessionDir: "/tmp/s", aliases: [{ cited: "docs/a=b.md", target: "t.md" }] }),
+		).toThrow(/must not contain '='/);
 	});
 
 	it("places an ordinary repo-relative path inside the session clone", () => {
@@ -175,9 +181,9 @@ describe("the leak check is wired, not merely written", () => {
 		// added at a later ref would have exposed every older key.
 		const work = temp();
 		const r = dryRun(work);
-		const m = /forbidden blobs checked per clone/.exec(r.out);
-		expect(m, r.out).not.toBeNull();
-		const count = Number(/prepared\s+\d+ session\(s\), (\d+) forbidden blobs/.exec(r.out)?.[1]);
+		const m = /prepared\s+\d+ session\(s\), (\d+) forbidden blobs checked per clone/.exec(r.out);
+		expect(m, `no 'prepared ... forbidden blobs' line in: ${r.out}`).not.toBeNull();
+		const count = Number(m?.[1]);
 		const caseCount = Object.keys(
 			JSON.parse(readFileSync(join(root, "spec-review", "calibration", "expected.json"), "utf8")).cases,
 		).length;
@@ -214,7 +220,7 @@ describe("the runner leaves nothing outside --work", () => {
 		const work = mkdtempSync(join(tmpdir(), "cal-guard-work-"));
 		try {
 			expect(dryRun(work).code).toBe(0);
-			const added = readdirSync(tmpdir()).filter((e) => !before.has(e) && e !== require("node:path").basename(work));
+			const added = readdirSync(tmpdir()).filter((e) => !before.has(e) && e !== basename(work));
 			expect(added, `the runner left ${added.join(", ")} in ${tmpdir()}`).toEqual([]);
 			expect(existsSync(join(work, "sessions", "c7")), "the session copy is not under --work").toBe(true);
 			expect(existsSync(join(work, "inputs", "c7")), "the input directory is not under --work").toBe(true);

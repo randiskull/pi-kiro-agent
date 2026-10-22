@@ -74,6 +74,17 @@ describe("the rubric's Review procedure, as other files describe it", () => {
 		expect(() => procedureSteps("## Review procedure\n\n1. a\n1. b\n")).toThrow(/twice/);
 	});
 
+	// Where a step ends. Unindented text after the list closes the last step, and
+	// an indented paragraph after a blank line is still the step's, as it is in
+	// Markdown. Clearing the step on every blank line would drop that paragraph
+	// from the text the quote test below compares against.
+	it("ends the last step at unindented text, and keeps a step's later paragraph", () => {
+		const planted = "## Review procedure\n\n1. Run lint.\n\n   Then stop.\n2. Read.\nNot a step.\n   Nor this.\n";
+		const s = procedureSteps(planted);
+		expect(s.get(1)).toBe("Run lint. Then stop.");
+		expect(s.get(2)).toBe("Read.");
+	});
+
 	it("puts lint at step 1 and its notes at step 3, which is what the prompt claims", () => {
 		const prompt = promptFor({
 			inputDir: "/in",
