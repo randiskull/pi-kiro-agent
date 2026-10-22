@@ -14,7 +14,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -216,16 +216,22 @@ describe("the runner leaves nothing outside --work", () => {
 		// A full clone per case and an input directory per case were created with
 		// mkdtemp in tmpdir() and never removed, so every run and every
 		// `npm run verify` left two more behind.
-		const before = new Set(readdirSync(tmpdir()));
+		//
+		// The runner gets a temp directory of its own through TMPDIR, which
+		// os.tmpdir() reads. Diffing the shared one instead blamed the runner for
+		// whatever else wrote there meanwhile: another test file's worker in CI
+		// (pi-kiro-e2e-*, jiti), or any process on a developer machine.
+		const sandbox = mkdtempSync(join(tmpdir(), "cal-guard-tmp-"));
 		const work = mkdtempSync(join(tmpdir(), "cal-guard-work-"));
 		try {
-			expect(dryRun(work).code).toBe(0);
-			const added = readdirSync(tmpdir()).filter((e) => !before.has(e) && e !== basename(work));
-			expect(added, `the runner left ${added.join(", ")} in ${tmpdir()}`).toEqual([]);
+			expect(dryRun(work, [], { TMPDIR: sandbox, TMP: sandbox, TEMP: sandbox }).code).toBe(0);
+			const added = readdirSync(sandbox);
+			expect(added, `the runner left ${added.join(", ")} in its temp directory`).toEqual([]);
 			expect(existsSync(join(work, "sessions", "c7")), "the session copy is not under --work").toBe(true);
 			expect(existsSync(join(work, "inputs", "c7")), "the input directory is not under --work").toBe(true);
 		} finally {
 			rmSync(work, { recursive: true, force: true });
+			rmSync(sandbox, { recursive: true, force: true });
 		}
 	});
 });
