@@ -39,7 +39,7 @@ const opt = (name, dflt) => {
 const MODEL = opt("model", "claude-opus-5.5");
 const only = opt("only", "").split(",").filter(Boolean);
 const FIXED_CWD = opt("cwd", undefined);
-const LEAN_TOOLS = ["fs_read", "fs_write", "execute_bash", "grep", "glob"];
+const LEAN_TOOLS = ["fs_read", "fs_write", "execute_bash", "grep", "glob", "web_fetch"];
 const TURN_TIMEOUT_MS = 180_000;
 const scratch = mkdtempSync(join(tmpdir(), "pi-kiro-p8-"));
 

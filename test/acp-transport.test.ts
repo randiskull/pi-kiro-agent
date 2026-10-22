@@ -11,7 +11,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +27,7 @@ import { _resetAcpSessions, _acpSessionCount } from "../src/acp-session.js";
 import { _getAcpChildRegistry, _resetAcpChildren, _acpRegistryKey, buildInitializeParams, isUnadvertisedClientMethod, makeStreamViaAcp } from "../src/acp-transport.js";
 import { _resetPiVersionForTest, ACP_ENGINE, identityBlock } from "../src/identity.js";
 import { resetTraceTarget } from "../src/trace.js";
+import { _runExitCleanup } from "../src/orphan-reaper.js";
 import { VERSION as HOST_PI_VERSION } from "@earendil-works/pi-coding-agent";
 
 // ─── Spawn mock ───────────────────────────────────────────────────────────────
@@ -2626,7 +2627,7 @@ describe("ACP agent selection", () => {
 	// Measured on kiro-cli 2.32.0, Opus 5.5, one-line prompt, server-reported
 	// context: the user's default agent with its MCP servers and inherited
 	// steering is ~101,600 tokens and 1.25 credits a turn; a lean custom agent
-	// with inheritance disabled is ~10,500 tokens and 0.046 credits
+	// with inheritance disabled is ~10,800 tokens and 0.047 credits
 	// (probes/acp-probe-p7-preamble.mjs, probes/acp-probe-p8-lean-agent.mjs).
 	const agentEnv = "PI_KIRO_ACP_AGENT";
 	const settingsEnv = "PI_KIRO_WORKSPACE_SETTINGS";
@@ -2732,6 +2733,56 @@ describe("ACP agent selection", () => {
 		expect(events.some((e) => e.type === "error")).toBe(true);
 		expect(existsSync(join(ws, ".kiro"))).toBe(false);
 		expect(ownProfiles()).toEqual([]);
+	});
+
+	// A missing binary is not a synchronous throw: spawn returns a child that
+	// emits 'error' (ENOENT) on a later tick and never speaks the protocol.
+	it("fails the turn, restores the project and removes the profile when kiro-cli cannot be started", async () => {
+		delete process.env[settingsEnv];
+		const ws = mkdtempSync(join(tmpdir(), "pi-kiro-acp-ws-"));
+		vi.spyOn(process, "cwd").mockReturnValue(ws);
+		const child = new AcpScriptChild();
+		spawnMock.mockImplementationOnce(() => {
+			setTimeout(() => child.emit("error", Object.assign(new Error("spawn kiro-cli ENOENT"), { code: "ENOENT" })), 5);
+			return child;
+		});
+		const started = Date.now();
+		const events = await collect({ messages: [user("hello")] });
+		await settle();
+		const error = events.find((e) => e.type === "error");
+		if (error?.type !== "error") throw new Error("expected an error event");
+		expect(error.error.errorMessage).toContain("ENOENT");
+		expect(Date.now() - started).toBeLessThan(5_000);
+		expect(existsSync(join(ws, ".kiro"))).toBe(false);
+		expect(ownProfiles()).toEqual([]);
+	});
+
+	// pi's exit hook only signals children; a live child's teardown never runs.
+	it("removes the lean profile from the exit hook, for a child still alive when pi exits", async () => {
+		let afterExitHook: string[] = ["unset"];
+		await driveAgentTurn({
+			onPrompt: () => {
+				_runExitCleanup();
+				afterExitHook = ownProfiles();
+			},
+		});
+		expect(afterExitHook).toEqual([]);
+	});
+
+	// The activation sweep ages a live pid's profile out by mtime, which was
+	// sized for per-turn chat profiles; an ACP child keeps its profile for hours.
+	it("touches the lean profile at every prompt, so a long-lived child's profile stays fresh", async () => {
+		let name = "";
+		let mtimeAtPrompt = 0;
+		await driveAgentTurn({
+			onSpawn: (a) => (name = a[a.indexOf("--agent") + 1]),
+			onSessionNew: () => {
+				const old = new Date(Date.now() - 24 * 60 * 60 * 1000);
+				utimesSync(join(agentProfilesDir(), `${name}.json`), old, old);
+			},
+			onPrompt: () => (mtimeAtPrompt = statSync(join(agentProfilesDir(), `${name}.json`)).mtimeMs),
+		});
+		expect(mtimeAtPrompt).toBeGreaterThan(Date.now() - 60_000);
 	});
 
 	// A kiro-cli that never answers initialize (stuck on auth, wedged) must not

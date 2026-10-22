@@ -60,11 +60,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kiro-cli acp` ran whatever `chat.defaultAgent` named, and that agent brought its own MCP servers,
   the global `mcp.json` and every inherited steering file and skill into each turn, none of which pi
   uses. Measured on kiro-cli 2.32.0, Opus 5.5, a one-line prompt: ~101,600 tokens and 1.25 credits a
-  turn on a developer machine's default agent, ~10,500 tokens and 0.046 credits on the lean agent.
-  The agent carries kiro's five native coding tools (`fs_read`, `fs_write`, `execute_bash`, `grep`,
-  `glob`). Its profile comes from the chat transport's profile writer, under the same pid-tagged
-  name, so it carries no token, is removed with the child, and is swept at the next activation if
-  pi exits without tearing its children down. The pi bridge and the GSD workflow server still mount
+  turn on a developer machine's default agent, ~10,800 tokens and 0.047 credits on the lean agent.
+  The agent carries six of kiro's native tools (`fs_read`, `fs_write`, `execute_bash`, which is
+  `execute_cmd` on Windows, `grep`, `glob`, `web_fetch`), so **a default ACP turn no longer has
+  kiro's `web_search`, `use_aws`, `todo_list`, `knowledge`, `code`, `introspect`, `use_subagent`,
+  `session` or `report_issue`**; pi's own tools still reach it through the bridge, and
+  `PI_KIRO_ACP_AGENT=default` brings kiro's back. The Windows spelling is read from the 2.32.0
+  binary, not run there. A profile that cannot be written (a read-only home) runs the turn on the
+  default agent with a warning. Its profile comes from the chat transport's profile writer, under the same pid-tagged
+  name, so it carries no token. It is removed with the child, from pi's exit hook for a child still
+  alive when pi exits, and by the next activation's sweep after a kill; it is touched at every
+  prompt so the sweep's age limit, sized for per-turn chat profiles, never takes a live child's.
+  A kiro-cli that cannot be started (`ENOENT` arrives as an async `error` event, not a throw) now
+  fails the turn at once and releases what was written for it, instead of an uncaught exception. The pi bridge and the GSD workflow server still mount
   through `session/new`, which kiro honours for any agent. Inherited resources are disabled for the
   child through the same workspace setting the chat transport uses, held only from just before spawn
   until `initialize` answers (at most `PI_KIRO_ACP_SETTINGS_HOLD_MS`, 30 s), because kiro reads it
@@ -86,7 +94,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so no test writes into the checkout it runs in. Tests: `test/kiro-bridge.test.ts`.
 
 - **The status line shows context usage.** After the credits it now reads `ctx N.N%`, the share of
-  the model's context window kiro reported for the last turn that carried one. pi-kiro already
+  the model's context window kiro reported for the last turn, and nothing when that turn reported
+  none, so a figure from another model's window never sits beside a new turn's credits. pi-kiro already
   recorded it in each turn's `kiro.metering` diagnostic but did not show it, so the effect of what a
   turn loads was visible only by reading diagnostics. Test: `test/metering.test.ts`.
 

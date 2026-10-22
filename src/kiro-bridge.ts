@@ -14,7 +14,7 @@
  * on it, a turn would run with none of pi's tools. v2 stays the target.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { HttpBridgeHandle } from "./bridge.js";
@@ -108,9 +108,10 @@ export function sweepStaleAgentProfiles(dir: string = agentProfilesDir()): numbe
 }
 
 /**
- * Write a throwaway agent profile exposing the bridge. Tools are wide open
- * (`*` + allowedTools `*`): delegated runs are headless, so any permission
- * prompt would hang the turn — same posture as --trust-all-tools.
+ * Write a throwaway agent profile exposing the bridge. Tools default to wide
+ * open (`*` + allowedTools `*`): delegated runs are headless, so any permission
+ * prompt would hang the turn — same posture as --trust-all-tools. Passing
+ * `options.tools` narrows both lists to exactly that set (the ACP lean agent).
  *
  * `resources: []` declares intent only -- it does NOT currently opt out.
  * Measured on kiro-cli 2.32.0 (engine v2), a custom agent reports the same
@@ -374,18 +375,29 @@ function reapStaleRestore(dir: string): void {
 export function disableInheritedResources(cwd: string): WorkspaceSettingsHandle | undefined {
 	if (process.env.PI_KIRO_WORKSPACE_SETTINGS === "off") return undefined;
 	// <home>/.kiro/settings/cli.json is kiro's GLOBAL settings file.
-	if (resolve(cwd) === resolve(homedir())) return undefined;
+	if (isHomeDir(cwd)) return undefined;
 	const path = workspaceSettingsPath(cwd);
 	const dir = dirname(path);
 
 	const held = activeDirs.get(dir);
 	if (held) {
 		held.holders += 1;
+		// Another pi's reap judges a live pid's sentinel by its age.
+		held.record = { ...held.record, ts: Date.now() };
+		try {
+			writeSentinel(dir, held.record);
+		} catch {
+			// the hold still stands; only its freshness mark is old
+		}
 		return holdHandle(path, dir);
 	}
 
+	const kiroDir = dirname(dir);
+	const hadKiroDir = existsSync(kiroDir);
+	const hadSettingsDir = existsSync(dir);
+	let record: RestoreRecord | undefined;
 	try {
-		if (existsSync(dir)) reapStaleRestore(dir);
+		if (hadSettingsDir) reapStaleRestore(dir);
 
 		const original = readIfPresent(path);
 		let parsed: Record<string, unknown> = {};
@@ -399,25 +411,71 @@ export function disableInheritedResources(cwd: string): WorkspaceSettingsHandle 
 		}
 
 		const written = `${JSON.stringify({ ...parsed, [INHERIT_KEY]: true }, null, "\t")}\n`;
-		const record: RestoreRecord = { pid: process.pid, ts: Date.now(), original: original ?? null, written };
+		const pending: RestoreRecord = { pid: process.pid, ts: Date.now(), original: original ?? null, written };
 		mkdirSync(dir, { recursive: true });
-		writeSentinel(dir, record);
-		writeFileSync(path, written, "utf8");
+		writeSentinel(dir, pending);
+		record = pending;
+		(settingsWriter ?? ((p: string, d: string) => writeFileSync(p, d, "utf8")))(path, written);
 		activeDirs.set(dir, { holders: 1, record });
 	} catch (error) {
 		// Losing the saving must not cost the turn: a read-only checkout, or a
 		// `.kiro` that is a file, still delegates, just with inheritance on.
-		try {
-			rmSync(join(dir, RESTORE_SENTINEL), { force: true });
-		} catch {
-			// the directory never came to exist
-		}
+		abandonChange(path, record, hadSettingsDir, hadKiroDir);
 		console.error(
 			`[pi-kiro] could not write ${path} (${error instanceof Error ? error.message : String(error)}); delegated turns here run with kiro's inherited steering and skills. Set PI_KIRO_WORKSPACE_SETTINGS=off to stop trying.`,
 		);
 		return undefined;
 	}
 	return holdHandle(path, dir);
+}
+
+/**
+ * Undo a change that failed part way. Once the sentinel exists it is the only
+ * copy of the user's bytes, and the failed write may already have truncated
+ * the file (ENOSPC, EIO), so put them back before dropping it. A failed put-back
+ * keeps the sentinel for the next turn to retry. Directories this call created
+ * go too, when empty.
+ */
+function abandonChange(path: string, record: RestoreRecord | undefined, hadSettingsDir: boolean, hadKiroDir: boolean): void {
+	const dir = dirname(path);
+	try {
+		if (record) restoreFrom(path, record.original ?? null);
+		rmSync(join(dir, RESTORE_SENTINEL), { force: true });
+	} catch {
+		// the sentinel, if any, stays for the next turn's reap
+	}
+	for (const [created, d] of [[!hadSettingsDir, dir], [!hadKiroDir, dirname(dir)]] as const) {
+		if (!created) continue;
+		try {
+			rmdirSync(d);
+		} catch {
+			// not empty, or never created
+		}
+	}
+}
+
+/**
+ * Whether `cwd` is the home directory, however it is spelled: process.cwd()
+ * returns the real path, so a HOME reached through a symlink must match it, and
+ * macOS and Windows filesystems are case-insensitive by default.
+ */
+function isHomeDir(cwd: string): boolean {
+	const canonical = (p: string): string => {
+		let real: string;
+		try {
+			real = realpathSync.native(p);
+		} catch {
+			real = resolve(p);
+		}
+		return process.platform === "darwin" || process.platform === "win32" ? real.toLowerCase() : real;
+	};
+	return canonical(cwd) === canonical(homedir());
+}
+
+/** Test hook: replace the settings-file write, to inject a failure after the open. */
+let settingsWriter: ((path: string, data: string) => void) | undefined;
+export function _setSettingsWriterForTest(writer: ((path: string, data: string) => void) | undefined): void {
+	settingsWriter = writer;
 }
 
 /** One holder's share of a change; the last release restores the file. */

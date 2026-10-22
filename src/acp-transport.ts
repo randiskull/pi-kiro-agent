@@ -210,9 +210,6 @@ function idleTimeoutMs(): number {
 function turnTimeoutMs(): number {
 	return envMs("PI_KIRO_TURN_TIMEOUT_MS", 45 * 60 * 1000);
 }
-/** Startup timeout: wait up to 30s for all MCP servers to initialize after
- * session/new. Overridable via PI_KIRO_MCP_STARTUP_TIMEOUT_MS (used by tests to
- * exercise the timeout path without a 30s wall). */
 /**
  * Longest the workspace setting that disables inherited resources stays on disk
  * while a child starts. kiro answers initialize in about a second; a child that
@@ -224,6 +221,9 @@ function settingsHoldMs(): number {
 	return envMs("PI_KIRO_ACP_SETTINGS_HOLD_MS", 30_000);
 }
 
+/** Startup timeout: wait up to 30s for all MCP servers to initialize after
+ * session/new. Overridable via PI_KIRO_MCP_STARTUP_TIMEOUT_MS (used by tests to
+ * exercise the timeout path without a 30s wall). */
 function mcpStartupTimeoutMs(): number {
 	const raw = Number.parseInt(process.env.PI_KIRO_MCP_STARTUP_TIMEOUT_MS ?? "", 10);
 	return Number.isFinite(raw) && raw > 0 ? raw : 30_000;
@@ -930,7 +930,7 @@ async function spawnAcpChild(
 	}
 	// Detached children outlive an uncleanly-dying parent — tether them to the
 	// parent's exit hook (see orphan-reaper.ts).
-	registerChildForCleanup(child, detached);
+	registerChildForCleanup(child, detached, agent.cleanup);
 
 	const entry: AcpChild = {
 		child,
@@ -972,6 +972,14 @@ async function spawnAcpChild(
 	child.on("exit", () => {
 		teardownChild(entry, "exited unexpectedly", { kill: false });
 	});
+	// A binary that cannot be started (ENOENT, EACCES) is reported here, a tick
+	// after spawn returned, and no 'exit' follows. Teardown settles the pending
+	// initialize, which releases the settings hold and fails the turn.
+	child.on("error", (error) => {
+		teardownChild(entry, `kiro-cli could not be started: ${error.message}`, { kill: false });
+	});
+	// Writes to a child that never started fail asynchronously on stdin.
+	child.stdin?.on("error", () => undefined);
 
 	// Register entry in registry BEFORE the initialize handshake so the abort
 	// handler in makeStreamViaAcp can find and kill it even mid-spawn.
@@ -1269,6 +1277,7 @@ export function makeStreamViaAcp(deps: AcpDeps) {
 				const effort = mapEffort(options?.reasoning as ThinkingLevel | undefined);
 				if (effort) promptParams.effort = effort;
 
+				acpEntry.agent.touch();
 				const promptResp = await request(acpEntry, "session/prompt", promptParams);
 
 				// Clean up notification handlers

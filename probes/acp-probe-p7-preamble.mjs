@@ -12,8 +12,8 @@
  *
  *   floor      custom agent, tools [], resources [], no MCP servers
  *   all-tools  custom agent, tools ["*"]  (the chat transport's profile shape)
- *   lean       custom agent, five native coding tools (fs_read, fs_write,
- *              execute_bash, grep, glob)
+ *   lean       custom agent, the lean ACP tool set (fs_read, fs_write,
+ *              execute_bash, grep, glob, web_fetch)
  *   *-inherit  same, but without disabling inherited default resources
  *   kiro_default  the built-in default agent
  *   user-default  no --agent: whatever `chat.defaultAgent` names on this
@@ -149,7 +149,7 @@ const median = (xs) => {
 };
 
 const tag = `pi-kiro-p7-${process.pid}`;
-const LEAN_TOOLS = ["fs_read", "fs_write", "execute_bash", "grep", "glob"];
+const LEAN_TOOLS = ["fs_read", "fs_write", "execute_bash", "grep", "glob", "web_fetch"];
 const configs = [
 	{ label: "floor", agent: `${tag}-floor`, tools: [] },
 	{ label: "all-tools", agent: `${tag}-all`, tools: ["*"] },

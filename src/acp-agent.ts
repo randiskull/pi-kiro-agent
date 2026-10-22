@@ -11,14 +11,14 @@
  *
  *   user's default agent, inheriting       ~101,600 tokens   1.25 credits
  *   kiro_default, inheritance disabled     ~110,000 tokens   1.35 credits
- *   lean agent below, inheritance disabled  ~10,500 tokens   0.046 credits
+ *   lean agent below, inheritance disabled  ~10,800 tokens   0.047 credits
  *   same agent with no tools (the floor)     ~6,900 tokens   0.032 credits
  *
  * The floor is almost all server-side preamble, which no client setting
  * reaches.
  *
- * So by default each child runs a pi-owned agent with the five native tools a
- * coding delegate needs, written by the same writer as the chat transport's
+ * So by default each child runs a pi-owned agent with the native tools a coding
+ * delegate needs (see acpNativeTools), written by the same writer as the chat transport's
  * profile and under the same pid-tagged name, so the activation sweep removes
  * it if pi dies before the child is torn down. It carries no bridge token: MCP
  * servers mounted through session/new (the pi bridge, gsd-workflow) are
@@ -30,9 +30,25 @@
  *   "default"            no --agent: the user's default agent
  *   any other value      that agent, from the user's own kiro config
  */
+import { utimesSync } from "node:fs";
 import { writeAgentProfile } from "./kiro-bridge.js";
 
-export const ACP_NATIVE_TOOLS = ["fs_read", "fs_write", "execute_bash", "grep", "glob"] as const;
+/**
+ * kiro's native tools a delegated coding turn keeps. Everything else kiro ships
+ * (web_search, use_aws, todo_list, knowledge, code, introspect, use_subagent,
+ * session, report_issue, dummy) is left out: 28 KB of schemas on 2.32.0,
+ * roughly 7,000 tokens a turn,
+ * for tools pi either has itself or a delegate rarely needs.
+ * PI_KIRO_ACP_AGENT=default brings them back. web_fetch stays because it is
+ * small (~250 tokens) and "read this URL" is a common delegated ask. kiro's
+ * shell tool is execute_cmd on Windows (crates/agent/src/agent/tools/execute_cmd);
+ * that spelling is read from the 2.32.0 binary, not run on Windows.
+ */
+export function acpNativeTools(platform: NodeJS.Platform = process.platform): string[] {
+	return ["fs_read", "fs_write", platform === "win32" ? "execute_cmd" : "execute_bash", "grep", "glob", "web_fetch"];
+}
+
+export const ACP_NATIVE_TOOLS: readonly string[] = acpNativeTools();
 
 export type AcpAgentChoice = { kind: "lean" } | { kind: "default" } | { kind: "named"; name: string };
 
@@ -54,18 +70,35 @@ export interface AcpAgentLaunch {
 	disableInheritance: boolean;
 	/** Remove anything written for this launch. Idempotent, never throws. */
 	cleanup: () => void;
+	/**
+	 * Mark what was written as in use. The activation sweep ages a live pid's
+	 * profile out by mtime, a limit sized for per-turn chat profiles, while an
+	 * ACP child keeps its profile as long as it lives. Never throws.
+	 */
+	touch: () => void;
 }
 
+const noop = (): void => undefined;
+
 export function prepareAcpAgent(choice: AcpAgentChoice = acpAgentChoice()): AcpAgentLaunch {
-	if (choice.kind === "default") return { args: [], disableInheritance: false, cleanup: () => undefined };
-	if (choice.kind === "named") {
-		return { args: ["--agent", choice.name], disableInheritance: false, cleanup: () => undefined };
+	const userDefault: AcpAgentLaunch = { args: [], disableInheritance: false, cleanup: noop, touch: noop };
+	if (choice.kind === "default") return userDefault;
+	if (choice.kind === "named") return { ...userDefault, args: ["--agent", choice.name] };
+	let profile: ReturnType<typeof writeAgentProfile>;
+	try {
+		profile = writeAgentProfile(undefined, undefined, {
+			tools: ACP_NATIVE_TOOLS,
+			description:
+				"Throwaway pi-kiro-agent ACP delegate (auto-generated per child; safe to delete): native coding tools only, nothing inherited.",
+		});
+	} catch (error) {
+		// A read-only HOME, or a ~/.kiro that is a file: run the turn on the
+		// user's default agent rather than not at all.
+		console.error(
+			`[pi-kiro] could not write the lean ACP agent profile (${error instanceof Error ? error.message : String(error)}); this turn runs on your default kiro agent. Set PI_KIRO_ACP_AGENT=default to stop trying.`,
+		);
+		return userDefault;
 	}
-	const profile = writeAgentProfile(undefined, undefined, {
-		tools: ACP_NATIVE_TOOLS,
-		description:
-			"Throwaway pi-kiro-agent ACP delegate (auto-generated per child; safe to delete): native coding tools only, nothing inherited.",
-	});
 	return {
 		args: ["--agent", profile.name],
 		disableInheritance: true,
@@ -74,6 +107,14 @@ export function prepareAcpAgent(choice: AcpAgentChoice = acpAgentChoice()): AcpA
 				profile.remove();
 			} catch {
 				// a leftover is swept at the next activation
+			}
+		},
+		touch: () => {
+			try {
+				const now = new Date();
+				utimesSync(profile.path, now, now);
+			} catch {
+				// gone already; kiro has read it
 			}
 		},
 	};

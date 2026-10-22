@@ -193,12 +193,17 @@ describe("formatMeteringStatus", () => {
 		expect(formatMeteringStatus(totals, 0.02)).toContain("1.00 credits");
 	});
 
-	it("tracks the last context percentage across turns that report one", () => {
+	// The figure is a share of one model's window. Carried past a turn that did
+	// not report one (the chat text path, a model switch), the footer would show
+	// it beside credits it has nothing to do with.
+	it("tracks the last turn's context percentage, and drops it when a turn reports none", () => {
 		const totals = createMeteringTotals();
 		addTurnToTotals(totals, turn({ contextPercent: 6.05 }));
 		addTurnToTotals(totals, turn({ contextPercent: 10.2 }));
-		addTurnToTotals(totals, turn({ contextPercent: undefined }));
 		expect(totals.lastContextPercent).toBe(10.2);
+		addTurnToTotals(totals, turn({ contextPercent: undefined }));
+		expect(totals.lastContextPercent).toBeUndefined();
+		expect(formatMeteringStatus(totals, 0.02)).not.toContain("ctx");
 	});
 
 	it("prints exactly the two status examples the README documents", () => {

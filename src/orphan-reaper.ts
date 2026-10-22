@@ -140,18 +140,24 @@ export interface CleanupChild {
 	kill: (signal?: NodeJS.Signals) => boolean;
 }
 
-// child → whether it was spawned detached (own process group).
-const trackedChildren = new Map<CleanupChild, boolean>();
+// child → whether it was spawned detached (own process group), and what to
+// remove for it when pi exits with it still alive.
+const trackedChildren = new Map<CleanupChild, { detached: boolean; cleanup?: () => void }>();
 let exitHookInstalled = false;
 
 /** Exit-hook body — must stay synchronous ("exit" allows no async work, no timers). */
 function killTrackedChildren(): void {
-	for (const [child, detached] of trackedChildren) {
+	for (const [child, { detached, cleanup }] of trackedChildren) {
 		try {
 			if (detached && child.pid) process.kill(-child.pid, "SIGTERM");
 			else child.kill("SIGTERM");
 		} catch {
 			// already gone
+		}
+		try {
+			cleanup?.();
+		} catch {
+			// best effort; the next activation's sweep catches what is left
 		}
 	}
 	trackedChildren.clear();
@@ -178,9 +184,11 @@ export function _resetExitHookForTest(): void {
  * Track a spawned kiro-cli child so an orderly parent exit takes it (and, when
  * detached, its whole group) down. The hook is installed lazily on first
  * registration so merely importing this module has no process-level side effect.
+ * `cleanup` runs in the hook after the kill and must be synchronous: a child
+ * still alive at exit never reaches its own teardown.
  */
-export function registerChildForCleanup(child: CleanupChild, detached: boolean): void {
-	trackedChildren.set(child, detached);
+export function registerChildForCleanup(child: CleanupChild, detached: boolean, cleanup?: () => void): void {
+	trackedChildren.set(child, { detached, ...(cleanup ? { cleanup } : {}) });
 	if (!exitHookInstalled) {
 		exitHookInstalled = true;
 		process.on("exit", killTrackedChildren);
