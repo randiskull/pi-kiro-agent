@@ -1,0 +1,36 @@
+{
+	"runId": "2026-10-20-r3-pi-us-anthropic-claude-opus-4-6-v1",
+	"harness": "pi",
+	"harnessVersion": "@earendil-works/pi-coding-agent 1.3.0",
+	"model": "us.anthropic.claude-opus-4-6-v1",
+	"modelRoute": "amazon-bedrock, us-west-2, through pi's provider of that name. us.anthropic.claude-opus-4-6-v1 is a US cross-region inference profile; the bare anthropic.* id of a current-generation model is refused for on-demand invocation. Both are public Bedrock identifiers.",
+	"calibrationPass": null,
+	"ref": "61bb96f",
+	"refsByCase": {
+		"c1": "61bb96f",
+		"c2": "61bb96f",
+		"c3": "61bb96f",
+		"c4": "61bb96f",
+		"c5": "61bb96f",
+		"c6": "61bb96f",
+		"c7": "68ffb40",
+		"c8": "68ffb40"
+	},
+	"scoredAtCommit": "5a7ccaf6a377d519f84ed9bc3452231611a23ac0",
+	"scoredAgainst": {
+		"rubric": "13f46c7c39447db2ca5a48c40eb9d323326cbc10",
+		"expected": "c10f2220943827a523a46ee7fb87621a3c74b309",
+		"cases": {
+			"c1": "4f7fc8231a50c5b7198959520e93ef9da1886775",
+			"c2": "0cc053895dd7742ed2987524854b870290723d53",
+			"c3": "20985efe4052a821ad6abd5ac02852b2c2146a2d",
+			"c4": "3e3e121ec784f541c8a192a7cb581cded0ad8bc7",
+			"c5": "2dbde55c3fdfd8322fc317a3fe051451d300e161",
+			"c6": "d9ad6cb04248e96c40d8b881ebe47cdac694ec20",
+			"c7": "f1cabc6d9d8c2a69b2f9c873e8c999b02b2626aa",
+			"c8": "a1eeab778e11ceaf9302ebef8452ce254179965d"
+		}
+	},
+	"countsTowardsShipBar": false,
+	"whyNot": "Nine cases miss across the pair and gate agreement is 34/40, so the ship bar is not met. This run misses c1 (G2, outcome, D2, D3), c2 (G2, G3), c3 (G2), c4 (G2, outcome: the pair's only false fail) and c6 (G2, D1). Four of the five G2 misses are one harness defect, not a reading of G2: the prompt skips lint and supplies no lint output, so this run did lint's script-half job and failed G2 on docs/specs/dual-host-pi-gsd.md, the path expected.json aliases and spec-lint.mjs is handed on the command line. c4's false fail contains that single finding and nothing else. See runs/SCORE.md, 'Rubric 3 first pair'. It did meet shipBar.featureColumn, c7 D1 4 against c8 D1 2, and its c3 G3 fail is correct where its partner's is not."
+}

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Implementation specs get a rubric and a linter before anyone builds them.**
-  `spec-review/rubric.md` (now Rubric 2) defines five pass/fail gates and six separately scored
+  `spec-review/rubric.md` (now Rubric 5) defines five pass/fail gates and six separately scored
   dimensions for a spec in `docs/specs/`, and `scripts/spec-lint.mjs` checks the part a script can:
   structure, defect or feature typing, attribution, and that cited paths, commits, `§` sections and
   npm scripts exist, with near-miss detection for misspelled symbols. An eight-case calibration set
@@ -33,6 +33,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Contributor tooling only: nothing under `spec-review/` or `scripts/` is in the published package.
   Design: `docs/specs/spec-review-bus.md`.
 
+- **A calibration pass is a script, and the rubric is at Rubric 5.**
+  `scripts/calibrate.mjs run --harness <h> --model <id>` collects one pass of
+  the eight calibration cases: a ref-stripped clone per case with `origin`
+  removed and the answer key's blobs proved unreachable, lint's `notes` and
+  nothing else handed over per case, one session per case in its own working
+  copy, each verdict checked against the blob it reviewed, an isolation audit
+  over the session transcript, and a `RUN.json` recording the blobs, the
+  prompt's fingerprint and what the audit could and could not see. It never
+  grades its own pass: `countsTowardsShipBar` is written `false` and a human
+  flips it with `calibrate.mjs finalize`. Three pairs have run under it, at 36,
+  34 and 38 of 40 gate decisions agreeing, and **none of them counts** - the
+  38/40 is a non-gating probe of two already-spent models. Rubrics 2 to 5 are
+  the wording those pairs bought, with no answer-key label moved in any of
+  them; ten models are now spent, so the gating pair needs an eleventh and a
+  twelfth. Each revision, each pair and every defect found in the harness
+  itself is recorded once, in `spec-review/calibration/runs/SCORE.md`, with the
+  standing summary in `spec-review/calibration/README.md` and the criterion in
+  `docs/specs/spec-review-bus.md`. Tests: `test/calibrate.test.ts`,
+  `test/calibrate-guards.test.ts`, `test/rubric-procedure.test.ts`,
+  `test/calibration-ship-bar.test.ts`, `test/rubric-anchors.test.ts`.
+
 ### Changed
 
 - **A stream-json turn that is priced more than once now traces it.** Credits come from the last
@@ -54,6 +75,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worktree whose HEAD and `core.bare` must not move; both fail with the filter removed).
 
 ### Fixed
+
+- **`spec-review/calibration/score.mjs` could exit with its report still unwritten.** It called
+  `process.exit()`, which discards a stdout write that has not flushed. The tail is now a
+  function returning a code into `process.exitCode`, which exits once the stream has drained; a
+  missing `<case>.verdict.md` is also reported as a miss instead of throwing ENOENT. Test:
+  `test/spec-review-score.test.ts`. An earlier revision of this entry said the report printed 7
+  of its 33 lines through `| cat`. That does not reproduce and no count of lost lines is
+  supported: reaching the defect needs a report larger than the pipe buffer and a consumer that
+  has not drained it, and this report is about 2 KB. Measured on macOS and node 26 with one run
+  pair named 256 times, `| { sleep 2; cat; }` delivered 65351 of 117035 bytes under
+  `process.exit()` and all 117035 under `process.exitCode`; at the real size nothing was ever
+  lost through `| cat`.
+
+- **Internal tool names had spread into the published tree.** Seven files across the spec-review
+  tooling and its run notes named this machine's default kiro-cli agent and an MCP package scope by
+  their internal identifiers, while the rubric's own reviewer rule is to name only publicly
+  available harnesses and models. An internal agent name is not a secret, so `scan:secrets` and
+  gitleaks both pass on one; the names are now described by what the tool does instead. Test:
+  `test/internal-identifiers.test.ts`, which scans every tracked file for the three shapes and
+  builds its patterns from fragments so the guard has no exemption for its own path and scans
+  itself; it also asserts the file list is non-empty and that each pattern still matches a
+  known-bad sample, so neither the loop nor the patterns can pass vacuously.
 
 - **A cited path below a symlink was reported as a broken citation.** `scripts/spec-lint.mjs` asks
   `git check-ignore` whether a cited path is a local, gitignored file, and read any non-zero exit as

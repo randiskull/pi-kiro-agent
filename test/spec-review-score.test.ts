@@ -25,9 +25,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { promptFingerprint } from "../scripts/calibrate.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const realScorer = join(root, "spec-review", "calibration", "score.mjs");
+const realRunner = join(root, "scripts", "calibrate.mjs");
 
 /** The blob sha git itself would store, as an oracle independent of the scorer. */
 function gitBlob(path: string): string {
@@ -103,10 +105,17 @@ function makeFixture() {
 	writeFileSync(join(calib, "cases", "f1.md"), "# Fixture case f1\n\nNothing to review.\n");
 	writeFileSync(join(calib, "runs", "r1", "f1.verdict.md"), VERDICT);
 	copyFileSync(realScorer, join(calib, "score.mjs"));
+	// The scorer resolves the runner at ../../scripts/calibrate.mjs to recompute
+	// the prompt fingerprint, so the real one is copied in too. A stub exporting
+	// a constant would make every prompt assertion here self-fulfilling.
+	mkdirSync(join(dir, "scripts"), { recursive: true });
+	copyFileSync(realRunner, join(dir, "scripts", "calibrate.mjs"));
 	const truth = {
 		rubric: gitBlob(join(dir, "spec-review", "rubric.md")),
 		expected: gitBlob(join(calib, "expected.json")),
 		f1: gitBlob(join(calib, "cases", "f1.md")),
+		runner: gitBlob(join(dir, "scripts", "calibrate.mjs")),
+		prompt: promptFingerprint(),
 	};
 	const writeRunRaw = (body: string) => writeFileSync(join(calib, "runs", "r1", "RUN.json"), body);
 	const writeRun = (scoredAgainst: unknown, counts: unknown) => {
@@ -116,7 +125,13 @@ function makeFixture() {
 		writeFileSync(join(calib, "runs", "r1", "RUN.json"), `${JSON.stringify(body, null, "\t")}\n`);
 	};
 	const score = () => runScorer(join(calib, "score.mjs"), [join(calib, "runs", "r1")]);
-	const honest = () => ({ rubric: truth.rubric, expected: truth.expected, cases: { f1: truth.f1 } });
+	const honest = () => ({
+		rubric: truth.rubric,
+		expected: truth.expected,
+		runner: truth.runner,
+		prompt: truth.prompt,
+		cases: { f1: truth.f1 },
+	});
 	return { dir, calib, truth, writeRun, writeRunRaw, score, honest };
 }
 
@@ -334,5 +349,46 @@ describe("score.mjs enforces shipBar.blobs", () => {
 		expect(r.out).toContain("cases with a miss: 0");
 		expect(r.out).toContain("runs that do not count: 2/2");
 		expect(r.exitCode, r.out).toBe(1);
+	});
+});
+
+/**
+ * The other two defects the CHANGELOG entry for this scorer claims, which cites
+ * this file. Neither was gated: the entry named a test that did not cover them.
+ */
+describe("score.mjs cannot report less than it measured", () => {
+	it("reports a missing <case>.verdict.md as a miss instead of throwing ENOENT", () => {
+		const f = fixture();
+		f.writeRun(f.honest(), true);
+		rmSync(join(f.calib, "runs", "r1", "f1.verdict.md"));
+		const r = f.score();
+		expect(r.out, "the scorer threw on a run directory, which the exit code cannot survive").not.toMatch(
+			/ENOENT|Error:/,
+		);
+		expect(r.out).toContain("f1: MISS: this run names the case but has no f1.verdict.md");
+		expect(r.exitCode, r.out).toBe(1);
+	});
+
+	/**
+	 * Gated on the shape of the source, not on behaviour. The loss needs a report
+	 * larger than the pipe buffer and a consumer that has not drained it: with one
+	 * run pair named 256 times, `| { sleep 2; cat; }` delivered 65351 of 117035
+	 * bytes under process.exit() and all of it under process.exitCode, while the
+	 * real 27-line report fits inside the buffer and cannot show the defect at all.
+	 * Rebuilding that here would buy a two second sleep and a race against the
+	 * scorer's own speed, where a slow machine makes the check vacuous rather than
+	 * failing. The first assertion is what stops this one passing on a file it
+	 * failed to read.
+	 */
+	it("ends in process.exitCode, so it cannot exit with the report unwritten", () => {
+		const source = readFileSync(realScorer, "utf8");
+		expect(source, "the scorer's tail is not where this test expects it").toMatch(
+			/^process\.exitCode = main\(/m,
+		);
+		const calls = source
+			.split("\n")
+			.map((line, i) => [i + 1, line] as const)
+			.filter(([, line]) => /^\s*(await\s+)?process\.exit\s*\(/.test(line));
+		expect(calls, "process.exit() discards a stdout write that has not flushed").toEqual([]);
 	});
 });
