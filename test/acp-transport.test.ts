@@ -11,7 +11,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,11 +20,14 @@ import { Writable } from "node:stream";
 import type { AssistantMessageEvent, Context, Message, Model } from "@earendil-works/pi-ai";
 import { normalizeContext } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ACP_NATIVE_TOOLS } from "../src/acp-agent.js";
+import { agentProfilesDir } from "../src/kiro-bridge.js";
 import { readMeteringDiagnostic } from "../src/metering.js";
 import { _resetAcpSessions, _acpSessionCount } from "../src/acp-session.js";
 import { _getAcpChildRegistry, _resetAcpChildren, _acpRegistryKey, buildInitializeParams, isUnadvertisedClientMethod, makeStreamViaAcp } from "../src/acp-transport.js";
 import { _resetPiVersionForTest, ACP_ENGINE, identityBlock } from "../src/identity.js";
 import { resetTraceTarget } from "../src/trace.js";
+import { _runExitCleanup } from "../src/orphan-reaper.js";
 import { VERSION as HOST_PI_VERSION } from "@earendil-works/pi-coding-agent";
 
 // ─── Spawn mock ───────────────────────────────────────────────────────────────
@@ -2579,5 +2582,241 @@ describe("ACP model selection (P2: kiro v2 ignores model on session/prompt)", ()
 		expect(error.error.errorMessage).toContain("session/set_model claude-haiku-4.5 failed");
 		await settle();
 		expect(log.some((e) => e.method === "session/prompt")).toBe(false);
+	});
+});
+
+/**
+ * One full turn that hands each hook the moment it inspects: the spawn call
+ * (argv and env, before any protocol traffic), the session/new request, and the
+ * session/prompt request. The child exits at the end of the turn, so anything
+ * the transport removes on teardown is only observable from these hooks.
+ */
+async function driveAgentTurn(opts: {
+	onSpawn?: (args: string[], env: NodeJS.ProcessEnv) => void;
+	/** Runs before initialize is answered; may delay the answer. */
+	onInit?: () => Promise<void> | void;
+	onSessionNew?: () => void;
+	onPrompt?: () => void;
+} = {}): Promise<{ events: AssistantMessageEvent[]; child: AcpScriptChild }> {
+	const child = new AcpScriptChild();
+	spawnMock.mockImplementationOnce((_bin: string, args: string[], spawnOpts: { env?: NodeJS.ProcessEnv }) => {
+		opts.onSpawn?.(args, spawnOpts.env ?? {});
+		return child;
+	});
+	const sessionId = "sess-agent";
+	void (async () => {
+		const initReq = (await child.awaitLine()) as { id: number };
+		await opts.onInit?.();
+		child.sendLine({ jsonrpc: "2.0", id: initReq.id, result: INIT_RESULT });
+		const sessionReq = (await child.awaitLine()) as { id: number };
+		opts.onSessionNew?.();
+		child.sendLine({ jsonrpc: "2.0", id: sessionReq.id, result: { sessionId, modes: { currentModeId: "kiro_default", availableModes: [] }, models: SESSION_MODELS }});
+		child.sendLine({ jsonrpc: "2.0", method: "_kiro.dev/commands/available", params: { sessionId, commands: [] }});
+		const promptReq = (await child.awaitLine()) as { id: number };
+		opts.onPrompt?.();
+		await deliverTurn(child, sessionId, "ok");
+		child.sendLine({ jsonrpc: "2.0", id: promptReq.id, result: { stopReason: "end_turn" }});
+		child.end();
+	})();
+	const events = await collect({ messages: [user("hello")] });
+	await settle();
+	return { events, child };
+}
+
+describe("ACP agent selection", () => {
+	// Measured on kiro-cli 2.32.0, Opus 5.5, one-line prompt, server-reported
+	// context: the user's default agent with its MCP servers and inherited
+	// steering is ~101,600 tokens and 1.25 credits a turn; a lean custom agent
+	// with inheritance disabled is ~10,800 tokens and 0.047 credits
+	// (probes/acp-probe-p7-preamble.mjs, probes/acp-probe-p8-lean-agent.mjs).
+	const agentEnv = "PI_KIRO_ACP_AGENT";
+	const settingsEnv = "PI_KIRO_WORKSPACE_SETTINGS";
+
+	beforeEach(() => {
+		spawnMock.mockReset();
+		_resetAcpSessions();
+		_resetAcpChildren();
+		delete process.env[agentEnv];
+		// test-setup.ts already does this; the settings tests below undo it and
+		// point cwd at a scratch dir.
+		process.env[settingsEnv] = "off";
+	});
+
+	const ownProfiles = () =>
+		existsSync(agentProfilesDir())
+			? readdirSync(agentProfilesDir()).filter((f) => f.startsWith(`pi-kiro-bridge-${process.pid}-`))
+			: [];
+
+	it("runs a lean pi-owned agent by default", async () => {
+		let args: string[] = [];
+		let env: NodeJS.ProcessEnv = {};
+		let profile: { name?: string; tools?: unknown; allowedTools?: unknown; resources?: unknown; mcpServers?: unknown; description?: string } = {};
+		let mode = 0;
+		await driveAgentTurn({
+			onSpawn: (a, e) => {
+				args = a;
+				env = e;
+				const path = join(agentProfilesDir(), `${a[a.indexOf("--agent") + 1]}.json`);
+				profile = JSON.parse(readFileSync(path, "utf8"));
+				mode = statSync(path).mode & 0o777;
+			},
+		});
+		const i = args.indexOf("--agent");
+		expect(i).toBeGreaterThan(-1);
+		// The name the activation sweep recognizes, so a crash leaves nothing for long.
+		expect(args[i + 1]).toMatch(new RegExp(`^pi-kiro-bridge-${process.pid}-\\d+$`));
+		expect(profile.name).toBe(args[i + 1]);
+		expect(profile.tools).toEqual([...ACP_NATIVE_TOOLS]);
+		expect(profile.allowedTools).toEqual([...ACP_NATIVE_TOOLS]);
+		expect(profile.resources).toEqual([]);
+		expect(profile.mcpServers).toEqual({});
+		expect(profile.description).toMatch(/^[\x20-\x7e]+$/);
+		if (process.platform !== "win32") expect(mode).toBe(0o600);
+		// kiro's agent lookup is left alone, so anything kiro itself spawns (a
+		// nested kiro-cli, an MCP server) still sees the user's agents.
+		expect(env.KIRO_AGENT_CONFIG_DIR).toBe(process.env.KIRO_AGENT_CONFIG_DIR);
+	});
+
+	it("removes the lean profile when the child goes away", async () => {
+		let during: string[] = [];
+		await driveAgentTurn({ onSpawn: () => (during = ownProfiles()) });
+		expect(during).toHaveLength(1);
+		expect(ownProfiles()).toEqual([]);
+	});
+
+	it("PI_KIRO_ACP_AGENT=default runs the user's default agent, as before", async () => {
+		process.env[agentEnv] = "default";
+		let args: string[] = [];
+		let during: string[] = ["unset"];
+		await driveAgentTurn({ onSpawn: (a) => ((args = a), (during = ownProfiles())) });
+		expect(args).not.toContain("--agent");
+		expect(during).toEqual([]);
+	});
+
+	it("PI_KIRO_ACP_AGENT=<name> runs that agent from the user's own config", async () => {
+		process.env[agentEnv] = "my-reviewer";
+		let args: string[] = [];
+		let during: string[] = ["unset"];
+		await driveAgentTurn({ onSpawn: (a) => ((args = a), (during = ownProfiles())) });
+		expect(args[args.indexOf("--agent") + 1]).toBe("my-reviewer");
+		expect(during).toEqual([]);
+	});
+
+	// kiro reads the setting once, at process start: present only at spawn the
+	// lean agent reports 3.58% of Haiku 4.5's window, present only at
+	// session/new 20.67% (probes/acp-probe-p8-lean-agent.mjs). So it has to be
+	// on disk before spawn, and can go once initialize has answered.
+	it("disables inherited resources for the spawn, and restores the project once kiro has started", async () => {
+		delete process.env[settingsEnv];
+		const ws = mkdtempSync(join(tmpdir(), "pi-kiro-acp-ws-"));
+		vi.spyOn(process, "cwd").mockReturnValue(ws);
+		const settings = join(ws, ".kiro", "settings", "cli.json");
+		let atSpawn: unknown;
+		let atSessionNew = true;
+		await driveAgentTurn({
+			onSpawn: () => (atSpawn = JSON.parse(readFileSync(settings, "utf8"))),
+			onSessionNew: () => (atSessionNew = existsSync(settings)),
+		});
+		expect(atSpawn).toEqual({ "chat.disableInheritingDefaultResources": true });
+		expect(atSessionNew).toBe(false);
+		expect(existsSync(join(ws, ".kiro"))).toBe(false);
+	});
+
+	it("restores the project when kiro fails to start", async () => {
+		delete process.env[settingsEnv];
+		const ws = mkdtempSync(join(tmpdir(), "pi-kiro-acp-ws-"));
+		vi.spyOn(process, "cwd").mockReturnValue(ws);
+		spawnMock.mockImplementationOnce(() => {
+			throw new Error("spawn kiro-cli ENOENT");
+		});
+		const events = await collect({ messages: [user("hello")] });
+		expect(events.some((e) => e.type === "error")).toBe(true);
+		expect(existsSync(join(ws, ".kiro"))).toBe(false);
+		expect(ownProfiles()).toEqual([]);
+	});
+
+	// A missing binary is not a synchronous throw: spawn returns a child that
+	// emits 'error' (ENOENT) on a later tick and never speaks the protocol.
+	it("fails the turn, restores the project and removes the profile when kiro-cli cannot be started", async () => {
+		delete process.env[settingsEnv];
+		const ws = mkdtempSync(join(tmpdir(), "pi-kiro-acp-ws-"));
+		vi.spyOn(process, "cwd").mockReturnValue(ws);
+		const child = new AcpScriptChild();
+		spawnMock.mockImplementationOnce(() => {
+			setTimeout(() => child.emit("error", Object.assign(new Error("spawn kiro-cli ENOENT"), { code: "ENOENT" })), 5);
+			return child;
+		});
+		const started = Date.now();
+		const events = await collect({ messages: [user("hello")] });
+		await settle();
+		const error = events.find((e) => e.type === "error");
+		if (error?.type !== "error") throw new Error("expected an error event");
+		expect(error.error.errorMessage).toContain("ENOENT");
+		expect(Date.now() - started).toBeLessThan(5_000);
+		expect(existsSync(join(ws, ".kiro"))).toBe(false);
+		expect(ownProfiles()).toEqual([]);
+	});
+
+	// pi's exit hook only signals children; a live child's teardown never runs.
+	it("removes the lean profile from the exit hook, for a child still alive when pi exits", async () => {
+		let afterExitHook: string[] = ["unset"];
+		await driveAgentTurn({
+			onPrompt: () => {
+				_runExitCleanup();
+				afterExitHook = ownProfiles();
+			},
+		});
+		expect(afterExitHook).toEqual([]);
+	});
+
+	// The activation sweep ages a live pid's profile out by mtime, which was
+	// sized for per-turn chat profiles; an ACP child keeps its profile for hours.
+	it("touches the lean profile at every prompt, so a long-lived child's profile stays fresh", async () => {
+		let name = "";
+		let mtimeAtPrompt = 0;
+		await driveAgentTurn({
+			onSpawn: (a) => (name = a[a.indexOf("--agent") + 1]),
+			onSessionNew: () => {
+				const old = new Date(Date.now() - 24 * 60 * 60 * 1000);
+				utimesSync(join(agentProfilesDir(), `${name}.json`), old, old);
+			},
+			onPrompt: () => (mtimeAtPrompt = statSync(join(agentProfilesDir(), `${name}.json`)).mtimeMs),
+		});
+		expect(mtimeAtPrompt).toBeGreaterThan(Date.now() - 60_000);
+	});
+
+	// A kiro-cli that never answers initialize (stuck on auth, wedged) must not
+	// keep the user's project without steering for as long as the turn hangs.
+	it("stops holding the setting after PI_KIRO_ACP_SETTINGS_HOLD_MS even if initialize never answers", async () => {
+		delete process.env[settingsEnv];
+		process.env.PI_KIRO_ACP_SETTINGS_HOLD_MS = "20";
+		const ws = mkdtempSync(join(tmpdir(), "pi-kiro-acp-ws-"));
+		vi.spyOn(process, "cwd").mockReturnValue(ws);
+		const settings = join(ws, ".kiro", "settings", "cli.json");
+		let atSpawn = false;
+		let beforeInitAnswer = true;
+		try {
+			await driveAgentTurn({
+				onSpawn: () => (atSpawn = existsSync(settings)),
+				onInit: async () => {
+					await new Promise((r) => setTimeout(r, 80));
+					beforeInitAnswer = existsSync(settings);
+				},
+			});
+		} finally {
+			delete process.env.PI_KIRO_ACP_SETTINGS_HOLD_MS;
+		}
+		expect(atSpawn).toBe(true);
+		expect(beforeInitAnswer).toBe(false);
+	});
+
+	it("leaves workspace settings alone for the user's own agents", async () => {
+		delete process.env[settingsEnv];
+		process.env[agentEnv] = "default";
+		const ws = mkdtempSync(join(tmpdir(), "pi-kiro-acp-ws-"));
+		vi.spyOn(process, "cwd").mockReturnValue(ws);
+		let touched = true;
+		await driveAgentTurn({ onSpawn: () => (touched = existsSync(join(ws, ".kiro"))) });
+		expect(touched).toBe(false);
 	});
 });

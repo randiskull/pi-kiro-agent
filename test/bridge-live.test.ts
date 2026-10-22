@@ -41,6 +41,8 @@ import {
 	manifestExtensionEntries,
 	serveBridgeHttp,
 } from "../src/bridge.js";
+import { _resetAcpChildren, makeStreamViaAcp } from "../src/acp-transport.js";
+import { _resetAcpSessions } from "../src/acp-session.js";
 import { _resetSessions } from "../src/session-manager.js";
 import { makeStreamViaKiro } from "../src/stream-adapter.js";
 import { ctx, drainTurn, LIVE, LIVE_MODEL, LIVE_TIMEOUT_MS, user, withRealHome } from "./live-support.js";
@@ -105,6 +107,7 @@ describe.skipIf(!LIVE)("live MCP bridge", () => {
 	afterAll(() => {
 		for (const controller of controllers) controller.abort();
 		clearBridgeCache();
+		_resetAcpChildren();
 	});
 
 	it("locates every bridge source through pi's package registry, entries contained", async () => {
@@ -245,6 +248,49 @@ describe.skipIf(!LIVE)("live MCP bridge", () => {
 			).toBeGreaterThan(0);
 			expect(JSON.stringify(invocations)).toContain("LIVE-BRIDGE-CHECK");
 			expect(turn.totalTokens).toBe(0);
+		},
+		LIVE_TIMEOUT_MS,
+	);
+
+	// The ACP transport mounts the bridge through session/new into the lean
+	// pi-owned agent (acp-agent.ts), whose `tools` names only kiro's native coding
+	// tools. kiro offers session-mounted MCP servers regardless, which this proves
+	// on the real binary rather than on the transport's fake child.
+	it(
+		"a delegated ACP turn on the lean agent calls a bridged tool back into this process",
+		async () => {
+			_resetAcpSessions();
+			_resetAcpChildren();
+			const invocations: unknown[] = [];
+			const tools = [makeProbeTool((params) => invocations.push(params))];
+			const streamViaAcp = makeStreamViaAcp({
+				binaryPath: "kiro-cli",
+				getBridge: async (signal) => {
+					const handle = await serveBridgeHttp(tools, () => FAKE_CTX, signal);
+					return handle ? { ...handle, rebindOrigin: () => undefined } : undefined;
+				},
+			});
+
+			const turn = await drainTurn(
+				streamViaAcp(
+					LIVE_MODEL,
+					ctx([
+						user(
+							"Use the @pi/" +
+								PROBE_TOOL +
+								" tool to record the marker LIVE-ACP-BRIDGE-CHECK. " +
+								"Call the tool, do not just describe it. Then reply with the single word DONE.",
+						),
+					]),
+					undefined,
+				),
+			);
+
+			expect(
+				invocations.length,
+				"the delegated ACP run never reached the bridge; kiro said: " + turn.text,
+			).toBeGreaterThan(0);
+			expect(JSON.stringify(invocations)).toContain("LIVE-ACP-BRIDGE-CHECK");
 		},
 		LIVE_TIMEOUT_MS,
 	);

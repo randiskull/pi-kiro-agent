@@ -14,14 +14,25 @@
  * The two turns are one test, not two: turn 2 asserts session REUSE, which only
  * means anything if turn 1 ran in the same process moments earlier.
  */
-import { afterAll, describe, expect, it } from "vitest";
-import { _getAcpChildRegistry, _resetAcpChildren, makeStreamViaAcp } from "../src/acp-transport.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { _acpRegistryKey, _getAcpChildRegistry, _resetAcpChildren, makeStreamViaAcp } from "../src/acp-transport.js";
+import { readMeteringDiagnostic } from "../src/metering.js";
 import { assistant, ctx, drainTurn, LIVE, LIVE_MODEL, LIVE_TIMEOUT_MS, user, withRealHome } from "./live-support.js";
 
 const streamViaAcp = makeStreamViaAcp({ binaryPath: "kiro-cli" });
 
 describe.skipIf(!LIVE)("live kiro ACP transport", () => {
 	withRealHome();
+	// test-setup.ts turns workspace settings off suite-wide; this file measures
+	// the real default, which has them on.
+	const savedWorkspaceSettings = process.env.PI_KIRO_WORKSPACE_SETTINGS;
+	beforeAll(() => {
+		delete process.env.PI_KIRO_WORKSPACE_SETTINGS;
+	});
+	afterAll(() => {
+		if (savedWorkspaceSettings === undefined) delete process.env.PI_KIRO_WORKSPACE_SETTINGS;
+		else process.env.PI_KIRO_WORKSPACE_SETTINGS = savedWorkspaceSettings;
+	});
 	// Kills the persistent child; without it the worker hangs on its idle timer.
 	afterAll(() => {
 		_resetAcpChildren();
@@ -32,12 +43,21 @@ describe.skipIf(!LIVE)("live kiro ACP transport", () => {
 		async () => {
 			_resetAcpChildren();
 			const registry = _getAcpChildRegistry();
-			const key = process.cwd();
+			const key = _acpRegistryKey(process.cwd(), undefined);
 			const seed = "Remember this codeword for later: ORBIT-ACP-77. Reply with just OK.";
 
 			const t1 = await drainTurn(streamViaAcp(LIVE_MODEL, ctx([user(seed)]), undefined));
 			expect(t1.text.length).toBeGreaterThan(0);
 			expect(t1.totalTokens).toBe(0); // seat-billed, no token accounting
+
+			// kiro reports context against the model's own window (200k for Haiku
+			// 4.5). On Haiku this turn is ~3.7% with the lean agent and inheritance
+			// disabled, ~20.7% with the lean agent inheriting, ~35.8% on a developer
+			// machine's default agent; 8% separates the first from the rest.
+			const done = t1.events.find((e) => e.type === "done");
+			const metering = done?.type === "done" ? readMeteringDiagnostic(done.message.diagnostics) : undefined;
+			expect(metering?.contextPercent).toBeDefined();
+			expect(metering?.contextPercent ?? 100).toBeLessThan(8);
 
 			// A persistent child that reached a ready ACP session -- the whole point
 			// of this transport, and unobservable through the stream alone.

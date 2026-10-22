@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { HttpBridgeHandle } from "../src/bridge.js";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	_setSettingsWriterForTest,
 	agentProfilesDir,
 	bridgeEnabled,
 	disableInheritedResources,
@@ -100,6 +101,16 @@ describe("writeAgentProfile", () => {
 		profile.remove();
 	});
 
+	it("takes a narrower tool list and a description, for the ACP lean agent", () => {
+		const profile = writeAgentProfile(undefined, undefined, { tools: ["fs_read", "grep"], description: "lean" });
+		const parsed = JSON.parse(readFileSync(profile.path, "utf8"));
+		expect(parsed.tools).toEqual(["fs_read", "grep"]);
+		expect(parsed.allowedTools).toEqual(["fs_read", "grep"]);
+		expect(parsed.description).toBe("lean");
+		expect(parsed.mcpServers).toEqual({});
+		profile.remove();
+	});
+
 	it("issues unique names per call", () => {
 		const first = writeAgentProfile(HANDLE);
 		const second = writeAgentProfile(HANDLE);
@@ -189,6 +200,121 @@ describe("disableInheritedResources", () => {
 	// because it lands in the user's own project -- that we put it back.
 	const mkws = () => mkdtempSync(join(tmpdir(), "pi-kiro-ws-"));
 	const settings = (ws: string) => join(ws, ".kiro", "settings", "cli.json");
+
+	// test-setup.ts turns the mechanism off for the whole suite.
+	beforeEach(() => {
+		delete process.env.PI_KIRO_WORKSPACE_SETTINGS;
+	});
+
+	// ACP children of one pi (a parent and the subagents it fans out) can start
+	// together in one cwd. The first holder's key must not read as the user's
+	// own value to the rest, and must stay until the last of them is done.
+	it("shares one hold between concurrent holders, and restores when the last releases", () => {
+		const ws = mkws();
+		const first = disableInheritedResources(ws);
+		const second = disableInheritedResources(ws);
+		expect(first).toBeDefined();
+		expect(second).toBeDefined();
+		first?.restore();
+		expect(JSON.parse(readFileSync(settings(ws), "utf8"))).toEqual({ "chat.disableInheritingDefaultResources": true });
+		first?.restore(); // idempotent: does not release the second holder's share
+		expect(existsSync(settings(ws))).toBe(true);
+		second?.restore();
+		expect(existsSync(join(ws, ".kiro"))).toBe(false);
+		rmSync(ws, { recursive: true, force: true });
+	});
+
+	// <home>/.kiro/settings/cli.json is kiro's GLOBAL settings file, not a workspace's.
+	it("never writes kiro's global settings when the cwd is the home directory", () => {
+		const before = existsSync(settings(homedir())) ? readFileSync(settings(homedir()), "utf8") : undefined;
+		expect(disableInheritedResources(homedir())).toBeUndefined();
+		const after = existsSync(settings(homedir())) ? readFileSync(settings(homedir()), "utf8") : undefined;
+		expect(after).toBe(before);
+	});
+
+	// The open truncates before the write can fail (ENOSPC, EIO), and once the
+	// sentinel exists it holds the only copy of the user's bytes.
+	it("puts the user's file back when the write fails after truncating it", () => {
+		const ws = mkws();
+		const path = settings(ws);
+		mkdirSync(dirname(path), { recursive: true });
+		const before = `${JSON.stringify({ "chat.defaultModel": "claude-sonnet-4-5" })}\n`;
+		writeFileSync(path, before, "utf8");
+		const warn = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		_setSettingsWriterForTest((p) => {
+			writeFileSync(p, "", "utf8");
+			throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+		});
+		try {
+			expect(disableInheritedResources(ws)).toBeUndefined();
+		} finally {
+			_setSettingsWriterForTest(undefined);
+		}
+		expect(readFileSync(path, "utf8")).toBe(before);
+		expect(existsSync(join(dirname(path), ".pi-kiro-settings-restore.json"))).toBe(false);
+		expect(warn).toHaveBeenCalled();
+		rmSync(ws, { recursive: true, force: true });
+	});
+
+	it("leaves no empty .kiro behind when the write fails in a project that had none", () => {
+		const ws = mkws();
+		vi.spyOn(console, "error").mockImplementation(() => undefined);
+		_setSettingsWriterForTest(() => {
+			throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+		});
+		try {
+			expect(disableInheritedResources(ws)).toBeUndefined();
+		} finally {
+			_setSettingsWriterForTest(undefined);
+		}
+		expect(existsSync(join(ws, ".kiro"))).toBe(false);
+		rmSync(ws, { recursive: true, force: true });
+	});
+
+	// Another pi's reap treats a live pid's sentinel as stale once its ts is
+	// older than any turn can run, so a hold kept alive by joiners must look fresh.
+	it("refreshes the sentinel's timestamp when a holder joins", () => {
+		const ws = mkws();
+		const sentinel = join(dirname(settings(ws)), ".pi-kiro-settings-restore.json");
+		const first = disableInheritedResources(ws);
+		const record = JSON.parse(readFileSync(sentinel, "utf8"));
+		writeFileSync(sentinel, `${JSON.stringify({ ...record, ts: 1 })}\n`, "utf8");
+		const second = disableInheritedResources(ws);
+		const joined = JSON.parse(readFileSync(sentinel, "utf8"));
+		expect(joined.ts).toBeGreaterThan(Date.now() - 60_000);
+		expect(joined.original).toBe(record.original);
+		second?.restore();
+		first?.restore();
+		expect(existsSync(join(ws, ".kiro"))).toBe(false);
+		rmSync(ws, { recursive: true, force: true });
+	});
+
+	// process.cwd() returns the real path, so HOME reached through a symlink
+	// (or, on macOS, spelled in another case) must still count as home.
+	it("treats a symlink to the home directory as home", () => {
+		const link = join(mkws(), "home-link");
+		symlinkSync(homedir(), link);
+		const before = existsSync(settings(homedir())) ? readFileSync(settings(homedir()), "utf8") : undefined;
+		expect(disableInheritedResources(link)).toBeUndefined();
+		const after = existsSync(settings(homedir())) ? readFileSync(settings(homedir()), "utf8") : undefined;
+		expect(after).toBe(before);
+	});
+
+	it.skipIf(process.platform !== "darwin")("treats the home directory spelled in another case as home, on macOS", () => {
+		expect(disableInheritedResources(homedir().toUpperCase())).toBeUndefined();
+	});
+
+	// A read-only checkout, or a `.kiro` that is a file: lose the saving, keep the turn.
+	it("fails open when the settings file cannot be written", () => {
+		const ws = mkws();
+		writeFileSync(join(ws, ".kiro"), "not a directory", "utf8");
+		const warn = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		expect(() => disableInheritedResources(ws)).not.toThrow();
+		expect(disableInheritedResources(ws)).toBeUndefined();
+		expect(readFileSync(join(ws, ".kiro"), "utf8")).toBe("not a directory");
+		expect(warn).toHaveBeenCalled();
+		rmSync(ws, { recursive: true, force: true });
+	});
 
 	it("sets the key at workspace scope and leaves a clean project clean", () => {
 		const ws = mkws();
@@ -308,10 +434,12 @@ describe("disableInheritedResources", () => {
 		const first = disableInheritedResources(ws);
 		expect(first).toBeDefined();
 		const second = disableInheritedResources(ws);
-		// The key is already set (by the first), so the second owns nothing...
-		expect(second).toBeUndefined();
+		// The key is ours, not the user's, so the second shares the change...
+		expect(second).toBeDefined();
 		// ...and the first's change and sentinel survived the second's reap pass.
 		expect(JSON.parse(readFileSync(path, "utf8"))["chat.disableInheritingDefaultResources"]).toBe(true);
+		expect(existsSync(join(dirname(path), ".pi-kiro-settings-restore.json"))).toBe(true);
+		second?.restore();
 		expect(existsSync(join(dirname(path), ".pi-kiro-settings-restore.json"))).toBe(true);
 		first?.restore();
 		expect(existsSync(join(ws, ".kiro"))).toBe(false);

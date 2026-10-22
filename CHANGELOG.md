@@ -56,6 +56,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **ACP turns run a lean pi-owned agent instead of your default kiro agent.** With no `--agent`,
+  `kiro-cli acp` ran whatever `chat.defaultAgent` named, and that agent brought its own MCP servers,
+  the global `mcp.json` and every inherited steering file and skill into each turn, none of which pi
+  uses. Measured on kiro-cli 2.32.0, Opus 5.5, a one-line prompt: ~101,600 tokens and 1.25 credits a
+  turn on a developer machine's default agent, ~10,800 tokens and 0.047 credits on the lean agent.
+  The agent carries six of kiro's native tools (`fs_read`, `fs_write`, `execute_bash`, which is
+  `execute_cmd` on Windows, `grep`, `glob`, `web_fetch`), so **a default ACP turn no longer has
+  kiro's `web_search`, `use_aws`, `todo_list`, `knowledge`, `code`, `introspect`, `use_subagent`,
+  `session` or `report_issue`**; pi's own tools still reach it through the bridge, and
+  `PI_KIRO_ACP_AGENT=default` brings kiro's back. The Windows spelling is read from the 2.32.0
+  binary, not run there. A profile that cannot be written (a read-only home) runs the turn on the
+  default agent with a warning. Its profile comes from the chat transport's profile writer, under the same pid-tagged
+  name, so it carries no token. It is removed with the child, from pi's exit hook for a child still
+  alive when pi exits, and by the next activation's sweep after a kill; it is touched at every
+  prompt so the sweep's age limit, sized for per-turn chat profiles, never takes a live child's.
+  A kiro-cli that cannot be started (`ENOENT` arrives as an async `error` event, not a throw) now
+  fails the turn at once and releases what was written for it, instead of an uncaught exception. The pi bridge and the GSD workflow server still mount
+  through `session/new`, which kiro honours for any agent. Inherited resources are disabled for the
+  child through the same workspace setting the chat transport uses, held only from just before spawn
+  until `initialize` answers (at most `PI_KIRO_ACP_SETTINGS_HOLD_MS`, 30 s), because kiro reads it
+  once at startup: written only at `session/new` it has no effect (20.7% of Haiku 4.5's window
+  against 3.6%). `PI_KIRO_ACP_AGENT=default`
+  restores the old behaviour and `PI_KIRO_ACP_AGENT=<name>` runs one of your own agents. Probes:
+  `probes/acp-probe-p7-preamble.mjs` (cost per agent configuration) and
+  `probes/acp-probe-p8-lean-agent.mjs` (bridge under the lean agent, when the setting is read).
+  Tests: `test/acp-transport.test.ts` ("ACP agent selection"), and live,
+  `test/acp-transport-live.test.ts` (context under 8% of the window) and `test/bridge-live.test.ts`
+  (a bridged tool called from a delegated ACP turn).
+
+- **The workspace setting that disables inherited resources is shared, and fails open.** Holders in
+  one directory now share one change, restored by the last to release it: before, a second turn
+  starting while the first held the key read it as the user's own value, and the first restored the
+  file under it. It is never written when the cwd is the home directory, where
+  `.kiro/settings/cli.json` is kiro's global settings, and a directory that cannot be written costs
+  a warning instead of failing the turn. The test suite now runs with `PI_KIRO_WORKSPACE_SETTINGS=off`
+  so no test writes into the checkout it runs in. Tests: `test/kiro-bridge.test.ts`.
+
+- **The status line shows context usage.** After the credits it now reads `ctx N.N%`, the share of
+  the model's context window kiro reported for the last turn, and nothing when that turn reported
+  none, so a figure from another model's window never sits beside a new turn's credits. pi-kiro already
+  recorded it in each turn's `kiro.metering` diagnostic but did not show it, so the effect of what a
+  turn loads was visible only by reading diagnostics. Test: `test/metering.test.ts`.
+
 - **A stream-json turn that is priced more than once now traces it.** Credits come from the last
   `metadata` event carrying a `meteringUsage` array, which rests on kiro emitting the priced
   metadata last (the 2.32 probes show exactly one priced metadata per turn). Nothing in a single
@@ -97,6 +140,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   builds its patterns from fragments so the guard has no exemption for its own path and scans
   itself; it also asserts the file list is non-empty and that each pattern still matches a
   known-bad sample, so neither the loop nor the patterns can pass vacuously.
+
+- **The live ACP test looked its child up under a key the registry no longer uses.** Children are
+  keyed by cwd and conversation since the parent and each subagent got their own, but
+  `test/acp-transport-live.test.ts` still asked for `process.cwd()`, found nothing and failed on
+  `main` before any of its real assertions ran. It now builds the key with `_acpRegistryKey`, as the
+  unit tests do. Test-only.
 
 - **A cited path below a symlink was reported as a broken citation.** `scripts/spec-lint.mjs` asks
   `git check-ignore` whether a cited path is a local, gitignored file, and read any non-zero exit as

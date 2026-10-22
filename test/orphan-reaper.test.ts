@@ -172,6 +172,18 @@ describe("parent-exit tether", () => {
 		expect(detachedChild.kill).not.toHaveBeenCalled();
 	});
 
+	// A persistent ACP child is still alive when pi exits, so its teardown never
+	// runs; whatever was written for it has to go from the exit hook.
+	it("runs each child's cleanup on the exit hook, and a throwing one does not stop the sweep", () => {
+		const cleaned: number[] = [];
+		registerChildForCleanup(fakeChild(108), true, () => {
+			throw new Error("EBUSY");
+		});
+		registerChildForCleanup(fakeChild(109), false, () => cleaned.push(109));
+		_runExitCleanup();
+		expect(cleaned).toEqual([109]);
+	});
+
 	it("does not kill unregistered children, and one kill failure does not stop the sweep", () => {
 		const unregistered = fakeChild(103);
 		const failing = fakeChild(104);

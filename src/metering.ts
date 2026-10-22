@@ -142,7 +142,9 @@ export function createMeteringTotals(): MeteringTotals {
 export function addTurnToTotals(totals: MeteringTotals, turn: TurnMetering): void {
 	totals.turns += 1;
 	totals.lastCredits = turn.credits;
-	if (turn.contextPercent !== undefined) totals.lastContextPercent = turn.contextPercent;
+	// A share of one model's window: carried past a turn without one (the chat
+	// text path, a model switch) it would sit beside credits it does not describe.
+	totals.lastContextPercent = turn.contextPercent;
 	if (turn.unitPlural) totals.unitPlural = turn.unitPlural;
 	if (turn.credits !== undefined) totals.credits += turn.credits;
 }
@@ -162,8 +164,9 @@ function formatUsd(usd: number): string {
 }
 
 /**
- * The footer/status string: session credits, the projected dollars, and the
- * last turn. Dollars are omitted when the rate is 0, because a zero is less
+ * The footer/status string: session credits, the projected dollars, the last
+ * turn, and the share of the model's context window kiro reported for the last
+ * turn, when it reported one. Dollars are omitted when the rate is 0, because a zero is less
  * informative than no figure at all. Returns undefined before any turn has
  * reported a credit figure, so the status key stays clear rather than showing
  * a misleading 0.
@@ -178,6 +181,7 @@ export function formatMeteringStatus(
 	if (totals.lastCredits !== undefined && totals.turns > 1) {
 		parts.push("(last " + formatCredits(totals.lastCredits) + ")");
 	}
+	if (totals.lastContextPercent !== undefined) parts.push("ctx " + totals.lastContextPercent.toFixed(1) + "%");
 	return parts.join(" ");
 }
 
