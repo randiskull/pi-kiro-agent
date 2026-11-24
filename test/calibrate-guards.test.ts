@@ -29,6 +29,11 @@ import {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runner = join(root, "scripts", "calibrate.mjs");
 const temps: string[] = [];
+// Blocks that start scripts/calibrate.mjs as a child process. A dry run walks
+// the git history of every calibration case to build the forbidden-blob list,
+// about 2 s on an idle machine and well past vitest's 5 s default when the
+// whole suite runs in parallel. Pure-function blocks keep the default.
+const RUNNER_TIMEOUT_MS = 60_000;
 
 function temp(): string {
 	const d = mkdtempSync(join(tmpdir(), "cal-guard-"));
@@ -50,7 +55,7 @@ function dryRun(work: string, extra: string[] = [], env: Record<string, string> 
 	return { code: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
-describe("numeric and date flags are checked before anything runs", () => {
+describe("numeric and date flags are checked before anything runs", { timeout: RUNNER_TIMEOUT_MS }, () => {
 	it("rejects a --jobs or --timeout-min that is not a whole number above zero", () => {
 		// --jobs abc built Array.from({length: NaN}): zero lanes, exit 0, and in a
 		// real run a RUN.json with no verdicts. --timeout-min abc passed NaN to
@@ -75,10 +80,12 @@ describe("numeric and date flags are checked before anything runs", () => {
 			["--timeout-min", "abc"],
 			["--date", "../../x"],
 		]) {
-			const work = temp();
+			// A --work folder that does not exist yet: a refusal that comes after
+			// the run starts preparing creates it, so this pins the order.
+			const work = join(temp(), "not-created");
 			const r = dryRun(work, args);
 			expect(r.code, `${args.join(" ")}: ${r.out}`).toBe(2);
-			expect(existsSync(join(work, "sessions")), `${args.join(" ")} prepared a session`).toBe(false);
+			expect(existsSync(work), `${args.join(" ")} created the work folder`).toBe(false);
 		}
 	});
 });
@@ -154,7 +161,7 @@ describe("the prompt fingerprint", () => {
 	});
 });
 
-describe("the leak check is wired, not merely written", () => {
+describe("the leak check is wired, not merely written", { timeout: RUNNER_TIMEOUT_MS }, () => {
 	// This is the gap the review named: every existing assertion was about
 	// leakReport's return value, so a leakCheck that returned immediately passed
 	// the whole suite. CALIBRATE_ASSUME_LEAK makes every forbidden blob read as
@@ -211,7 +218,7 @@ describe("the leak check is wired, not merely written", () => {
 	});
 });
 
-describe("the runner leaves nothing outside --work", () => {
+describe("the runner leaves nothing outside --work", { timeout: RUNNER_TIMEOUT_MS }, () => {
 	it("creates no directory in the system temp directory", () => {
 		// A full clone per case and an input directory per case were created with
 		// mkdtemp in tmpdir() and never removed, so every run and every
@@ -236,7 +243,7 @@ describe("the runner leaves nothing outside --work", () => {
 	});
 });
 
-describe("finalize refuses what can never count", () => {
+describe("finalize refuses what can never count", { timeout: RUNNER_TIMEOUT_MS }, () => {
 	function runDir(run: Record<string, unknown>): string {
 		const d = temp();
 		mkdirSync(join(d, "r"), { recursive: true });
@@ -285,7 +292,7 @@ describe("finalize refuses what can never count", () => {
 	});
 });
 
-describe("a run on a spent model is a probe whether or not it says so", () => {
+describe("a run on a spent model is a probe whether or not it says so", { timeout: RUNNER_TIMEOUT_MS }, () => {
 	it("says so before preparing anything", () => {
 		const spent = JSON.parse(
 			readFileSync(join(root, "spec-review", "calibration", "expected.json"), "utf8"),
