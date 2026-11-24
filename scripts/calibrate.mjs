@@ -715,6 +715,8 @@ async function cmdRun(args) {
 	const rubricText = readFileSync(join(root, "spec-review", "rubric.md"), "utf8");
 	const rubric = rubricNumber(rubricText);
 	const date = args.date === undefined ? new Date().toISOString().slice(0, 10) : checkedDate(args.date);
+	const timeoutMs = (args["timeout-min"] === undefined ? 60 : positiveInt(args["timeout-min"], "timeout-min")) * 60_000;
+	const jobs = args.jobs === undefined ? 4 : positiveInt(args.jobs, "jobs");
 	const runId = runIdFor({ date, rubric, harness, model });
 	const reviewerLine = `Reviewer: ${harness}, ${model}`;
 	const forbidden = forbiddenBlobs(key);
@@ -725,8 +727,6 @@ async function cmdRun(args) {
 	const workRoot = args.work ? resolve(args.work) : mkdtempSync(join(tmpdir(), "cal-"));
 	mkdirSync(workRoot, { recursive: true });
 	const dryRun = Boolean(args["dry-run"]);
-	const timeoutMs = (args["timeout-min"] === undefined ? 60 : positiveInt(args["timeout-min"], "timeout-min")) * 60_000;
-	const jobs = args.jobs === undefined ? 4 : positiveInt(args.jobs, "jobs");
 	// A model that has already taken part in a pass cannot be one of the two the
 	// bar asks for, and a run on one is a probe whether or not it is labelled.
 	// Recording that as a field rather than as prose in whyNot is what lets
