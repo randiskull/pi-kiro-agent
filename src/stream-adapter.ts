@@ -998,7 +998,9 @@ export function makeStreamViaKiro(deps: StreamDeps) {
 					// run settles the attempt; only then do the retries below apply.
 					if (streamJson?.violation || streamJson?.terminal?.type === "runFinished") break;
 					// MCP-startup readiness gate: with --require-mcp-startup kiro
-					// exits 3 when the bridge didn't connect. Retry once.
+					// exits 3 when the bridge didn't connect. Retry while attempts
+					// remain: up to twice, from the same MAX_ATTEMPTS budget as the
+					// resume fallback below.
 					if (
 						profile &&
 						exitCode === MCP_STARTUP_EXIT_CODE &&
